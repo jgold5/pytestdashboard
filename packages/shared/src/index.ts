@@ -111,6 +111,20 @@ export const PullRequestRef = z.object({
   updatedAt: z.string(),
   /** How the link was made — shown as a tooltip. */
   linkedBy: z.enum(['key_in_title', 'key_in_body', 'key_in_branch', 'marker_in_diff', 'test_name_in_diff']),
+  /**
+   * Review state derived from latest review per reviewer (GitHub reviewDecision when available):
+   * review_required = no approving review yet / reviewers requested; changes_requested; approved;
+   * none = no reviews and none required.
+   */
+  reviewState: z.enum(['review_required', 'changes_requested', 'approved', 'none']),
+  /** Logins of reviewers requested but not yet reviewed. */
+  requestedReviewers: z.array(z.string()),
+  /** Review threads not marked resolved (GraphQL reviewThreads.isResolved=false). */
+  unresolvedThreads: z.number().int(),
+  /** Combined CI status of the head commit. */
+  checks: z.enum(['passing', 'failing', 'pending', 'none']),
+  /** Open PRs waiting on the author: changes requested OR unresolved threads OR failing checks. */
+  needsAttention: z.boolean(),
 });
 export type PullRequestRef = z.infer<typeof PullRequestRef>;
 
@@ -527,8 +541,101 @@ export const Summary = z.object({
   byOwner: z.array(
     z.object({ owner: z.string(), total: z.number().int(), automated: z.number().int() }),
   ),
+  /** Open automation PRs (linked to ≥1 case), by review state. */
+  prPipeline: z.object({
+    open: z.number().int(),
+    draft: z.number().int(),
+    reviewRequired: z.number().int(),
+    changesRequested: z.number().int(),
+    approved: z.number().int(),
+    unresolvedThreads: z.number().int(), // sum across open PRs
+    needsAttention: z.number().int(),
+  }),
 });
 export type Summary = z.infer<typeof Summary>;
+
+// ---------------------------------------------------------------------------
+// Settings & management report ("external" side)
+// ---------------------------------------------------------------------------
+
+/** GET /api/settings, PUT /api/settings (editor only). Stored in DB. */
+export const Settings = z.object({
+  /** Shown in the report header, e.g. "Payments QA". */
+  teamName: trimmed(LIMITS.shortTextMax).nullable(),
+  /** Automation goal, e.g. 0.8 by 2027-03-31. */
+  goal: z
+    .object({
+      targetRate: z.number().min(0).max(1),
+      targetDate: z.iso.date(),
+    })
+    .nullable(),
+});
+export type Settings = z.infer<typeof Settings>;
+
+export const ReportQuery = z.object({
+  periodDays: z.coerce.number().int().refine((n) => [7, 30, 90, 180].includes(n)).default(30),
+});
+export type ReportQuery = z.infer<typeof ReportQuery>;
+
+/**
+ * GET /api/report — management-friendly rollup. Readable by both editor and
+ * viewer roles. Contains NO free-text notes, traces or messages (aggregates only).
+ */
+export const Report = z.object({
+  generatedAt: z.string(),
+  periodDays: z.number().int(),
+  teamName: z.string().nullable(),
+  coverage: CoverageTotals,
+  /** Coverage at the start of the period, for "+x pts" deltas. */
+  coverageAtPeriodStart: CoverageTotals.pick({ total: true, automated: true, automationRate: true }),
+  coverageTrend: Summary.shape.coverageTrend,
+  goal: Settings.shape.goal,
+  projection: z.object({
+    /** Avg newly-automated cases per week over the period (from snapshots). */
+    weeklyVelocity: z.number(),
+    /** Cases still to automate to hit goal.targetRate (null without goal). */
+    remainingToGoal: z.number().int().nullable(),
+    /** Linear projection of when goal is reached; null if velocity ≤ 0 or no goal. */
+    projectedGoalDate: z.string().nullable(),
+    /** 'ahead' | 'on_track' | 'at_risk' | 'behind' vs goal.targetDate; null without goal. */
+    status: z.enum(['ahead', 'on_track', 'at_risk', 'behind']).nullable(),
+  }),
+  /** Pass rate of the latest run and the average over the period. */
+  quality: z.object({
+    latestPassRate: z.number().nullable(),
+    periodAvgPassRate: z.number().nullable(),
+    previousPeriodAvgPassRate: z.number().nullable(),
+    runsInPeriod: z.number().int(),
+    /** Weekly buckets, oldest first. */
+    weeklyPassRate: z.array(z.object({ weekStart: z.string(), passRate: z.number().nullable(), runs: z.number().int() })),
+  }),
+  /** Per-suite readiness, worst first. */
+  suites: z.array(
+    z.object({
+      suite: z.string(),
+      total: z.number().int(),
+      automated: z.number().int(),
+      automationRate: z.number().nullable(),
+      lastPassRate: z.number().nullable(),
+      /** green: rate≥goal(or 0.8) & pass≥0.95; amber: pass≥0.85; red otherwise or no data → 'unknown'. */
+      health: z.enum(['green', 'amber', 'red', 'unknown']),
+    }),
+  ),
+  highlights: z.object({
+    newlyAutomated: z.number().int(), // in period
+    casesAdded: z.number().int(), // in period
+    prsMerged: z.number().int(), // linked automation PRs merged in period
+    failuresTriaged: z.number().int(), // notes with triage in period
+  }),
+  risks: z.object({
+    untriagedFailures: z.number().int(),
+    flakyTests: z.number().int(), // flakiness ≥ 0.3
+    productBugsOpen: z.number().int(), // cases currently triaged product_bug and last result failing
+    prsNeedingAttention: z.number().int(),
+  }),
+  prPipeline: Summary.shape.prPipeline,
+});
+export type Report = z.infer<typeof Report>;
 
 // ---------------------------------------------------------------------------
 // Auth
@@ -538,9 +645,14 @@ export type Summary = z.infer<typeof Summary>;
 export const LoginRequest = z.object({ token: z.string().min(1).max(512) });
 export type LoginRequest = z.infer<typeof LoginRequest>;
 
+export const Role = z.enum(['editor', 'viewer']);
+export type Role = z.infer<typeof Role>;
+
 /** GET /api/auth/session */
 export const SessionInfo = z.object({
   authenticated: z.boolean(),
+  /** editor = full workspace; viewer = Report only (read-only). null when unauthenticated. */
+  role: Role.nullable(),
   /** false when the server runs with auth disabled (dev only). */
   authRequired: z.boolean(),
 });
@@ -577,6 +689,27 @@ export const IntegrationStatus = z.object({
   intervalMinutes: z.number().int().nullable(),
 });
 export type IntegrationStatus = z.infer<typeof IntegrationStatus>;
+
+/** Automation PR as shown in the "Pull requests" view (GET /api/pull-requests). */
+export const PullRequest = PullRequestRef.omit({ linkedBy: true }).extend({
+  id: z.number().int(),
+  headBranch: z.string().nullable(),
+  createdAt: z.string(),
+  /** Test cases this PR is linked to. */
+  testCases: z.array(z.object({ id: z.number().int(), key: z.string(), title: z.string() })),
+});
+export type PullRequest = z.infer<typeof PullRequest>;
+
+export const PullRequestQuery = z.object({
+  state: z.enum(['open', 'draft', 'merged', 'closed']).optional(),
+  reviewState: z.enum(['review_required', 'changes_requested', 'approved', 'none']).optional(),
+  needsAttention: z.stringbool().optional(),
+  repo: z.string().max(LIMITS.shortTextMax).optional(),
+  author: z.string().max(LIMITS.shortTextMax).optional(),
+  /** Only PRs linked to at least one test case (default true). */
+  linkedOnly: z.stringbool().default(true),
+});
+export type PullRequestQuery = z.infer<typeof PullRequestQuery>;
 
 /** GET /api/integrations → IntegrationStatus[]; POST /api/integrations/:name/sync → 202 IntegrationStatus */
 export const IntegrationNameParam = z.object({ name: IntegrationName });
