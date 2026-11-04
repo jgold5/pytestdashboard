@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useSyncExternalStore } from 'react';
+import { flushSync } from 'react-dom';
 import { readStorage, writeStorage } from './storage';
 
 export type ThemePref = 'light' | 'dark' | 'system';
@@ -64,4 +65,23 @@ export function useCssVars<T extends string>(names: readonly T[]): Record<T, str
   const out = {} as Record<T, string>;
   for (const n of names) out[n] = style.getPropertyValue(`--${n}`).trim() || '#888';
   return out;
+}
+
+/**
+ * Printing always uses the light theme: before the browser snapshots the page,
+ * flip data-theme to light (so charts re-read light colors), restore afterwards.
+ */
+let printRestore: string | null = null;
+export function installPrintTheme() {
+  if (typeof window === 'undefined') return;
+  window.addEventListener('beforeprint', () => {
+    printRestore = document.documentElement.getAttribute('data-theme');
+    document.documentElement.setAttribute('data-theme', 'light');
+    flushSync(() => listeners.forEach((l) => l()));
+  });
+  window.addEventListener('afterprint', () => {
+    if (printRestore) document.documentElement.setAttribute('data-theme', printRestore);
+    printRestore = null;
+    listeners.forEach((l) => l());
+  });
 }

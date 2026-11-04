@@ -13,7 +13,7 @@ import {
   Upload,
 } from 'lucide-react';
 import type { Summary, TriageCategory } from '@ptd/shared';
-import { useSummary } from '../api/hooks';
+import { useBugStats, useSummary } from '../api/hooks';
 import { Card, CardBody, CardHeader } from '../components/ui/card';
 import { Skeleton } from '../components/ui/skeleton';
 import { EmptyState, ErrorState } from '../components/ui/empty-state';
@@ -67,6 +67,7 @@ export function OverviewPage() {
       ) : (
         <div className="space-y-4">
           <KpiRow s={s} />
+          <StillFailingCallout />
           <PipelineCard s={s} />
           <div className="grid gap-4 xl:grid-cols-2">
             <Card>
@@ -82,11 +83,11 @@ export function OverviewPage() {
             <RunTrendCard s={s} />
           </div>
           <div className="grid gap-4 xl:grid-cols-3">
-            <SuiteCard s={s} className="xl:col-span-2" />
+            <SuiteCard s={s} className="xl:col-span-2 xl:row-span-2" />
             <PrPipelineCard s={s} />
-          </div>
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             <TriageCard s={s} />
+          </div>
+          <div className="grid gap-4 md:grid-cols-2">
             <FlakyCard s={s} />
             <OwnerCard s={s} />
           </div>
@@ -279,14 +280,19 @@ function PipelineCard({ s }: { s: Summary }) {
               ) : null}
             </Link>
           ))}
-          <div className="col-span-2 flex items-center gap-2 rounded-lg border border-dashed border-border px-3 py-2.5 sm:col-span-4 lg:col-span-1">
-            <span className="hatch inline-block size-2.5 rounded-[3px] border border-border" aria-hidden />
-            <div>
-              <div className="text-xs text-fg-2">Not automatable</div>
-              <div className="text-sm font-semibold text-fg tabular">{fmtNumber(c.notAutomatable)}</div>
+          <Link
+            to="/tests?automationStatus=not_automatable"
+            className="col-span-2 rounded-lg border border-dashed border-border px-3 py-2.5 outline-none hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-ring/50 sm:col-span-4 lg:col-span-1"
+          >
+            <div className="flex items-center gap-1.5 text-xs text-fg-2">
+              <span className="hatch inline-block size-2.5 rounded-[3px] border border-border" aria-hidden />
+              Not automatable
             </div>
-            <span className="ml-auto text-[11px] leading-tight text-fg-3">excluded from %</span>
-          </div>
+            <div className="mt-1 flex items-baseline gap-1.5">
+              <span className="text-lg font-semibold text-fg tabular">{fmtNumber(c.notAutomatable)}</span>
+              <span className="text-[11px] text-fg-3">excluded from %</span>
+            </div>
+          </Link>
         </div>
       </CardBody>
     </Card>
@@ -587,3 +593,27 @@ function OwnerCard({ s }: { s: Summary }) {
   );
 }
 
+
+/** Prominent callout: bugs marked resolved whose linked tests still fail. */
+function StillFailingCallout() {
+  const stats = useBugStats();
+  const n = stats.data?.stillFailingAfterFix ?? 0;
+  if (n === 0) return null;
+  return (
+    <Link
+      to="/bugs?bucket=resolved&verification=still_failing"
+      className="flex items-center gap-3 rounded-xl border border-[color-mix(in_oklab,var(--st-failed)_40%,transparent)] bg-[color-mix(in_oklab,var(--st-failed)_7%,var(--surface))] px-4 py-3 shadow-sm outline-none hover:bg-[color-mix(in_oklab,var(--st-failed)_10%,var(--surface))] focus-visible:ring-2 focus-visible:ring-ring/50"
+    >
+      <span className="grid size-8 shrink-0 place-items-center rounded-full bg-st-failed text-white">
+        <TriangleAlert className="size-4" aria-hidden />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-[13px] font-semibold text-fg">
+          {n} bug{n === 1 ? ' is' : 's are'} marked resolved but still failing
+        </span>
+        <span className="block text-xs text-fg-2">Linked tests failed in runs after the fix — reopen or investigate.</span>
+      </span>
+      <ArrowRight className="size-4 text-fg-3" aria-hidden />
+    </Link>
+  );
+}

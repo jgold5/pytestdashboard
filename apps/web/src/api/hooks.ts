@@ -8,6 +8,12 @@ import {
 import type { z } from 'zod';
 import type {
   AutomationStatus,
+  Bug,
+  BugCreate,
+  BugList,
+  BugQuery,
+  BugStats,
+  BugUpdate,
   FailureGroup,
   HistoryMatrix,
   HistoryMatrixQuery,
@@ -46,11 +52,13 @@ import type {
 } from '@ptd/shared';
 import { api } from './client';
 
-type In<T extends z.ZodTypeAny> = Partial<z.input<T>>;
+// Query params are serialized with String(), so the parsed (output) shapes are what callers build.
+type In<T extends z.ZodTypeAny> = Partial<z.output<T>>;
 export type TestCaseQueryInput = In<typeof TestCaseQuery>;
 export type RunQueryInput = In<typeof RunQuery>;
 export type RunResultsQueryInput = In<typeof RunResultsQuery>;
 export type PullRequestQueryInput = In<typeof PullRequestQuery>;
+export type BugQueryInput = In<typeof BugQuery>;
 export type HistoryMatrixQueryInput = In<typeof HistoryMatrixQuery>;
 
 export const qk = {
@@ -66,6 +74,8 @@ export const qk = {
   runFailures: (id: number) => ['runFailures', id] as const,
   compare: (head: number, base?: number) => ['compare', head, base ?? null] as const,
   matrix: (q: HistoryMatrixQueryInput) => ['matrix', q] as const,
+  bugs: (q?: BugQueryInput) => (q ? (['bugs', q] as const) : (['bugs'] as const)),
+  bugStats: ['bugStats'] as const,
   integrations: ['integrations'] as const,
   pullRequests: (q?: PullRequestQueryInput) => (q ? (['pullRequests', q] as const) : (['pullRequests'] as const)),
   report: (periodDays: number) => ['report', periodDays] as const,
@@ -436,5 +446,56 @@ export function usePullRequests(q: PullRequestQueryInput) {
     queryKey: qk.pullRequests(q),
     queryFn: ({ signal }) => api.get<PullRequest[]>('/api/pull-requests', q, signal),
     placeholderData: keepPreviousData,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Bugs
+// ---------------------------------------------------------------------------
+
+function invalidateBugs(qc: QueryClient) {
+  void qc.invalidateQueries({ queryKey: ['bugs'] });
+  void qc.invalidateQueries({ queryKey: qk.bugStats });
+  void qc.invalidateQueries({ queryKey: ['testCases'] });
+  void qc.invalidateQueries({ queryKey: ['testCase'] });
+  void qc.invalidateQueries({ queryKey: ['runFailures'] });
+  void qc.invalidateQueries({ queryKey: qk.summary });
+  void qc.invalidateQueries({ queryKey: ['report'] });
+}
+
+export function useBugs(q: BugQueryInput, opts: { enabled?: boolean } = {}) {
+  return useQuery({
+    queryKey: qk.bugs(q),
+    queryFn: ({ signal }) => api.get<BugList>('/api/bugs', q, signal),
+    placeholderData: keepPreviousData,
+    enabled: opts.enabled ?? true,
+  });
+}
+
+export function useBugStats() {
+  return useQuery({ queryKey: qk.bugStats, queryFn: ({ signal }) => api.get<BugStats>('/api/bugs/stats', undefined, signal) });
+}
+
+export function useCreateBug() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: z.input<typeof BugCreate>) => api.post<Bug>('/api/bugs', body),
+    onSuccess: () => invalidateBugs(qc),
+  });
+}
+
+export function useUpdateBug() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, patch }: { id: number; patch: BugUpdate }) => api.patch<Bug>(`/api/bugs/${id}`, patch),
+    onSuccess: () => invalidateBugs(qc),
+  });
+}
+
+export function useDeleteBug() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => api.delete(`/api/bugs/${id}`),
+    onSuccess: () => invalidateBugs(qc),
   });
 }

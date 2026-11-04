@@ -27,6 +27,8 @@ import { RESULT_META } from '../components/status';
 const CELL = 16; // px incl. gap
 const GLYPH: Record<ResultStatus, string> = { passed: '', failed: '×', broken: '!', skipped: '–', unknown: '?' };
 const RUN_OPTIONS = [10, 20, 30, 60];
+// Passing cells recede so failures pop; still clearly green (and failures carry a glyph).
+const PASSED_SOFT = 'color-mix(in oklab, var(--st-passed) 62%, var(--surface))';
 
 type MRow = HistoryMatrix['rows'][number];
 type MRun = HistoryMatrix['runs'][number];
@@ -207,7 +209,7 @@ function MatrixLegend({ data, onlyUnstable }: { data: HistoryMatrix; onlyUnstabl
       </span>
       {(['passed', 'failed', 'broken', 'skipped', 'unknown'] as const).map((s) => (
         <span key={s} className="inline-flex items-center gap-1.5">
-          <span className="grid size-3 place-items-center rounded-[3px] text-[9px] leading-none font-bold text-white" style={{ background: RESULT_META[s].color }} aria-hidden>
+          <span className="grid size-3 place-items-center rounded-[3px] text-[9px] leading-none font-bold text-white" style={{ background: s === 'passed' ? PASSED_SOFT : RESULT_META[s].color }} aria-hidden>
             {GLYPH[s]}
           </span>
           {RESULT_META[s].label}
@@ -237,7 +239,13 @@ function MatrixGrid({ data }: { data: HistoryMatrix }) {
   const navigate = useNavigate();
   const wrapRef = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<Hover | null>(null);
-  const nameCol = 'w-[150px] sm:w-[300px]';
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // Newest runs are on the right: start scrolled to the end on narrow screens.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollLeft = el.scrollWidth;
+  }, [data.runs.length]);
+  const nameCol = 'w-[150px] min-w-[150px] max-w-[150px] sm:w-auto sm:min-w-[260px] sm:max-w-[420px]';
 
   const locate = (target: EventTarget | null): Hover | null => {
     const el = (target as HTMLElement | null)?.closest<HTMLElement>('[data-c]');
@@ -263,12 +271,13 @@ function MatrixGrid({ data }: { data: HistoryMatrix }) {
   return (
     <div className="relative" ref={wrapRef} onPointerLeave={() => setHover(null)}>
       <div
+        ref={scrollRef}
         className="max-h-[calc(100dvh-300px)] min-h-64 overflow-auto overscroll-x-contain"
         onPointerOver={(e) => setHover(locate(e.target))}
         onClick={(e) => open(locate(e.target))}
         onScroll={() => setHover(null)}
       >
-        <table className="border-separate border-spacing-0 text-[12px]" role="grid" aria-label="Test history matrix" aria-rowcount={data.rows.length + 1}>
+        <table className="w-full border-separate border-spacing-0 text-[12px]" role="grid" aria-label="Test history matrix" aria-rowcount={data.rows.length + 1}>
           <thead>
             <tr>
               <th scope="col" className={cn('sticky top-0 left-0 z-30 border-b border-border bg-surface px-4 pb-2 text-left align-bottom text-[11px] font-medium text-fg-3', nameCol)}>
@@ -340,7 +349,7 @@ const MatrixRow = memo(function MatrixRow({ row, r, nameCol }: { row: MRow; r: n
           <td key={c} className="border-b border-border p-0 group-hover:bg-surface-2/60" aria-hidden>
             <div data-r={r} data-c={c} className={cn('grid place-items-center', s && 'cursor-pointer')} style={{ width: CELL, height: 22 }}>
               {s ? (
-                <span className="grid size-3 place-items-center rounded-[3px] text-[9px] leading-none font-bold text-white" style={{ background: RESULT_META[s].color }}>
+                <span className="grid size-3 place-items-center rounded-[3px] text-[9px] leading-none font-bold text-white" style={{ background: s === 'passed' ? PASSED_SOFT : RESULT_META[s].color }}>
                   {GLYPH[s]}
                 </span>
               ) : (

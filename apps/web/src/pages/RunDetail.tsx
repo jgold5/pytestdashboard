@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { toast } from 'sonner';
 import {
   ArrowLeft,
+  Bug as BugIcon,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -40,6 +41,7 @@ import { RESULT_META, ResultBadge, TriageBadge } from '../components/status';
 import { CHANGE_META, ChangeBadge } from '../components/ChangeBadge';
 import { RunGroupChip } from '../components/RunGroup';
 import { BulkNoteDialog } from '../components/NoteForm';
+import { BugBadge, BugDialog } from '../components/bugs';
 import { PassRateBar } from '../components/RunBits';
 
 export default function RunDetailPage() {
@@ -312,6 +314,7 @@ function FailuresTab({ r }: { r: Run }) {
 function FailureGroupCard({ g, runId }: { g: FailureGroup; runId: number }) {
   const [open, setOpen] = useState(false);
   const [triageOpen, setTriageOpen] = useState(false);
+  const [bugOpen, setBugOpen] = useState(false);
   const M = RESULT_META[g.status];
   const isNew = g.newFailures > 0;
   return (
@@ -335,7 +338,10 @@ function FailureGroupCard({ g, runId }: { g: FailureGroup; runId: number }) {
                 NEW{g.newFailures !== g.count ? ` · ${g.newFailures}` : ''}
               </span>
             ) : null}
-            {g.triage ? <TriageBadge triage={g.triage} /> : <span className="text-[11px] text-fg-3">Untriaged</span>}
+            {g.triage ? <TriageBadge triage={g.triage} /> : g.bugs.length === 0 ? <span className="text-[11px] text-fg-3">Untriaged</span> : null}
+            {g.bugs.map((b) => (
+              <BugBadge key={b.id} bug={b} />
+            ))}
             {g.firstSeen ? (
               <span className="text-[11px] text-fg-3">
                 First seen{' '}
@@ -353,9 +359,14 @@ function FailureGroupCard({ g, runId }: { g: FailureGroup; runId: number }) {
             <code className={cn('block font-mono text-xs leading-relaxed break-words text-fg-2', !open && 'line-clamp-2')}>{g.sampleMessage || '(no message)'}</code>
           </button>
         </div>
-        <Button size="sm" variant="outline" onClick={() => setTriageOpen(true)} className="shrink-0">
-          <MessageSquarePlus /> <span className="hidden sm:inline">Triage all</span>
-        </Button>
+        <div className="flex shrink-0 flex-col gap-1.5 sm:flex-row">
+          <Button size="sm" variant="outline" onClick={() => setTriageOpen(true)}>
+            <MessageSquarePlus /> <span className="hidden sm:inline">Triage all</span>
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setBugOpen(true)} aria-label="Log bug for this failure group">
+            <BugIcon /> <span className="hidden sm:inline">Log bug</span>
+          </Button>
+        </div>
       </div>
       {open ? (
         <ul className="border-t border-border bg-surface-2/40 px-4 py-2">
@@ -377,6 +388,16 @@ function FailureGroupCard({ g, runId }: { g: FailureGroup; runId: number }) {
         title="Triage failure group"
         description={`Adds the same note to all ${pluralize(g.testCases.length, 'test case')} with this error.`}
         defaultTriage={g.triage ?? 'needs_investigation'}
+      />
+      <BugDialog
+        open={bugOpen}
+        onOpenChange={setBugOpen}
+        prefill={{
+          title: (g.sampleMessage.split('\n')[0] ?? '').slice(0, 200),
+          testCases: g.testCases,
+          failureSignatures: [g.signature],
+          foundInRunId: runId,
+        }}
       />
     </Card>
   );

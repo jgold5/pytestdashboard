@@ -21,6 +21,7 @@ const ComparePage = lazy(() => import('./pages/Compare'));
 const ImportPage = lazy(() => import('./pages/Import'));
 const IntegrationsPage = lazy(() => import('./pages/Integrations'));
 const PullRequestsPage = lazy(() => import('./pages/PullRequests'));
+const BugsPage = lazy(() => import('./pages/Bugs'));
 const ReportPage = lazy(() => import('./pages/Report'));
 
 function makeClient() {
@@ -148,6 +149,7 @@ export function App() {
               <Route path="tests" element={<Suspense fallback={<PageFallback />}><TestCasesPage /></Suspense>} />
               <Route path="tests/:id" element={<Suspense fallback={<PageFallback />}><TestCaseDetailPage /></Suspense>} />
               <Route path="pulls" element={<Suspense fallback={<PageFallback />}><PullRequestsPage /></Suspense>} />
+              <Route path="bugs" element={<Suspense fallback={<PageFallback />}><BugsPage /></Suspense>} />
               <Route path="runs" element={<Suspense fallback={<PageFallback />}><RunsPage /></Suspense>} />
               <Route path="runs/history" element={<Suspense fallback={<PageFallback />}><HistoryPage /></Suspense>} />
               <Route path="runs/compare" element={<Suspense fallback={<PageFallback />}><ComparePage /></Suspense>} />

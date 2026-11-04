@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react';
 import { Link, NavLink, Outlet, useLocation } from 'react-router';
 import * as D from '@radix-ui/react-dialog';
 import {
+  Bug,
   CirclePlay,
   GitPullRequest,
   LayoutDashboard,
@@ -26,7 +27,8 @@ const NAV = [
   { to: '/', label: 'Overview', icon: LayoutDashboard, end: true },
   { to: '/tests', label: 'Test cases', icon: ListChecks },
   { to: '/pulls', label: 'Pull requests', icon: GitPullRequest },
-  { to: '/runs', label: 'Runs', icon: CirclePlay },
+  { to: '/runs', label: 'Runs & history', icon: CirclePlay },
+  { to: '/bugs', label: 'Bugs', icon: Bug },
   { to: '/import', label: 'Import', icon: Upload },
   { to: '/integrations', label: 'Integrations', icon: Plug },
 ];

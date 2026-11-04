@@ -21,7 +21,7 @@ export function useRunGroupSelection({ allowAll = false }: { allowAll?: boolean 
   const valid = (g: string | null | undefined): g is string =>
     !!g && (g === ALL_GROUPS ? allowAll : groups.some((x) => x.name === g));
 
-  let value: string | null = null;
+  let value: string | null;
   if (valid(fromUrl)) value = fromUrl;
   else if (fromUrl && !meta.data) value = fromUrl; // meta still loading: trust URL
   else if (valid(stored)) value = stored;

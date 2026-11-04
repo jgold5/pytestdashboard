@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
 import * as D from '@radix-ui/react-dialog';
 import {
+  Bug,
   CirclePlay,
   CornerDownLeft,
   GitPullRequest,
@@ -36,6 +37,9 @@ const PAGES = [
   { label: 'Test cases', to: '/tests', icon: ListChecks },
   { label: 'Pull requests', to: '/pulls', icon: GitPullRequest },
   { label: 'Runs', to: '/runs', icon: CirclePlay },
+  { label: 'History matrix', to: '/runs/history', icon: CirclePlay },
+  { label: 'Compare runs', to: '/runs/compare', icon: CirclePlay },
+  { label: 'Bugs', to: '/bugs', icon: Bug },
   { label: 'Import', to: '/import', icon: Upload },
   { label: 'Integrations', to: '/integrations', icon: Plug },
   { label: 'Management report', to: '/report', icon: Presentation },

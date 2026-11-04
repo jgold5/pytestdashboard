@@ -6,7 +6,7 @@ import type { Run } from '@ptd/shared';
 import { useDeleteRun, useMeta, useRuns } from '../api/hooks';
 import { useDebounced } from '../lib/useDebounced';
 import { ALL_GROUPS, useRunGroupSelection } from '../lib/runGroup';
-import { cn, fmtDateTime, fmtDuration, fmtNumber, fmtPct, fmtRelative } from '../lib/utils';
+import { cn, fmtDateTime, fmtDuration, fmtNumber, fmtRelative } from '../lib/utils';
 import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
 import { Checkbox } from '../components/ui/checkbox';
@@ -14,7 +14,6 @@ import { ConfirmDialog } from '../components/ui/confirm';
 import { EmptyState, ErrorState } from '../components/ui/empty-state';
 import { Input } from '../components/ui/input';
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '../components/ui/dropdown';
-import { SegmentedBar } from '../components/ui/misc';
 import { Select } from '../components/ui/select';
 import { SkeletonRows } from '../components/ui/skeleton';
 import { linkButton } from '../components/ui/link-button';
@@ -228,13 +227,13 @@ export default function RunsPage() {
 }
 
 function StatusCounts({ c }: { c: Run['counts'] }) {
-  const items = (['passed', 'failed', 'broken', 'skipped'] as const).filter((k) => c[k] > 0 || k === 'passed');
+  const items = ['passed', 'failed', 'broken', 'skipped'] as const;
   return (
-    <span className="inline-flex items-center gap-2.5 text-xs text-fg-2 tabular">
+    <span className="hidden grid-cols-4 gap-1 text-xs text-fg-2 tabular sm:grid">
       {items.map((k) => {
         const M = RESULT_META[k];
         return (
-          <span key={k} className="inline-flex items-center gap-1" title={M.label} aria-label={`${c[k]} ${M.label}`}>
+          <span key={k} className={cn('inline-flex w-11 items-center gap-1', c[k] === 0 && 'opacity-35')} title={M.label} aria-label={`${c[k]} ${M.label}`}>
             <M.icon className="size-3" style={{ color: M.color }} aria-hidden />
             {fmtNumber(c[k])}
           </span>
@@ -261,7 +260,7 @@ function RunRow({
   const when = r.startedAt ?? r.importedAt;
   return (
     <li
-      className={cn('group flex cursor-pointer flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 hover:bg-surface-2/50 md:flex-nowrap', selected && 'bg-accent-soft hover:bg-accent-soft')}
+      className={cn('group flex cursor-pointer flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2.5 hover:bg-surface-2/50 md:flex-nowrap', selected && 'bg-accent-soft hover:bg-accent-soft')}
       onClick={() => void navigate(`/runs/${r.id}`)}
     >
       <Checkbox checked={selected} onCheckedChange={onSelect} ariaLabel={`Select ${r.name} for comparison`} />
@@ -293,7 +292,7 @@ function RunRow({
         </div>
       </div>
       <div className="flex min-w-0 basis-full items-center gap-4 pl-8 md:basis-auto md:pl-0">
-        <RunChangeChips changes={r.changes} className="w-44 md:justify-end" />
+        <RunChangeChips changes={r.changes} className="md:w-56 md:justify-end" />
         <StatusCounts c={r.counts} />
         <PassRateBar r={r} className="ml-auto md:ml-0" />
       </div>

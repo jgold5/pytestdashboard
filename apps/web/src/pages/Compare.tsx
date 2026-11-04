@@ -35,7 +35,7 @@ export default function ComparePage() {
   const headParam = Number(params.get('head')) || null;
   const baseParam = Number(params.get('base')) || null;
   const runs = useRuns({ runGroup: group ?? undefined, pageSize: 100 });
-  const runList = runs.data?.items ?? [];
+  const runList = useMemo(() => runs.data?.items ?? [], [runs.data]);
   const head = headParam ?? runList[0]?.id ?? null;
   const cmp = useCompare(head, baseParam);
 
@@ -139,9 +139,19 @@ export default function ComparePage() {
       ) : (
         <div className={cn('space-y-4', cmp.isPlaceholderData && 'opacity-60')}>
           <CompareSummary c={cmp.data} />
-          {SECTIONS.map((s) => (
+          {SECTIONS.filter((s) => cmp.data.counts[s.key] > 0).map((s) => (
             <CompareSection key={s.key} section={s} entries={cmp.data[s.key]} count={cmp.data.counts[s.key]} defaultOpen={s.key !== 'removed'} />
           ))}
+          {SECTIONS.some((s) => cmp.data.counts[s.key] === 0) ? (
+            <p className="flex flex-wrap items-center gap-x-3 gap-y-1 px-1 text-xs text-fg-3">
+              <span>No changes in:</span>
+              {SECTIONS.filter((s) => cmp.data.counts[s.key] === 0).map((s) => (
+                <span key={s.key} className="inline-flex items-center gap-1">
+                  <s.icon className="size-3" aria-hidden /> {s.label}
+                </span>
+              ))}
+            </p>
+          ) : null}
         </div>
       )}
     </>
@@ -165,8 +175,9 @@ function RunPicker({
 }) {
   return (
     <div className="min-w-0">
-      <label htmlFor={id} className="mb-1 block text-xs font-medium text-fg-2">
+      <label htmlFor={id} className="mb-1 flex items-baseline justify-between gap-2 text-xs font-medium text-fg-2">
         {label}
+        {hint ? <span className="truncate font-normal text-fg-3">{hint}</span> : null}
       </label>
       <select
         id={id}
@@ -181,7 +192,6 @@ function RunPicker({
           </option>
         ))}
       </select>
-      {hint ? <p className="mt-1 text-[11px] text-fg-3">{hint}</p> : null}
     </div>
   );
 }

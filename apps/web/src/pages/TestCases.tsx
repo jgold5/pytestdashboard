@@ -46,6 +46,7 @@ import { linkButton } from '../components/ui/link-button';
 import { AUTOMATION_META, FlakyMeter, InPrBadge, RESULT_META, ResultBadge, TriageBadge } from '../components/status';
 import { AUTOMATION_OPTIONS, NewTestCaseDialog, PRIORITY_OPTIONS } from '../components/TestCaseForm';
 import { BulkNoteDialog, TRIAGE_OPTIONS } from '../components/NoteForm';
+import { BugBadge } from '../components/bugs';
 import * as S from '@radix-ui/react-select';
 
 type Sort = TestCaseQuery['sort'];
@@ -295,25 +296,25 @@ export default function TestCasesPage() {
           </EmptyState>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[720px] text-[13px]">
+            <table className="w-full min-w-[720px] table-fixed text-[13px]">
               <thead className="bg-surface-2/60 text-left text-[11px] font-medium tracking-wide text-fg-3 uppercase">
                 <tr className="border-b border-border">
-                  <th className="w-9 py-2 pl-4">
+                  <th className="w-10 py-2 pl-4">
                     <Checkbox
                       checked={allOnPage ? true : someOnPage ? 'indeterminate' : false}
                       onCheckedChange={toggleAll}
                       ariaLabel="Select all on page"
                     />
                   </th>
-                  <SortTh label="Key" s="key" query={query} onSort={sortBy} className="w-36" />
-                  <SortTh label="Title" s="title" query={query} onSort={sortBy} />
-                  <SortTh label="Suite" s="suite" query={query} onSort={sortBy} className="hidden md:table-cell" />
+                  <SortTh label="Key" s="key" query={query} onSort={sortBy} className="w-28" />
+                  <SortTh label="Title" s="title" query={query} onSort={sortBy} className="w-auto" />
+                  <SortTh label="Suite" s="suite" query={query} onSort={sortBy} className="hidden w-32 md:table-cell" />
                   <SortTh label="Pri" s="priority" query={query} onSort={sortBy} className="w-14" />
                   <SortTh label="Automation" s="automationStatus" query={query} onSort={sortBy} className="w-40" />
-                  <SortTh label="Last result" s="lastRun" query={query} onSort={sortBy} className="w-36" />
-                  <th className="hidden px-2 py-2 font-medium xl:table-cell">Triage</th>
+                  <SortTh label="Last result" s="lastRun" query={query} onSort={sortBy} className="w-32" />
+                  <th className="hidden w-40 px-2 py-2 font-medium xl:table-cell">Triage</th>
                   <SortTh label="Flaky" s="flakiness" query={query} onSort={sortBy} className="hidden w-24 lg:table-cell" />
-                  <th className="hidden px-2 py-2 pr-4 font-medium lg:table-cell">Owner</th>
+                  <th className="hidden w-32 px-2 py-2 pr-4 font-medium lg:table-cell">Owner</th>
                 </tr>
               </thead>
               <tbody>
@@ -425,7 +426,7 @@ function Row({ t, selected, onSelect, onOpen }: { t: TestCase; selected: boolean
       <td className="py-1.5 pl-4" onClick={(e) => e.stopPropagation()}>
         <Checkbox checked={selected} onCheckedChange={onSelect} ariaLabel={`Select ${t.key}`} />
       </td>
-      <td className="max-w-36 px-2 py-1.5">
+      <td className="px-2 py-1.5">
         <Link to={`/tests/${t.id}`} onClick={(e) => e.stopPropagation()} className="block truncate font-mono text-xs text-fg-2 outline-none hover:text-fg hover:underline focus-visible:ring-2 focus-visible:ring-ring/50" title={t.key}>
           {t.key}
         </Link>
@@ -436,6 +437,9 @@ function Row({ t, selected, onSelect, onOpen }: { t: TestCase; selected: boolean
             {t.title}
           </span>
           <InPrBadge prs={t.pullRequests} />
+          {t.openBugs.slice(0, 2).map((b) => (
+            <BugBadge key={b.id} bug={b} />
+          ))}
           {t.noteCount > 0 ? (
             <span className="inline-flex shrink-0 items-center gap-0.5 text-[11px] text-fg-3" title={`${t.noteCount} notes`} aria-label={`${t.noteCount} notes`}>
               <MessageSquare className="size-3" aria-hidden />
@@ -444,7 +448,7 @@ function Row({ t, selected, onSelect, onOpen }: { t: TestCase; selected: boolean
           ) : null}
         </div>
       </td>
-      <td className="hidden max-w-40 truncate px-2 py-1.5 text-fg-2 md:table-cell" title={t.suite ?? undefined}>
+      <td className="hidden truncate px-2 py-1.5 text-fg-2 md:table-cell" title={t.suite ?? undefined}>
         {t.suite ?? <span className="text-fg-3">—</span>}
       </td>
       <td className="px-2 py-1.5 text-xs text-fg-2">{t.priority ?? <span className="text-fg-3">—</span>}</td>
@@ -463,7 +467,7 @@ function Row({ t, selected, onSelect, onOpen }: { t: TestCase; selected: boolean
       </td>
       <td className="hidden px-2 py-1.5 xl:table-cell">{t.triage ? <TriageBadge triage={t.triage} /> : <span className="text-fg-3">—</span>}</td>
       <td className="hidden px-2 py-1.5 lg:table-cell">{t.flakiness > 0 ? <FlakyMeter value={t.flakiness} /> : <span className="text-fg-3">—</span>}</td>
-      <td className="hidden max-w-32 truncate px-2 py-1.5 pr-4 text-fg-2 lg:table-cell">{t.owner ?? <span className="text-fg-3">—</span>}</td>
+      <td className="hidden truncate px-2 py-1.5 pr-4 text-fg-2 lg:table-cell">{t.owner ?? <span className="text-fg-3">—</span>}</td>
     </tr>
   );
 }
@@ -479,7 +483,7 @@ function InlineStatus({ t }: { t: TestCase }) {
     >
       <S.Trigger
         aria-label={`Automation status for ${t.key}: ${M.label}`}
-        className="-ml-1 inline-flex h-6 max-w-full items-center gap-1.5 rounded-md border border-transparent px-1.5 text-xs text-fg outline-none hover:border-border hover:bg-surface focus-visible:ring-2 focus-visible:ring-ring/50"
+        className="-ml-1 inline-flex h-6 max-w-full items-center gap-1.5 rounded-md border whitespace-nowrap border-transparent px-1.5 text-xs text-fg outline-none hover:border-border hover:bg-surface focus-visible:ring-2 focus-visible:ring-ring/50"
       >
         <M.icon className="size-3.5 shrink-0" style={{ color: M.color }} aria-hidden />
         <S.Value>{M.label}</S.Value>

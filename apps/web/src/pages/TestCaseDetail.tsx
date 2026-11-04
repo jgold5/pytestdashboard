@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router';
 import { toast } from 'sonner';
 import {
   ArrowLeft,
+  Bug as BugIcon,
   ChevronDown,
   ChevronRight,
   Clock,
@@ -59,6 +60,7 @@ import { AuthorField, NoteFields, validateNote, type NoteDraft } from '../compon
 import { ChangeBadge } from '../components/ChangeBadge';
 import { RunGroupChip } from '../components/RunGroup';
 import { ChartTooltipBox } from '../components/charts/ChartTooltip';
+import { BugBadge, BugDialog, BugStatusBadge, SeverityBadge, VerificationBadge } from '../components/bugs';
 
 type HistoryItem = TestCaseDetail['history'][number];
 
@@ -96,7 +98,9 @@ function DetailSkeleton() {
 function Detail({ t }: { t: TestCaseDetail }) {
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [bugOpen, setBugOpen] = useState(false);
   const del = useDeleteTestCase();
+  const latestFail = t.history.find((h) => h.status === 'failed' || h.status === 'broken');
   const setStatus = useSetAutomationStatus();
   const navigate = useNavigate();
   const jiraUrl = t.jiraKey && safeHttpUrl(t.externalUrl)?.includes(t.jiraKey) ? safeHttpUrl(t.externalUrl) : null;
@@ -130,6 +134,9 @@ function Detail({ t }: { t: TestCaseDetail }) {
             {t.lastResult ? <ResultBadge status={t.lastResult.status} /> : null}
             {t.triage ? <TriageBadge triage={t.triage} /> : null}
             <InPrBadge prs={t.pullRequests} />
+            {t.openBugs.map((b) => (
+              <BugBadge key={b.id} bug={b} />
+            ))}
             {t.tags.map((tag) => (
               <Chip key={tag}>#{tag}</Chip>
             ))}
@@ -141,6 +148,9 @@ function Detail({ t }: { t: TestCaseDetail }) {
               <ExternalIcon className="size-4" aria-hidden /> Open in {t.jiraKey ? 'Jira' : 'tracker'}
             </a>
           ) : null}
+          <Button variant="outline" onClick={() => setBugOpen(true)}>
+            <BugIcon /> Log bug
+          </Button>
           <Button variant="outline" onClick={() => setEditing(true)}>
             <Pencil /> Edit
           </Button>
@@ -167,10 +177,21 @@ function Detail({ t }: { t: TestCaseDetail }) {
         </div>
         <div className="min-w-0 space-y-4">
           <MetadataCard t={t} editing={editing} setEditing={setEditing} />
+          <BugsCard t={t} onLog={() => setBugOpen(true)} />
           <PullRequestsCard prs={t.pullRequests} />
         </div>
       </div>
 
+      <BugDialog
+        open={bugOpen}
+        onOpenChange={setBugOpen}
+        prefill={{
+          title: latestFail?.message?.split('\n')[0]?.slice(0, 200) ?? '',
+          testCases: [{ id: t.id, key: t.key, title: t.title }],
+          failureSignatures: latestFail?.failureSignature ? [latestFail.failureSignature] : [],
+          foundInRunId: latestFail?.runId ?? null,
+        }}
+      />
       <ConfirmDialog
         open={confirmDelete}
         onOpenChange={setConfirmDelete}
@@ -369,7 +390,7 @@ function DurationChart({ history }: { history: HistoryItem[] }) {
           <LineChart data={data} margin={{ top: 6, right: 6, bottom: 0, left: -12 }}>
             <CartesianGrid vertical={false} stroke={c.grid} />
             <XAxis dataKey="id" hide />
-            <YAxis tick={{ fontSize: 10, fill: c['fg-3'] }} tickLine={false} axisLine={false} width={48} tickFormatter={(v: number) => fmtDuration(v)} />
+            <YAxis tick={{ fontSize: 10, fill: c['fg-3'] }} tickLine={false} axisLine={false} width={44} tickFormatter={(v: number) => (v < 1000 ? `${Math.round(v)}ms` : `${(v / 1000).toFixed(v < 10000 ? 1 : 0)}s`)} />
             <RTooltip
               cursor={{ stroke: c.axis }}
               content={({ active, payload }) => {
@@ -727,6 +748,46 @@ function PullRequestsCard({ prs }: { prs: PullRequestRef[] }) {
             ))}
           </ul>
         )}
+      </CardBody>
+    </Card>
+  );
+}
+
+function BugsCard({ t, onLog }: { t: TestCaseDetail; onLog: () => void }) {
+  return (
+    <Card>
+      <CardHeader
+        title="Bugs"
+        icon={<BugIcon className="size-4 text-fg-3" aria-hidden />}
+        actions={
+          <Button size="sm" variant="ghost" onClick={onLog}>
+            Log bug
+          </Button>
+        }
+      />
+      <CardBody>
+        {t.openBugs.length === 0 ? (
+          <p className="text-xs text-fg-3">No open bugs linked to this test.</p>
+        ) : (
+          <ul className="space-y-2">
+            {t.openBugs.map((b) => (
+              <li key={b.id} className="rounded-lg border border-border p-2.5">
+                <div className="flex items-start gap-2">
+                  <BugBadge bug={b} />
+                  <span className="min-w-0 flex-1 text-[13px] text-fg">{b.title}</span>
+                </div>
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  <BugStatusBadge status={b.status} />
+                  {b.severity ? <SeverityBadge severity={b.severity} /> : null}
+                  {b.verification !== 'n/a' ? <VerificationBadge v={b.verification} /> : null}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+        <Link to={`/bugs?bucket=all`} className="mt-3 inline-block text-xs text-fg-2 hover:text-fg hover:underline">
+          All bugs →
+        </Link>
       </CardBody>
     </Card>
   );
