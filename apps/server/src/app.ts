@@ -178,18 +178,23 @@ export async function buildApp(opts: BuildOptions): Promise<BuiltApp> {
   return { app, dbHandle, runner };
 }
 
-/** Decoded, normalised check so `/%61pi`, `//api`, `/API` etc. never get the SPA. */
+/** Decoded, normalised check so `/%61pi`, `//api`, `/API`, `/./api` etc. never get the SPA. */
 export function isApiPath(rawUrl: string): boolean {
   let pathname: string;
-  try {
-    pathname = new URL(rawUrl, 'http://localhost').pathname;
-  } catch {
-    return true;
+  if (rawUrl.startsWith('/')) {
+    pathname = rawUrl.split(/[?#]/, 1)[0] ?? '';
+  } else {
+    try {
+      pathname = new URL(rawUrl).pathname; // absolute-form request target
+    } catch {
+      return true;
+    }
   }
   try {
     pathname = decodeURIComponent(pathname);
   } catch {
     return true;
   }
-  return pathname.replace(/\/+/g, '/').toLowerCase().startsWith('/api');
+  const normalised = path.posix.normalize(pathname.replace(/\\/g, '/').replace(/\/+/g, '/'));
+  return normalised.toLowerCase().startsWith('/api');
 }

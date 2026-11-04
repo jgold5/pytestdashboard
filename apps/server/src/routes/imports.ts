@@ -6,7 +6,7 @@ import { commitImport, findSheet, statusValues } from '../import/spreadsheet/com
 import { suggestMapping } from '../import/spreadsheet/headers.js';
 import { SHEET_LIMITS, parseSpreadsheet } from '../import/spreadsheet/parse.js';
 
-const IMPORT_RATE = { max: 30, timeWindow: '1 minute' };
+const IMPORT_RATE = { max: 10, timeWindow: '1 minute' };
 
 export function importRoutes(app: FastifyInstance, { db, uploads }: Deps): void {
   app.post('/api/test-cases/import/preview', { config: { rateLimit: IMPORT_RATE } }, async (req): Promise<ImportPreviewResponse> => {

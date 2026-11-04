@@ -22,7 +22,7 @@ export function runRoutes(app: FastifyInstance, { db }: Deps, zipLimits?: ZipLim
     return { items, total, page: q.page, pageSize: q.pageSize };
   });
 
-  app.post('/api/runs/import', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (req, reply) => {
+  app.post('/api/runs/import', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req, reply) => {
     const { bundle, fields } = await collectAllureUpload(req, zipLimits);
     const result = importAllureRun(db, bundle, fields);
     req.log.info(

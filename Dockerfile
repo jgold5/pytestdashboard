@@ -3,6 +3,8 @@
 #   docker build -t ptd . && docker run -p 3000:3000 -v ptd-data:/data \
 #     -e DASHBOARD_TOKEN=... -e SESSION_SECRET=... ptd
 
+# TODO(F-11): pin by digest (FROM node:22-bookworm-slim@sha256:<digest>) — the registry
+# rate-limited the lookup when this was written; resolve with `docker buildx imagetools inspect node:22-bookworm-slim`.
 FROM node:22-bookworm-slim AS build
 RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ && rm -rf /var/lib/apt/lists/*
 RUN corepack enable

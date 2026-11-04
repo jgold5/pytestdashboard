@@ -421,3 +421,166 @@ Fastify's JSON parser rejects `__proto__` (`onProtoPoisoning: 'error'`), and `pa
 - The internals of `github.ts` and `jira.ts`: outbound request handling, SSRF exposure of `GITHUB_API_URL`, and the URLs and HTML returned by those APIs.
 - Web app code, beyond the spot check above.
 - Browser-level confirmation of the `no-cors` variant of F-01.
+
+---
+
+## Remediation (2026-11-04)
+
+All fixes are in `apps/server`, with no contract changes. Regression tests are in `apps/server/test/security.test.ts` (24 tests). I re-ran the reviewer's exploit scripts from `secreview/` against the fixed code. To check the scripts' behaviour I used `buildApp`/`inject`, and for `raw.mjs` I used `dist/index.js` listening on :3998.
+
+**Validation:** `pnpm --filter @ptd/server typecheck`, `test` and `build` all pass, with 126 tests passing and 1 perf test skipped. `pnpm audit --prod` reports no known vulnerabilities.
+
+### F-01: Authentication, role and CSRF bypass (Critical)
+
+**Fix:** Access is now decided from the **matched route**, never from the raw URL.
+
+- `registerRouteAccess()` (`auth/plugin.ts`) is registered as an `onRoute` hook before any route. Every route whose path is under `/api` gets `config.access = 'editor'` unless it declares something else; all other routes (static files) are `'public'`.
+- The `onRequest` hook now reads `req.routeOptions.config.access`. The `req.url.startsWith('/api/')` test is removed.
+- Unmatched requests go only to the 404 handler.
+- The SPA fallback uses `isApiPath()`. It decodes the path, removes repeated slashes, applies `posix.normalize`, compares case-insensitively, and handles absolute-form targets. It never serves `index.html` for anything that resolves to an `/api` path.
+
+**Tests:**
+- "F-01 … never returns 2xx for encoded /api variants (anonymous)" and "(viewer)". These cover `/%61pi`, `/ap%69`, `/%61%70%69`, `/api/%74est-cases`, `/API`, `//api`, `/api/./`, `/x/../api`, trailing slash and absolute-form, each with GET, POST and DELETE.
+- "rejects absolute-form request targets over a real socket".
+- "SPA fallback never treats encoded /api paths as SPA routes".
+
+**Verified:**
+- `paths.ts`: `/%61pi/*` returns 401, and anonymous `PUT /%61pi/settings` returns 401. For the viewer, `/%61pi/summary` returns 403.
+- `prod.ts`: anonymous `PUT`, cross-site `PUT /%61pi/settings` and `GET /ap%69/…/export.csv` all return 401 or 403.
+- `raw.mjs`: the absolute-form target, `/%61pi`, `/ap%69` and `/api/%74est-cases` all return **401**.
+
+### F-02: A 4 KB xlsx crashes the server (High)
+
+**Fix:**
+- `parseXlsx` makes one streaming yauzl pass over the archive. `scanSheetXml()` scans each `xl/worksheets/*.xml` in linear time: it walks the bytes with `indexOf`, and regexes only ever run on a single tag of at most 64 KB. It rejects a row index (`<row r>` or the cell reference) above 51,000, a column above 250, and more than 2,000,000 cells in total, all **before** read-excel-file runs.
+- Parsing then happens in a `worker_threads` Worker (`xlsxWorker.mjs`) with `maxOldGenerationSizeMb: 512` and a 30-second timeout. If the worker runs out of memory, the request gets a 413 and the server keeps running.
+
+**Tests:**
+- "rejects a 4 KB xlsx with a huge row index before parsing (no OOM)"
+- "rejects a huge column reference"
+- "scanner handles namespaced tags and implicit refs; stays linear on junk"
+- "still parses a normal xlsx (worker thread)"
+
+**Verified:** with `xlsx_e2e.ts`, `bomb-rowgap.xlsx` returns **413 `too_many_rows` in 42 ms** (maxRSS 174 MB), and `bomb-colgap.xlsx` returns **413 `too_many_columns` in 58 ms**.
+
+### F-03: Allure zip amplification (Medium)
+
+**Fix:**
+- Whole-archive ratio check: the declared bytes of the entries we actually read must stay below 100 × the archive size. Small zips get a floor of 8 MB.
+- `maxTotalBytes` is lowered to 512 MB, and each JSON entry is capped at 5 MB (zip entries and individual files).
+- Per-result caps:
+  - labels and parameters: at most 50 each, values up to 500 characters, 16 KB in total per list;
+  - trace: 16 KB.
+- Per-import caps: 50,000 results, and an estimated 256 MB of stored data. Both return 413.
+- The import rate limit is now **10/min** for `runs/import`, spreadsheet preview and commit.
+
+**Tests:**
+- "rejects zips whose read entries expand too much overall"
+- "caps stored labels/parameters/trace per result"
+- "rejects oversized result JSON and environment.properties"
+- "lowers the import rate limit to 10/min"
+
+**Verified:** `zipamp.ts 1800` (a 4 MB zip that expands to 869 MB) now returns **413 "Zip expands too much overall" in 2.6 s**, with a 0 MB DB and 0 MB WAL. The maxRSS reported is mostly the script building its own payload.
+
+### F-04: ReDoS in `parseProperties` (Medium)
+
+**Fix:**
+- `parseProperties` now uses `indexOf` and no regex. Lines over 8 KB are skipped, and `environment.properties` itself is capped at 64 KB.
+- Audit of the other regexes:
+  - Normalizers (status, priority, header `canon`): input is capped at 200 characters before any regex runs.
+  - `splitTags`: input capped at 20 KB.
+  - `sanitizeError`: input capped at 4 KB.
+  - `normalizeFailureMessage`: input was already capped at 2,000 characters.
+  - The new xlsx scanner only runs regexes on bounded tags.
+  - None of these patterns has nested or overlapping quantifiers.
+
+**Tests:**
+- "F-04 … parseProperties"
+- "normalizers, signatures, header matching, sanitizer". This one runs six hostile 100 KB inputs and asserts each call takes under **50 ms**.
+
+**Verified:**
+- `redos.ts`: about 0 ms at 10k, 20k and 40k (previously 95 ms, 474 ms and 1,766 ms).
+- `redos_e2e.ts`: 100 KB properties sent to `/%61pi/runs/import` returns 401 in 29 ms, and health answers after 20 ms. Authenticated parsing is linear.
+
+### F-05: Memory exhaustion through the spreadsheet store (Medium)
+
+**Fix:**
+- The spreadsheet file cap is **20 MB**.
+- CSV parsing runs in the worker and enforces the row, column and 2M-cell caps **per record** (in csv-parse's `on_record`), so oversized grids are never built.
+- `UploadStore` has a **200 MB byte budget**, based on an estimate of retained size. It evicts the oldest entries first and returns 413 for a single upload that is over the budget.
+
+**Tests:**
+- "enforces caps while streaming CSV and the 20 MB file cap"
+- "upload store enforces a byte budget"
+
+**Verified:**
+- `commas.csv` (50 MB) returns 413 at the multipart limit.
+- A 19 MB comma file parses in the worker (200, 1.1 s, main thread not blocked).
+- A 19 MB wide CSV returns 413 `too_many_cells`.
+- `retain.ts` with 19 MB wide uploads: about 1 MB retained after 4 uploads (previously 265 MB per upload).
+
+### F-06: `TRUST_PROXY=true` (Low)
+
+**Fix:**
+- `TRUST_PROXY` now accepts `false`, a **hop count** (`1`), or a **comma list of proxy IPs/CIDRs**, and anything else is rejected at startup.
+- The bare value `true` is rejected.
+- A hop count is passed to Fastify as `(addr, hop) => hop < n`.
+- These options are documented in `.env.example`.
+
+**Tests:**
+- "TRUST_PROXY accepts hops or IP/CIDR lists, rejects true"
+- "rate limits cannot be bypassed with spoofed X-Forwarded-For when trusting one hop"
+
+**Verified:**
+- `prod.ts`: with `TRUST_PROXY=false`, spoofed XFF still gets 429.
+- `TRUST_PROXY=true` now refuses to start.
+- **Note:** with a hop count, the server must only be reachable through the proxy; otherwise use the IP/CIDR list form. With `TRUST_PROXY=1`, a client that connects directly can still choose its rate-limit key.
+
+### F-07: Auth-disabled mode and DNS rebinding (Low)
+
+**Fix:**
+- Without `DASHBOARD_TOKEN`, the server **binds to 127.0.0.1 regardless of `HOST`**, and the warning log explains why.
+- A Host allowlist covers `localhost`, `127.0.0.1` and `[::1]`, plus the hosts from `ALLOWED_ORIGINS`, `PUBLIC_URL` and `ALLOWED_HOSTS`. It is enforced on every request when auth is disabled, and whenever `PUBLIC_URL` or `ALLOWED_HOSTS` is set. A disallowed Host gets 403 `invalid_host`.
+- When `PUBLIC_URL` is set, it is the server's own origin for the CSRF check, instead of the `Host` header.
+- The bundled `dist/index.js` now defaults `NODE_ENV` to `production` (a tsup `define`), so the root `pnpm start` refuses to run without tokens instead of silently running with auth disabled.
+
+**Tests:**
+- "rejects DNS-rebinding Host headers when auth is disabled"
+- "binds loopback when auth is disabled; caps session TTL"
+- "PUBLIC_URL defines the own origin and the Host allowlist"
+
+**Verified:**
+- `rebind.ts`: the request with matching Host and Origin returns **403 `invalid_host`**.
+- `node dist/index.js` without `NODE_ENV` exits with "DASHBOARD_TOKEN is required in production".
+
+### F-08: Sessions cannot be revoked (Info)
+
+**Fix:**
+- `SESSION_TTL_HOURS` is capped at **720** (30 days).
+- `.env.example` documents revocation: rotate `SESSION_SECRET`, or the token the session was issued for, which is already bound by fingerprint.
+
+**Test:** "binds loopback when auth is disabled; caps session TTL".
+
+### F-09: Header and TLS-deployment gaps (Info)
+
+**Fix:**
+- `frameguard: deny`, so the response sends `X-Frame-Options: DENY`, consistent with CSP `frame-ancestors 'none'`.
+- `PUBLIC_URL` sets the cookie's `Secure` flag when it is https, and sets the server's own origin behind TLS-terminating proxies. This is documented in `.env.example`.
+
+**Test:** "sends X-Frame-Options: DENY".
+
+**Verified:** `prod.ts` shows `x-frame-options=DENY`.
+
+### F-10: Prototype-chain lookups (Info)
+
+**Fix:**
+- The status-word table is now a `Map`.
+- The spreadsheet `statusValueMap` lookup uses a `Map`.
+- `suggestMapping` uses a `Map`.
+
+**Test:** "prototype-chain keys are plain values" (`constructor` and `toString`).
+
+### F-11: Supply chain (Info)
+
+- `pnpm audit --prod` is still clean.
+- The Docker base image is still unpinned. The registry rate-limited the digest lookup (HTTP 429), so the Dockerfile has a `TODO(F-11)` comment with the `docker buildx imagetools inspect` command to get the digest.

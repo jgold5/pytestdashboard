@@ -6,10 +6,18 @@
 import { z } from 'zod';
 import { LIMITS, type ResultStatus } from '@ptd/shared';
 import type { NameValue } from '../../db/schema.js';
+import { AppError } from '../../errors.js';
 
-export const MAX_JSON_BYTES = 20 * 1024 * 1024;
-const MAX_LABELS = 200;
-const MAX_VALUE = 1000;
+/** Per-file cap for result JSON / executor.json. */
+export const MAX_JSON_BYTES = 5 * 1024 * 1024;
+/** Per-result caps on what is stored (amplification control). */
+const MAX_LABELS = 50;
+const MAX_VALUE = 500;
+const MAX_NAME_VALUES_BYTES = 16 * 1024;
+const MAX_TRACE = 16 * 1024;
+/** Per-import caps. */
+export const MAX_RESULTS_PER_IMPORT = 50_000;
+export const MAX_STORED_BYTES_PER_IMPORT = 256 * 1024 * 1024;
 const MAX_WARNINGS = 100;
 
 const RESULT_RE = /-result\.json$/i;
@@ -57,6 +65,8 @@ export class AllureBundle {
   skippedFiles = 0;
   private readonly warningList: string[] = [];
   private droppedWarnings = 0;
+  /** Estimated bytes that would be stored for the parsed results. */
+  storedBytes = 0;
 
   get warnings(): string[] {
     return this.droppedWarnings > 0
@@ -132,7 +142,10 @@ export class AllureBundle {
       this.skippedFiles++;
       return;
     }
-    this.results.push({
+    if (this.results.length >= MAX_RESULTS_PER_IMPORT) {
+      throw new AppError(413, 'too_many_results', `An import may contain at most ${MAX_RESULTS_PER_IMPORT} results`);
+    }
+    const parsedResult: ParsedResult = {
       file: basename,
       uuid: str(r.uuid, 200),
       historyId: str(r.historyId, 200),
@@ -141,14 +154,25 @@ export class AllureBundle {
       name,
       status: normalizeStatus(r.status),
       message: str(r.statusDetails?.message, LIMITS.messageMax),
-      trace: str(r.statusDetails?.trace, LIMITS.traceMax),
+      trace: str(r.statusDetails?.trace, Math.min(MAX_TRACE, LIMITS.traceMax)),
       start: num(r.start),
       stop: num(r.stop),
       labels: nameValues(r.labels),
       parameters: nameValues(r.parameters),
       links: links(r.links),
-    });
+    };
+    this.storedBytes += estimateBytes(parsedResult);
+    if (this.storedBytes > MAX_STORED_BYTES_PER_IMPORT) {
+      throw new AppError(413, 'import_too_large', 'This import would store too much data — split it into smaller uploads');
+    }
+    this.results.push(parsedResult);
   }
+}
+
+function estimateBytes(r: ParsedResult): number {
+  let n = 256 + r.name.length + (r.fullName?.length ?? 0) + (r.message?.length ?? 0) + (r.trace?.length ?? 0);
+  for (const l of [...r.labels, ...r.parameters]) n += l.name.length + l.value.length + 32;
+  return n;
 }
 
 // --- permissive schemas -------------------------------------------------------
@@ -190,13 +214,17 @@ function normalizeStatus(v: unknown): ResultStatus {
 
 function nameValues(arr: unknown[] | null | undefined): NameValue[] {
   const out: NameValue[] = [];
+  let bytes = 0;
   for (const item of arr ?? []) {
-    if (out.length >= MAX_LABELS) break;
+    if (out.length >= MAX_LABELS || bytes >= MAX_NAME_VALUES_BYTES) break;
     if (typeof item !== 'object' || item === null) continue;
     const rec = item as Record<string, unknown>;
     const name = str(rec.name, LIMITS.shortTextMax);
     const value = rec.value === null || rec.value === undefined ? '' : (str(rec.value, MAX_VALUE) ?? (typeof rec.value === 'boolean' ? String(rec.value) : ''));
-    if (name) out.push({ name, value });
+    if (name) {
+      out.push({ name, value });
+      bytes += name.length + value.length;
+    }
   }
   return out;
 }

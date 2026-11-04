@@ -3,6 +3,10 @@ import path from 'node:path';
 import { buildApp } from './app.js';
 import { ConfigError, loadConfig } from './config.js';
 
+/** Set by tsup for the production bundle (dist/index.js). */
+declare const __PTD_BUNDLED__: boolean | undefined;
+const BUNDLED = typeof __PTD_BUNDLED__ !== 'undefined' && __PTD_BUNDLED__;
+
 function loadDotEnv(): void {
   // Convenience for local dev; never overrides variables already set.
   for (const candidate of [path.resolve('.env'), path.resolve('../../.env')]) {
@@ -14,6 +18,9 @@ function loadDotEnv(): void {
 }
 
 async function main(): Promise<void> {
+  // `node dist/index.js` (e.g. root `pnpm start`) defaults to production, which
+  // refuses to start without tokens instead of silently running without auth.
+  if (BUNDLED && !process.env.NODE_ENV) process.env.NODE_ENV = 'production';
   if (process.env.NODE_ENV !== 'production') loadDotEnv();
   let config;
   try {
@@ -29,7 +36,7 @@ async function main(): Promise<void> {
   const { app, runner } = await buildApp({ config });
   if (!config.dashboardToken) {
     app.log.warn(
-      '!!! AUTH DISABLED: DASHBOARD_TOKEN is not set. Anyone who can reach this server has full access. Set DASHBOARD_TOKEN (>= 32 chars) for any shared deployment. !!!',
+      '!!! AUTH DISABLED: DASHBOARD_TOKEN is not set. Listening on 127.0.0.1 only (HOST ignored) and accepting only localhost Host headers. Set DASHBOARD_TOKEN (>= 32 chars) to serve other machines. !!!',
     );
   }
   runner.start();
