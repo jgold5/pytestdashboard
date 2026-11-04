@@ -11,8 +11,8 @@ import { getSummary } from '../domain/summary.js';
 
 export function systemRoutes(app: FastifyInstance, { config, db }: Deps): void {
   const authRequired = Boolean(config.dashboardToken);
-  // Secure in production, and whenever the public URL is https (TLS-terminating proxy).
-  const secureCookie = config.isProduction || (config.publicOrigin?.startsWith('https:') ?? false);
+  // Secure whenever browsers use https (PUBLIC_URL scheme, else production default).
+  const secureCookie = config.httpsOnly;
 
   app.get('/api/health', { config: { access: 'public' } }, async () => ({ ok: true }));
 

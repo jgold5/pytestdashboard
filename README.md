@@ -65,19 +65,54 @@ More screenshots, in light and dark themes at 1440 px and 375 px wide, are in
 
 Requirements: Node.js 22 or later, and pnpm 10 (run `corepack enable` to get it).
 
+### Run it on your machine (recommended for a local install)
+
 ```bash
+git clone https://github.com/jgold5/pytestdashboard.git
+cd pytestdashboard
 pnpm install
-cp .env.example .env       # dev: leave DASHBOARD_TOKEN empty → auth disabled, loopback only
-pnpm --filter @ptd/server seed -- --reset   # optional demo data (120 cases, 60 runs, bugs, PRs)
-pnpm dev                   # API on :3000, UI on http://localhost:5173
+cp .env.example .env
 ```
 
-To run it in production mode locally:
+Generate two secrets and paste them into `.env` as `DASHBOARD_TOKEN=` and `SESSION_SECRET=`
+(run the command twice, one value each). Keep `DASHBOARD_TOKEN`: it is what you type on the login page.
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+Build and start (re-run `pnpm build` after pulling updates):
 
 ```bash
 pnpm build
-DASHBOARD_TOKEN=$(openssl rand -hex 32) SESSION_SECRET=$(openssl rand -hex 32) pnpm start   # http://localhost:3000
+pnpm start          # http://localhost:3000 → log in with DASHBOARD_TOKEN
 ```
+
+Data lives in `apps/server/data/dashboard.db` (SQLite). Back up that folder; delete it to start fresh.
+
+Optional demo data, to look around before importing your own (stop the server first):
+
+```bash
+pnpm seed -- --reset    # 120 cases, ~60 runs, bugs, PRs — wipes the DB first
+```
+
+To let **teammates on your network** open it, set in `.env` (use your machine's IP) and restart:
+
+```
+PUBLIC_URL=http://192.168.1.50:3000
+```
+
+Optional `.env` extras: `VIEWER_TOKEN` (read-only Report login for managers), `INGEST_TOKEN`
+(upload-only token for CI), Jira/GitHub settings (see [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md)).
+Each token must be ≥ 32 characters and different from the others.
+
+### Development mode
+
+```bash
+pnpm dev                   # API on :3000, UI with hot reload on http://localhost:5173
+```
+
+With `DASHBOARD_TOKEN` empty, dev mode disables auth and listens on 127.0.0.1 only.
 
 ## Importing data
 

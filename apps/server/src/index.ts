@@ -8,7 +8,9 @@ declare const __PTD_BUNDLED__: boolean | undefined;
 const BUNDLED = typeof __PTD_BUNDLED__ !== 'undefined' && __PTD_BUNDLED__;
 
 function loadDotEnv(): void {
-  // Convenience for local dev; never overrides variables already set.
+  // Loads .env (cwd, then repo root) in every mode — local installs keep their
+  // tokens there. Never overrides variables already set in the environment,
+  // so container/systemd env still wins. .env is git- and docker-ignored.
   for (const candidate of [path.resolve('.env'), path.resolve('../../.env')]) {
     if (fs.existsSync(candidate)) {
       process.loadEnvFile(candidate);
@@ -20,8 +22,10 @@ function loadDotEnv(): void {
 async function main(): Promise<void> {
   // `node dist/index.js` (e.g. root `pnpm start`) defaults to production, which
   // refuses to start without tokens instead of silently running without auth.
+  // Set before loading .env so the .env.example default (development) can't
+  // silently downgrade `pnpm start` to no-auth mode.
   if (BUNDLED && !process.env.NODE_ENV) process.env.NODE_ENV = 'production';
-  if (process.env.NODE_ENV !== 'production') loadDotEnv();
+  loadDotEnv();
   let config;
   try {
     config = loadConfig();

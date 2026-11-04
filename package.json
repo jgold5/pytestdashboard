@@ -11,6 +11,7 @@
     "dev": "concurrently -n server,web -c blue,magenta \"pnpm --filter @ptd/server dev\" \"pnpm --filter @ptd/web dev\"",
     "build": "pnpm --filter @ptd/web build && pnpm --filter @ptd/server build",
     "start": "pnpm --filter @ptd/server start",
+    "seed": "pnpm --filter @ptd/server seed",
     "typecheck": "pnpm -r typecheck && tsc -p e2e",
     "lint": "eslint .",
     "format": "prettier --write .",

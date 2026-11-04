@@ -128,6 +128,13 @@ export interface AppConfig {
   trustProxy: false | number | string[];
   /** Origin of PUBLIC_URL, if configured. */
   publicOrigin: string | null;
+  /**
+   * Whether browsers reach the app over https: drives the Secure cookie flag,
+   * HSTS and CSP upgrade-insecure-requests. PUBLIC_URL's scheme decides when set
+   * (so a plain-http LAN install works with PUBLIC_URL=http://host:port);
+   * otherwise production assumes https.
+   */
+  httpsOnly: boolean;
   /** Accepted Host header values (lowercase host[:port]); see hostAllowed(). */
   allowedHosts: string[];
   /** true when ALLOWED_HOSTS or PUBLIC_URL was configured explicitly. */
@@ -243,6 +250,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     allowedOrigins: [...new Set(allowedOrigins.map((o) => o.replace(/\/+$/, '')))],
     trustProxy,
     publicOrigin: e.PUBLIC_URL ? new URL(e.PUBLIC_URL).origin : null,
+    httpsOnly: e.PUBLIC_URL ? new URL(e.PUBLIC_URL).protocol === 'https:' : isProduction,
     allowedHosts: allowedHostList(e.ALLOWED_HOSTS, e.ALLOWED_ORIGINS, e.PUBLIC_URL),
     hostsExplicit: e.ALLOWED_HOSTS.length > 0 || e.PUBLIC_URL !== undefined,
     logLevel: e.LOG_LEVEL,

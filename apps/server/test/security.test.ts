@@ -496,3 +496,53 @@ describe('R2-06: ingest-only token for CI', () => {
     expect(session.json()).toEqual({ authenticated: false, role: null, authRequired: true });
   });
 });
+
+describe('https-dependent headers follow PUBLIC_URL (plain-http LAN installs)', () => {
+  const login = async (t: TestApp, origin: string) =>
+    t.app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      headers: { origin, host: new URL(origin).host },
+      payload: { token: EDITOR_TOKEN },
+    });
+
+  it('production without PUBLIC_URL assumes https: Secure cookie, HSTS, upgrade-insecure-requests', async () => {
+    const t = await createTestApp(authEnv({ NODE_ENV: 'production' }));
+    try {
+      expect(loadConfig(authEnv({ NODE_ENV: 'production' })).httpsOnly).toBe(true);
+      const res = await login(t, 'http://localhost:80');
+      expect(res.statusCode).toBe(204);
+      expect(String(res.headers['set-cookie'])).toMatch(/;\s*Secure/i);
+      const page = await t.app.inject({ url: '/api/health' });
+      expect(page.headers['strict-transport-security']).toBeDefined();
+      expect(String(page.headers['content-security-policy'])).toContain('upgrade-insecure-requests');
+    } finally {
+      await t.close();
+    }
+  });
+
+  it('production with an http PUBLIC_URL serves a usable plain-http app', async () => {
+    const env = authEnv({ NODE_ENV: 'production', PUBLIC_URL: 'http://192.168.1.50:3000' });
+    const t = await createTestApp(env);
+    try {
+      expect(loadConfig(env).httpsOnly).toBe(false);
+      const res = await login(t, 'http://192.168.1.50:3000');
+      expect(res.statusCode).toBe(204);
+      expect(String(res.headers['set-cookie'])).not.toMatch(/;\s*Secure/i);
+      expect(String(res.headers['set-cookie'])).toMatch(/HttpOnly/i);
+      expect(String(res.headers['set-cookie'])).toMatch(/SameSite=Strict/i);
+      const page = await t.app.inject({ url: '/api/health', headers: { host: '192.168.1.50:3000' } });
+      expect(page.headers['strict-transport-security']).toBeUndefined();
+      expect(String(page.headers['content-security-policy'])).not.toContain('upgrade-insecure-requests');
+      // Host allowlist still applies.
+      const evil = await t.app.inject({ url: '/api/health', headers: { host: 'evil.example' } });
+      expect(evil.statusCode).toBe(403);
+    } finally {
+      await t.close();
+    }
+  });
+
+  it('https PUBLIC_URL keeps Secure even outside production', () => {
+    expect(loadConfig({ PUBLIC_URL: 'https://qa.example.com', ...authEnv() }).httpsOnly).toBe(true);
+  });
+});

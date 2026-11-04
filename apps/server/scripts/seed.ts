@@ -48,6 +48,13 @@ const at = (daysAgo: number, hour = 2) => {
 
 // --- setup ---------------------------------------------------------------------
 const reset = process.argv.includes('--reset');
+// Same .env lookup as the server (cwd, then repo root) so DATA_DIR matches.
+for (const candidate of [path.resolve('.env'), path.resolve('../../.env')]) {
+  if (fs.existsSync(candidate)) {
+    process.loadEnvFile(candidate);
+    break;
+  }
+}
 const config = loadConfig({ ...process.env, NODE_ENV: process.env.NODE_ENV === 'production' ? 'production' : 'development' });
 const dbFile = path.join(config.dataDir, 'dashboard.db');
 if (reset) for (const f of [dbFile, `${dbFile}-wal`, `${dbFile}-shm`]) fs.rmSync(f, { force: true });
