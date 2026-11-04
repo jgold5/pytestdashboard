@@ -6,11 +6,13 @@ import {
   deriveChecks,
   deriveReviewState,
   graphqlUrl,
+  maxPages,
   prState,
 } from '../src/integrations/github.js';
 import {
   CaseIndex,
   linkPullRequest,
+  markerArgs,
   moduleMatchesPath,
   parseTestName,
 } from '../src/integrations/prLinks.js';
@@ -248,15 +250,91 @@ describe('GitHub derivations', () => {
       },
       index,
     );
-    expect(links).toEqual([
-      { testCaseId: 1, linkedBy: 'key_in_title' },
-      { testCaseId: 2, linkedBy: 'key_in_body' },
-      { testCaseId: 3, linkedBy: 'key_in_branch' },
+    expect(links.dropped).toBe(0);
+    // strongest kind first: marker > test name > branch > title > body
+    expect(links.links).toEqual([
       { testCaseId: 4, linkedBy: 'marker_in_diff' },
       { testCaseId: 5, linkedBy: 'marker_in_diff' },
       { testCaseId: 9, linkedBy: 'marker_in_diff' },
       { testCaseId: 6, linkedBy: 'test_name_in_diff' },
+      { testCaseId: 3, linkedBy: 'key_in_branch' },
+      { testCaseId: 1, linkedBy: 'key_in_title' },
+      { testCaseId: 2, linkedBy: 'key_in_body' },
     ]);
+  });
+
+  it('parses markers with a bounded scan', () => {
+    expect(
+      markerArgs('@allure.id("1") @pytest.mark.jira ("QA-2") @allure.idx("3") @allure.link('),
+    ).toEqual(['"1"', '"QA-2"']);
+    expect(markerArgs(`@allure.id(${'x'.repeat(600)})`)).toEqual([]);
+  });
+
+  it('R2-01: hostile diffs and bodies are processed in linear time', () => {
+    const cases = Array.from({ length: 200 }, (_, i) => ({
+      id: i + 1,
+      key: `PAY-${i + 1}`,
+      jiraKey: `PAY-${i + 1}`,
+      allureId: String(i + 1),
+      allureFullName: `tests.test_evil#test_c${i + 1}`,
+    }));
+    const index = new CaseIndex(cases);
+    const hostileLine = '@allure.id('.repeat(Math.ceil((1024 * 1024) / 11)); // ~1 MB, no ")"
+    const shortHostile = '@allure.id('.repeat(180); // just under the 2 KB line cap
+    const hostileBody = ('@allure.id(' + 'A'.repeat(50) + '-' + '1'.repeat(10) + ' ')
+      .repeat(1024)
+      .slice(0, 64 * 1024);
+    const t0 = performance.now();
+    const res = linkPullRequest(
+      {
+        title: 'AAAAAAAA'.repeat(10_000),
+        body: hostileBody,
+        headBranch: 'a'.repeat(100_000),
+        files: [
+          { filename: 'tests/test_evil.py', patch: `@@ -0,0 +1 @@\n+${hostileLine}` },
+          {
+            filename: 'tests/test_evil2.py',
+            patch: Array.from({ length: 2000 }, () => `+${shortHostile}`).join('\n'),
+          },
+          { filename: 'tests/test_evil3.py', patch: `+def ${'test_'.repeat(250_000)}` },
+          { filename: 'tests/test_evil4.py', patch: `+def${' '.repeat(1_000_000)}x` },
+        ],
+      },
+      index,
+    );
+    // markerArgs on an uncapped 1 MB line is linear too
+    expect(markerArgs(hostileLine)).toEqual([]);
+    const ms = performance.now() - t0;
+    expect(res.links).toEqual([]);
+    expect(ms).toBeLessThan(100);
+  });
+
+  it('R2-03: caps links per PR, keeping the strongest kinds', () => {
+    const cases = Array.from({ length: 200 }, (_, i) => ({
+      id: i + 1,
+      key: `PAY-${i + 1}`,
+      jiraKey: `PAY-${i + 1}`,
+      allureId: null,
+      allureFullName: null,
+    }));
+    const index = new CaseIndex(cases);
+    const res = linkPullRequest(
+      {
+        title: 'PAY-199',
+        body: cases.map((c) => c.key).join(' '),
+        headBranch: 'feature/pay-198',
+        files: [{ filename: 'tests/test_x.py', patch: '+@pytest.mark.jira("PAY-200")' }],
+      },
+      index,
+    );
+    expect(res.links).toHaveLength(50);
+    expect(res.dropped).toBe(150);
+    expect(res.links.slice(0, 3)).toEqual([
+      { testCaseId: 200, linkedBy: 'marker_in_diff' },
+      { testCaseId: 198, linkedBy: 'key_in_branch' },
+      { testCaseId: 199, linkedBy: 'key_in_title' },
+    ]);
+    expect(res.links.slice(3).every((l) => l.linkedBy === 'key_in_body')).toBe(true);
   });
 });
 
@@ -594,5 +672,72 @@ describe('GitHub sync', () => {
     const c = (await t.app.inject({ url: `/api/test-cases/${c1.id}` })).json<TestCase>();
     expect(c.automationStatus).toBe('not_automated');
     expect(c.inOpenPr).toBe(true);
+  });
+
+  it('R2-04: pagination stops on empty pages, repeated next URLs and the page cap', async () => {
+    let mode: 'empty' | 'self' | 'endless' = 'empty';
+    let n = 0;
+    mock = await startMockServer((req) => {
+      if (req.path === '/api/graphql') return { json: { data: { repository: {} } } };
+      if (req.path.endsWith('/files')) return { json: [] };
+      if (!req.path.endsWith('/pulls')) return notFoundReply(req);
+      n++;
+      const page = Number(req.query.get('page') ?? '1');
+      const host = `http://${req.headers.host}`;
+      const state = req.query.get('state');
+      if (mode === 'empty') {
+        return {
+          json: [],
+          headers: { link: `<${host}${req.path}?state=${state}&page=1>; rel="next"` },
+        };
+      }
+      // one closed-in-window PR per page so the listing never runs dry
+      const pr = restPr('acme/api', {
+        number: page,
+        title: 't',
+        branch: 'b',
+        state: 'closed',
+        updated_at: iso(1),
+      });
+      const next = mode === 'self' ? 1 : page + 1;
+      return {
+        json: [pr],
+        headers: { link: `<${host}${req.path}?state=${state}&page=${next}>; rel="next"` },
+      };
+    });
+    const config = loadConfig({ NODE_ENV: 'test', ...env(mock.url) });
+    t = await createTestApp(env(mock.url), { providers: [createGithubProvider(config.github)] });
+    const run = async () => {
+      n = 0;
+      await t!.app.inject({ method: 'POST', url: '/api/integrations/github/sync' });
+      await t!.runner.waitForIdle();
+      return (await t!.app.inject({ url: '/api/integrations' })).json<IntegrationStatus[]>()[0]!;
+    };
+    let s = await run();
+    expect(s.lastError).toBeNull();
+    expect(n).toBe(2); // one empty page per listing (open + closed)
+
+    mode = 'self';
+    s = await run();
+    expect(s.lastError).toBeNull();
+    expect(n).toBeLessThanOrEqual(6); // first page + the self link once per listing
+
+    mode = 'endless';
+    s = await run();
+    expect(s.lastError).toBeNull();
+    expect(n).toBeLessThanOrEqual(2 * maxPages(300));
+  });
+
+  it('R2-03: a PR listing every key is capped at 50 links', async () => {
+    const body = Array.from({ length: 80 }, (_, i) => `PAY-${i + 1}`).join(' ');
+    mock = await startMockServer(
+      githubHandler('acme/api', [{ number: 1, title: 'spam', body, branch: 'b' }]),
+    );
+    t = await createTestApp(env(mock.url));
+    for (let i = 1; i <= 80; i++) await createCase({ key: `PAY-${i}`, jiraKey: `PAY-${i}` });
+    await t.app.inject({ method: 'POST', url: '/api/integrations/github/sync' });
+    await t.runner.waitForIdle();
+    const s = (await t.app.inject({ url: '/api/integrations' })).json<IntegrationStatus[]>()[0]!;
+    expect(s.lastStats?.linked).toBe(50);
   });
 });

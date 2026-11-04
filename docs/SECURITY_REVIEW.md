@@ -897,3 +897,61 @@ A cross-origin `<iframe>` loading `/report` is blocked: `chrome-error://`, becau
 **Ship for the internal deployment**, provided R2-01 is fixed before the GitHub integration is enabled on any repository where people outside the QA team can open PRs. That includes any public repo, because fork PRs are listed.
 
 R2-01 is a small, self-contained change, and it is the only finding that someone without dashboard credentials can trigger. Fix R2-02 (scan every XML entry and add a worker semaphore) in the next patch. Until then, the residual risk is limited to editors, and the process does not crash outright unless the container's memory limit is below about 6 GB. R2-03 to R2-06 can wait for a follow-up.
+
+## Round 2 remediation: integrations (R2-01, R2-03, R2-04)
+
+Status: **fixed**, not yet committed. The exploit scripts in `secreview2/` were re-run against the patched code.
+
+**R2-01 (ReDoS / unbounded diff processing).**
+
+What changed in `prLinks.ts`:
+
+- `MARKER_G` is gone. `markerArgs()` scans the line linearly: it finds each `@` with `indexOf`, checks for a literal marker prefix, and then looks for `)` only within the next 512 characters.
+- `JIRA_KEY_G` and `DEF_TEST_G` now use bounded quantifiers only.
+- The quote regex is bounded as well.
+- `nextLink()` in `http.ts` is rewritten as an `indexOf` parser.
+
+Input caps applied before any matching:
+
+| Input | Cap |
+|---|---|
+| Title | 1 KB |
+| Body | 64 KB |
+| Branch | 512 B |
+| Added line | 2 KB (longer lines are skipped) |
+| Patch | 256 KB per file, 1 MB per PR, 20 MB per sync (a warning is logged when the sync budget runs out) |
+
+`github.ts` now links each PR as soon as its files are fetched and then drops the patches. At most 4 PRs (the fetch concurrency) are held in memory at once.
+
+Audit of the other regexes:
+
+- `jira.ts`: these regexes are anchored or bounded and apply only to data from the configured Jira host.
+- glob regexes: built from server configuration only.
+- `parseTestName`: applies to case keys of at most 512 characters.
+
+All three were found linear or bounded.
+
+Re-run of `gh_e2e.mts`:
+
+| Payload | Before | After |
+|---|---|---|
+| 400 KB line | 15,418 ms, 15.3 s event-loop stall | 148 ms total, 13 ms max stall |
+| 1 MB line | not measured | 135 ms total, 14 ms max stall |
+
+The `ssrf` mode is still refused. Regression test: a 1 MB hostile line, a 64 KB hostile body, and further hostile files and branches are processed in under 100 ms.
+
+**R2-03 (link inflation).**
+
+- Links are capped at 50 per PR.
+- When a case is linked several ways, its strongest kind is kept, in this order: `marker_in_diff` > `test_name_in_diff` > `key_in_branch` > `key_in_title` > `key_in_body`.
+- Dropped links are logged as a warning per PR and per repo. `IntegrationStatus.lastStats` has no field for warnings, and the shared contract was left unchanged.
+- `gh_e2e.mts 1 link` now gives `linked: 50` instead of 200.
+- Unit and end-to-end tests were added.
+
+**R2-04 (pagination loop).**
+
+- A new `paginate()` helper is used for both the PR listings and `/files`.
+- It stops on an empty page or on a `next` URL it has already seen.
+- It enforces a hard page cap of `ceil(cap/per_page) + 1`.
+- `gh_loop.mts` now makes 2 requests in 3 s, down from 5,825.
+- A test covers empty pages with a self link, a repeating self link, and an endless next chain.

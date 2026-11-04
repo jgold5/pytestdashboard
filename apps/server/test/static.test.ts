@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { authEnv, createTestApp, type TestApp } from './helpers/app.js';
+import { authEnv, createTestApp, EDITOR_TOKEN, type TestApp } from './helpers/app.js';
 
 describe('production static serving', () => {
   let t: TestApp;
@@ -48,5 +48,22 @@ describe('production static serving', () => {
       expect((await t.app.inject({ url })).body, url).not.toMatch(/root:/);
     }
     expect((await t.app.inject({ url: '/assets/missing.js' })).body).not.toContain('immutable');
+  });
+});
+
+describe('rate limiting', () => {
+  it('limits /api but not static SPA files', async () => {
+    const web = fs.mkdtempSync(path.join(os.tmpdir(), 'ptd-web-'));
+    fs.writeFileSync(path.join(web, 'index.html'), '<!doctype html><title>spa</title>');
+    const t = await createTestApp(authEnv({ NODE_ENV: 'production', WEB_DIST: web }), { rateLimitMax: 3 });
+    try {
+      for (let i = 0; i < 6; i++) expect((await t.app.inject({ url: '/index.html' })).statusCode).toBe(200);
+      const codes: number[] = [];
+      for (let i = 0; i < 5; i++) codes.push((await t.app.inject({ url: '/api/summary', headers: { authorization: `Bearer ${EDITOR_TOKEN}` } })).statusCode);
+      expect(codes).toContain(429);
+    } finally {
+      await t.close();
+      fs.rmSync(web, { recursive: true, force: true });
+    }
   });
 });

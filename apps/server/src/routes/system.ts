@@ -18,7 +18,9 @@ export function systemRoutes(app: FastifyInstance, { config, db }: Deps): void {
 
   app.get('/api/auth/session', { config: { access: 'public' } }, async (req): Promise<SessionInfo> => {
     if (!authRequired) return { authenticated: true, role: 'editor', authRequired: false };
-    const role = req.auth.method === 'bearer' ? req.auth.role : sessionRole(config, req);
+    const raw = req.auth.method === 'bearer' ? req.auth.role : sessionRole(config, req);
+    // the CI-only ingest token is not a UI identity
+    const role = raw === 'ingest' ? null : raw;
     return { authenticated: role !== null, role, authRequired: true };
   });
 
@@ -29,7 +31,8 @@ export function systemRoutes(app: FastifyInstance, { config, db }: Deps): void {
       const { token } = parseWith(LoginRequest, req.body);
       if (!authRequired) return reply.status(204).send();
       const role = roleForToken(config, token);
-      if (!role) throw unauthorized('Invalid access token');
+      // the ingest token (CI uploads) can never sign into the UI
+      if (!role || role === 'ingest') throw unauthorized('Invalid access token');
       const ttl = config.sessionTtlHours * 3600;
       reply.setCookie(SESSION_COOKIE, createSession(config.sessionSecret, role, token, ttl), {
         httpOnly: true,

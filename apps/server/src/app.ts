@@ -78,6 +78,15 @@ export async function buildApp(opts: BuildOptions): Promise<BuiltApp> {
 
   // Must precede every route registration (F-01: access is decided per matched route).
   registerRouteAccess(app);
+  // Static SPA files (public, non-/api routes) don't count against the per-IP API
+  // rate limit: one page load fetches a dozen hashed chunks, and a team behind one
+  // NAT would otherwise lock itself out of the UI (blank page on 429 for a JS chunk).
+  app.addHook('onRoute', (route) => {
+    const cfg = (route.config ?? {}) as { access?: string; rateLimit?: unknown };
+    if (cfg.access === 'public' && !route.url.toLowerCase().startsWith('/api') && cfg.rateLimit === undefined) {
+      route.config = { ...cfg, rateLimit: false } as typeof route.config;
+    }
+  });
 
   const dbHandle = openDatabase(config.dataDir);
   const runner = new IntegrationRunner(dbHandle.db, opts.providers ?? createProviders(config), app.log, config.secrets);

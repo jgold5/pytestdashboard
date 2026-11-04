@@ -408,12 +408,30 @@ export function rateLimitWaitMs(res: { headers: Headers }, now = Date.now()): nu
   return null;
 }
 
-/** Parse an RFC 5988 Link header and return the rel="next" URL, if any. */
+/** Parse an RFC 5988 Link header and return the rel="next" URL, if any (linear, indexOf-based). */
 export function nextLink(linkHeader: string | null): string | null {
   if (!linkHeader) return null;
-  for (const part of linkHeader.split(',')) {
-    const m = /<([^>]+)>\s*;\s*rel="?([^";]+)"?/.exec(part.trim());
-    if (m && m[2]?.split(/\s+/).includes('next')) return m[1] ?? null;
+  const header = linkHeader.slice(0, 16 * 1024);
+  let pos = 0;
+  while (pos < header.length) {
+    const open = header.indexOf('<', pos);
+    if (open === -1) return null;
+    const close = header.indexOf('>', open + 1);
+    if (close === -1) return null;
+    const url = header.slice(open + 1, close).trim();
+    let end = header.indexOf('<', close + 1);
+    if (end === -1) end = header.length;
+    const params = header.slice(close + 1, end).toLowerCase();
+    const relAt = params.indexOf('rel=');
+    if (relAt !== -1) {
+      const value = params
+        .slice(relAt + 4)
+        .split(/[;,]/, 1)[0]!
+        .replace(/"/g, '')
+        .trim();
+      if (url && value.split(/\s+/).includes('next')) return url;
+    }
+    pos = end;
   }
   return null;
 }

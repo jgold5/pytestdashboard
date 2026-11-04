@@ -28,7 +28,7 @@ import {
 } from '../domain/pullRequests.js';
 import { createGlobMatcher } from './glob.js';
 import { HttpClient, HttpError, nextLink, type HttpClientOptions } from './http.js';
-import { CaseIndex, linkPullRequest, type PrFile } from './prLinks.js';
+import { CaseIndex, LINK_LIMITS, linkPullRequest, type CaseLink, type PrFile } from './prLinks.js';
 import type { IntegrationProvider, SyncContext, SyncStats } from './registry.js';
 
 export const GITHUB_LIMITS = {
@@ -40,7 +40,49 @@ export const GITHUB_LIMITS = {
   graphqlBatch: 20,
   stalePrRefresh: 50,
   concurrency: 4,
+  /** Patch text inspected per PR / per sync (bytes of UTF-16 chars, approx.). */
+  patchCharsPerPr: 1024 * 1024,
+  patchCharsPerSync: 20 * 1024 * 1024,
 } as const;
+
+/** Hard page cap for a listing: ceil(cap / perPage) + 1. */
+export const maxPages = (cap: number, perPage: number = GITHUB_LIMITS.perPage) =>
+  Math.ceil(cap / perPage) + 1;
+
+/**
+ * Follow `rel="next"` pagination safely: stops on an empty page, on a
+ * repeated next URL, at the item cap and at a hard page cap.
+ */
+export async function paginate<T>(
+  gh: HttpClient,
+  firstUrl: string,
+  query: Record<string, string | number>,
+  schema: z.ZodType<T[]>,
+  cap: number,
+  onItem: (item: T) => 'stop' | void,
+): Promise<void> {
+  let url: string | null = firstUrl;
+  const seenUrls = new Set<string>();
+  let count = 0;
+  for (let page = 0; url && page < maxPages(cap); page++) {
+    const res: { data: T[]; headers: Headers } = await gh.get(url, {
+      query: page === 0 ? query : undefined,
+      schema,
+    });
+    if (res.data.length === 0) return;
+    for (const item of res.data) {
+      if (count >= cap) return;
+      count++;
+      if (onItem(item) === 'stop') return;
+    }
+    const next = nextLink(res.headers.get('link'));
+    if (!next) return;
+    const key = gh.resolve(next).href;
+    if (seenUrls.has(key)) return;
+    seenUrls.add(key);
+    url = next;
+  }
+}
 
 export interface GithubProviderOptions {
   /** Test hooks: override HTTP client settings (backoff, sleep, timeouts). */
@@ -235,6 +277,8 @@ export function createGithubProvider(
     db: Db,
     repo: string,
     ctx: SyncContext,
+    budget: { patchChars: number; warned: boolean },
+    stats: { droppedLinks: number },
   ): Promise<SyncStats> {
     const [owner, name] = repo.split('/') as [string, string];
     const repoPath = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
@@ -245,29 +289,15 @@ export function createGithubProvider(
 
     // --- 1. list PRs ------------------------------------------------------
     const byNumber = new Map<number, RestPr>();
-    const listPages = async (
+    const listPages = (
       query: Record<string, string | number>,
       cap: number,
       stop?: (pr: RestPr) => boolean,
-    ) => {
-      let url: string | null = `${repoPath}/pulls`;
-      let first = true;
-      let count = 0;
-      while (url && count < cap) {
-        const res = await gh.get(url, {
-          query: first ? query : undefined,
-          schema: z.array(RestPr),
-        });
-        first = false;
-        for (const pr of res.data) {
-          if (stop?.(pr)) return;
-          if (count >= cap) return;
-          count++;
-          if (!byNumber.has(pr.number)) byNumber.set(pr.number, pr);
-        }
-        url = nextLink(res.headers.get('link'));
-      }
-    };
+    ) =>
+      paginate(gh, `${repoPath}/pulls`, query, z.array(RestPr), cap, (pr) => {
+        if (stop?.(pr)) return 'stop';
+        if (!byNumber.has(pr.number)) byNumber.set(pr.number, pr);
+      });
     const cutoff = new Date(now().getTime() - GITHUB_LIMITS.recentDays * 86_400_000);
     try {
       await listPages(
@@ -310,31 +340,68 @@ export function createGithubProvider(
 
     const prs = [...byNumber.values()];
 
-    // --- 2. changed test files --------------------------------------------
-    const filesByPr = new Map<number, PrFile[]>();
+    // --- 2. changed test files → links, one PR at a time ------------------
+    // Patches are linked as soon as a PR's files are fetched and then dropped,
+    // so at most `concurrency` PRs' patches are held in memory. Patch text is
+    // capped per file (prLinks), per PR and per sync.
+    const caseRows = db
+      .select({
+        id: testCases.id,
+        key: testCases.key,
+        jiraKey: testCases.jiraKey,
+        allureId: testCases.allureId,
+        allureFullName: testCases.allureFullName,
+      })
+      .from(testCases)
+      .all();
+    const index = new CaseIndex(caseRows);
+    const linksByPr = new Map<number, CaseLink[]>();
     await mapLimit(prs, GITHUB_LIMITS.concurrency, async (pr) => {
       const files: PrFile[] = [];
-      let url: string | null = `${repoPath}/pulls/${pr.number}/files`;
-      let first = true;
-      let seen = 0;
+      let prBudget: number = GITHUB_LIMITS.patchCharsPerPr;
       try {
-        while (url && seen < GITHUB_LIMITS.filesPerPr) {
-          const res = await gh.get(url, {
-            query: first ? { per_page: GITHUB_LIMITS.perPage } : undefined,
-            schema: z.array(RestFile),
-          });
-          first = false;
-          for (const f of res.data) {
-            if (seen++ >= GITHUB_LIMITS.filesPerPr) break;
-            if (isTestFile(f.filename))
-              files.push({ filename: f.filename, patch: f.patch ?? null });
-          }
-          url = nextLink(res.headers.get('link'));
-        }
+        await paginate(
+          gh,
+          `${repoPath}/pulls/${pr.number}/files`,
+          { per_page: GITHUB_LIMITS.perPage },
+          z.array(RestFile),
+          GITHUB_LIMITS.filesPerPr,
+          (f) => {
+            if (!isTestFile(f.filename)) return;
+            let patch = f.patch ?? null;
+            if (patch) {
+              patch = patch.slice(
+                0,
+                Math.min(LINK_LIMITS.maxPatchChars, prBudget, budget.patchChars),
+              );
+              prBudget -= patch.length;
+              budget.patchChars -= patch.length;
+              if (budget.patchChars <= 0 && !budget.warned) {
+                budget.warned = true;
+                ctx.log.warn(
+                  { repo },
+                  'GitHub sync patch budget exhausted; remaining diffs are not scanned',
+                );
+              }
+            }
+            files.push({ filename: f.filename.slice(0, 1024), patch });
+          },
+        );
       } catch (e) {
         err(e);
       }
-      filesByPr.set(pr.number, files);
+      const { links: prLinks, dropped } = linkPullRequest(
+        { title: pr.title, body: pr.body ?? null, headBranch: pr.head?.ref ?? null, files },
+        index,
+      );
+      if (dropped > 0) {
+        stats.droppedLinks += dropped;
+        ctx.log.warn(
+          { repo, pr: pr.number, kept: prLinks.length, dropped },
+          'PR links to too many test cases; kept the strongest links only',
+        );
+      }
+      linksByPr.set(pr.number, prLinks);
     });
 
     // --- 3. review state via GraphQL --------------------------------------
@@ -372,18 +439,7 @@ export function createGithubProvider(
       }
     }
 
-    // --- 4. assemble + link + persist -------------------------------------
-    const caseRows = db
-      .select({
-        id: testCases.id,
-        key: testCases.key,
-        jiraKey: testCases.jiraKey,
-        allureId: testCases.allureId,
-        allureFullName: testCases.allureFullName,
-      })
-      .from(testCases)
-      .all();
-    const index = new CaseIndex(caseRows);
+    // --- 4. assemble + persist --------------------------------------------
 
     const upserts: PullRequestUpsert[] = [];
     const links: PullRequestLink[] = [];
@@ -431,15 +487,7 @@ export function createGithubProvider(
         updatedAt: pr.updated_at,
         mergedAt: pr.merged_at ?? null,
       });
-      for (const l of linkPullRequest(
-        {
-          title: pr.title,
-          body: pr.body ?? null,
-          headBranch: pr.head?.ref ?? null,
-          files: filesByPr.get(pr.number) ?? [],
-        },
-        index,
-      )) {
+      for (const l of linksByPr.get(pr.number) ?? []) {
         links.push({ prNumber: pr.number, testCaseId: l.testCaseId, linkedBy: l.linkedBy });
       }
     }
@@ -482,8 +530,16 @@ export function createGithubProvider(
         ...opts.http,
       });
       const total: SyncStats = { fetched: 0, created: 0, updated: 0, linked: 0 };
+      const budget = { patchChars: GITHUB_LIMITS.patchCharsPerSync as number, warned: false };
       for (const repo of config.repos) {
-        const s = await syncRepo(gh, ctx.db, repo, ctx);
+        const repoStats = { droppedLinks: 0 };
+        const s = await syncRepo(gh, ctx.db, repo, ctx, budget, repoStats);
+        if (repoStats.droppedLinks > 0) {
+          ctx.log.warn(
+            { repo, droppedLinks: repoStats.droppedLinks },
+            'GitHub sync: some PR links were capped',
+          );
+        }
         total.fetched += s.fetched;
         total.created += s.created;
         total.updated += s.updated;

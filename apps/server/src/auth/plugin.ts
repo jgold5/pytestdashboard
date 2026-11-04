@@ -2,7 +2,7 @@
  * Authentication, role enforcement and CSRF origin checks for /api/*.
  *
  * Route policy via `config.access`: 'public' (no auth), 'viewer' (editor or
- * viewer), default 'editor'. Bearer tokens (CI) are CSRF-exempt; cookie
+ * viewer), 'ingest' (editor or the CI-only ingest token), default 'editor'. Bearer tokens (CI) are CSRF-exempt; cookie
  * sessions must send a matching Origin/Referer on state-changing requests.
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify';
@@ -12,25 +12,29 @@ import { hostAllowed, type AppConfig } from '../config.js';
 import { AppError, forbidden, unauthorized } from '../errors.js';
 import { SESSION_COOKIE, tokenFingerprint, tokenMatches, verifySession } from './session.js';
 
-export type Access = 'public' | 'viewer' | 'editor';
+export type Access = 'public' | 'viewer' | 'ingest' | 'editor';
+/** Server-side roles. 'ingest' is bearer-only (CI uploads) and can never log into the UI. */
+export type AuthRole = Role | 'ingest';
 
 declare module 'fastify' {
   interface FastifyContextConfig {
     access?: Access;
   }
   interface FastifyRequest {
-    auth: { role: Role | null; method: 'bearer' | 'cookie' | 'none' };
+    auth: { role: AuthRole | null; method: 'bearer' | 'cookie' | 'none' };
   }
 }
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
-export function roleForToken(config: AppConfig, token: string): Role | null {
-  // check both (no early exit) to keep timing uniform
+export function roleForToken(config: AppConfig, token: string): AuthRole | null {
+  // check all (no early exit) to keep timing uniform
   const editor = tokenMatches(token, config.dashboardToken);
   const viewer = tokenMatches(token, config.viewerToken);
+  const ingest = tokenMatches(token, config.ingestToken);
   if (editor) return 'editor';
   if (viewer) return 'viewer';
+  if (ingest) return 'ingest';
   return null;
 }
 
@@ -114,7 +118,7 @@ export function registerAuth(app: FastifyInstance, config: AppConfig): void {
     if (req.routeOptions.url === undefined) return;
     const access: Access = req.routeOptions.config.access ?? 'editor';
 
-    let role: Role | null;
+    let role: AuthRole | null;
     let method: 'bearer' | 'cookie' | 'none' = 'none';
     const authz = req.headers.authorization;
     if (!authRequired) {
@@ -141,6 +145,9 @@ export function registerAuth(app: FastifyInstance, config: AppConfig): void {
 
     if (access === 'public') return;
     if (!role) throw unauthorized();
-    if (access === 'editor' && role !== 'editor') throw forbidden('This action requires editor access');
+    if (role === 'editor') return;
+    if (access === 'viewer' && role === 'viewer') return;
+    if (access === 'ingest' && role === 'ingest') return;
+    throw forbidden(role === 'ingest' ? 'The ingest token may only upload runs' : 'This action requires editor access');
   });
 }

@@ -35,7 +35,7 @@ test('viewer token only sees the report and is redirected away from the workspac
   await expect(page).toHaveURL(/\/report$/);
   await expect(page.getByRole('heading', { name: 'Shop QA' })).toBeVisible();
 
-  // and the API agrees (server-side role check, not just the UI)
-  const res = await page.request.get('/api/test-cases');
-  expect(res.status()).toBe(403);
+  // and the API agrees (server-side role check, not just the UI) — same cookie as the page
+  const status = await page.evaluate(async () => (await fetch('/api/test-cases')).status);
+  expect(status).toBe(403);
 });

@@ -28,8 +28,11 @@ export const SHEET_LIMITS = {
   maxCells: 2_000_000,
   maxCellChars: 32_767,
   /** Parser worker budget. */
-  workerHeapMb: 512,
+  workerHeapMb: 256,
   workerTimeoutMs: 30_000,
+  /** Process-wide: parser workers running at once, and requests allowed to wait. */
+  maxConcurrentWorkers: 2,
+  maxQueuedWorkers: 4,
 };
 
 const XLSX_ZIP_LIMITS: ZipLimits = {
@@ -75,49 +78,102 @@ export async function parseSpreadsheet(buffer: Buffer, fileName: string): Promis
 
 async function parseXlsx(buffer: Buffer): Promise<ParsedSheet[]> {
   // Single streaming pass: zip shape checks for every entry + a structural scan of
-  // each worksheet so huge row/column indexes (which make the parser allocate
+  // every XML part (wherever it lives — the parser follows workbook.xml.rels, so a
+  // sheet may be relocated). Huge row/column indexes (which make the parser allocate
   // gigantic gap arrays) are rejected before parsing.
   let cells = 0;
+  const seen = new Set<string>();
+  const scanned = new Set<string>();
+  let rels: Buffer | null = null;
   await readZip(
     { buffer },
     () => true,
     (name, data) => {
-      if (/^xl\/worksheets\/[^/]+\.xml$/i.test(name)) cells += scanSheetXml(data, cells);
+      if (seen.has(name)) throw new AppError(400, 'invalid_spreadsheet', 'Workbook contains duplicate entries');
+      seen.add(name);
+      if (name === WORKBOOK_RELS) rels = data;
+      if (/\.xml$/i.test(name)) {
+        cells += scanSheetXml(data, cells, /^xl\/worksheets\//i.test(name));
+        scanned.add(name);
+      }
     },
     XLSX_ZIP_LIMITS,
   );
+  // Every worksheet the parser would open must be one we scanned.
+  for (const target of worksheetPaths(rels)) {
+    if (!scanned.has(target)) {
+      throw new AppError(400, 'invalid_spreadsheet', 'Workbook references a worksheet that could not be validated');
+    }
+  }
   const sheets = await runParserWorker({ kind: 'xlsx', buffer });
   return sheets.map((s) => toSheet(s.name, s.grid));
 }
 
-const COL_RE = /\sr="([A-Za-z]{1,10})(\d{1,12})"/;
-const ROW_RE = /\sr="(\d{1,12})"/;
+const WORKBOOK_RELS = 'xl/_rels/workbook.xml.rels';
 const MAX_TAG = 64 * 1024;
+/** `r` attribute, any quoting, optional whitespace around `=` (tags are ≤ 64 KB). */
+const R_ATTR = /(?:^|\s)r\s*=\s*(?:"([^"]*)"|'([^']*)')/;
+const R_PRESENT = /(?:^|\s)r\s*=/;
+const ATTR = (name: string) => new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`);
+const TARGET_ATTR = ATTR('Target');
+const TYPE_ATTR = ATTR('Type');
 
-function colIndex(letters: string): number {
-  let n = 0;
-  for (const ch of letters.toUpperCase()) n = n * 26 + (ch.charCodeAt(0) - 64);
-  return n;
+/** XML entity decoding as the parser (saxen) does it. */
+function decodeEntities(v: string): string {
+  const named: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+  return v.replace(/&#(\d{1,7});|&#x([0-9a-f]{1,6});|&(\w{1,8});/gi, (m, d?: string, h?: string, n?: string) => {
+    if (d) return String.fromCodePoint(Math.min(Number(d), 0x10ffff));
+    if (h) return String.fromCodePoint(Math.min(parseInt(h, 16), 0x10ffff));
+    const k = (n ?? '').toLowerCase();
+    return Object.hasOwn(named, k) ? (named[k] as string) : m;
+  });
+}
+
+/** Mirrors read-excel-file's parseCellAddress: letters = charCode − 64 each, row = Number(rest). */
+function parseCellAddress(ref: string): [row: number, col: number] {
+  let col = 0;
+  for (let i = 0; i < ref.length; i++) {
+    const code = ref.charCodeAt(i);
+    if (code >= 48 && code <= 57) return [Number(ref.slice(i)), col];
+    col = col * 26 + (code - 64);
+    if (col > 1e9) break;
+  }
+  return [Number.NaN, col];
 }
 
 /**
- * Linear scan of worksheet XML (indexOf over the bytes, regexes only on single
- * bounded tags). Rejects row/column indexes beyond the caps and too many cells.
- * Returns the number of cells seen.
+ * Linear scan of an XML part (indexOf over the bytes; regexes only on single
+ * bounded tags). Row and cell references are interpreted exactly like the parser
+ * does (entities decoded, `Number()` semantics), and anything beyond the caps is
+ * rejected. `strict` (worksheets dir) also rejects over-long tags. Returns cells seen.
  */
-export function scanSheetXml(xml: Buffer, cellsSoFar = 0): number {
+export function scanSheetXml(xml: Buffer, cellsSoFar = 0, strict = true): number {
   const tooBig = (what: string) => new AppError(413, `too_many_${what}`, `Spreadsheet has too many ${what}`);
+  const malformed = () => new AppError(400, 'invalid_spreadsheet', 'Malformed worksheet XML');
+  const rowCap = SHEET_LIMITS.maxRows + 1000;
+  const colCap = SHEET_LIMITS.maxColumns + 50;
   let pos = 0;
   let row = 0;
   let col = 0;
   let cells = 0;
+  const rValue = (tag: string): string | null => {
+    const m = R_ATTR.exec(tag);
+    if (!m) {
+      if (R_PRESENT.test(tag)) throw malformed();
+      return null;
+    }
+    return decodeEntities(m[1] ?? m[2] ?? '');
+  };
   for (;;) {
     const lt = xml.indexOf(0x3c, pos); // '<'
     if (lt < 0) break;
     const gt = xml.indexOf(0x3e, lt + 1); // '>'
     if (gt < 0) break;
-    if (gt - lt > MAX_TAG) throw new AppError(400, 'invalid_spreadsheet', 'Malformed worksheet XML');
     pos = gt + 1;
+    if (gt - lt > MAX_TAG) {
+      if (strict) throw malformed();
+      continue;
+    }
     const first = xml[lt + 1];
     if (first === 0x2f || first === 0x3f || first === 0x21) continue; // </, <?, <!
     const tag = xml.toString('latin1', lt + 1, gt);
@@ -125,20 +181,50 @@ export function scanSheetXml(xml: Buffer, cellsSoFar = 0): number {
     const tagName = tag.slice(0, nameEnd);
     const local = tagName.slice(tagName.indexOf(':') + 1);
     if (local === 'row') {
-      const m = ROW_RE.exec(tag);
-      row = m?.[1] ? Number(m[1]) : row + 1;
+      const r = rValue(tag);
+      row = r !== null ? Number(r) : row + 1;
       col = 0;
-      if (row > SHEET_LIMITS.maxRows + 1000) throw tooBig('rows');
+      if (!(row <= rowCap)) throw tooBig('rows'); // also catches NaN/Infinity
     } else if (local === 'c') {
-      const m = COL_RE.exec(tag);
-      col = m?.[1] ? colIndex(m[1]) : col + 1;
-      if (m?.[2] && Number(m[2]) > SHEET_LIMITS.maxRows + 1000) throw tooBig('rows');
-      if (col > SHEET_LIMITS.maxColumns + 50) throw tooBig('columns');
+      const r = rValue(tag);
+      if (r !== null) {
+        const [cellRow, cellCol] = parseCellAddress(r);
+        if (!(cellRow <= rowCap)) throw tooBig('rows');
+        col = cellCol;
+      } else {
+        col += 1;
+      }
+      if (!(col <= colCap)) throw tooBig('columns');
       cells++;
       if (cellsSoFar + cells > SHEET_LIMITS.maxCells) throw tooBig('cells');
     }
   }
   return cells;
+}
+
+/** Worksheet part paths exactly as read-excel-file resolves them from workbook.xml.rels. */
+export function worksheetPaths(rels: Buffer | null): string[] {
+  if (!rels) return [];
+  const out: string[] = [];
+  let pos = 0;
+  for (;;) {
+    const lt = rels.indexOf(0x3c, pos);
+    if (lt < 0) break;
+    const gt = rels.indexOf(0x3e, lt + 1);
+    if (gt < 0) break;
+    pos = gt + 1;
+    if (gt - lt > MAX_TAG) throw new AppError(400, 'invalid_spreadsheet', 'Malformed workbook relationships');
+    const tag = rels.toString('utf8', lt + 1, gt);
+    const local = tag.slice(0, tag.search(/[\s/]|$/)).replace(/^.*:/, '');
+    if (local !== 'Relationship') continue;
+    const type = TYPE_ATTR.exec(tag);
+    const target = TARGET_ATTR.exec(tag);
+    const typeValue = decodeEntities(type?.[1] ?? type?.[2] ?? '');
+    if (!typeValue.endsWith('/worksheet')) continue;
+    const t = decodeEntities(target?.[1] ?? target?.[2] ?? '');
+    out.push(t.startsWith('/') ? t.slice(1) : `xl/${t}`);
+  }
+  return out;
 }
 
 interface WorkerSheet {
@@ -155,8 +241,47 @@ function workerPath(): string {
   throw new Error('spreadsheet worker script not found');
 }
 
+// Process-wide semaphore so N parallel uploads cannot start N heap-capped workers.
+let activeWorkers = 0;
+let peakWorkers = 0;
+const waiting: Array<() => void> = [];
+
+async function acquireWorkerSlot(): Promise<void> {
+  if (activeWorkers < SHEET_LIMITS.maxConcurrentWorkers) {
+    activeWorkers++;
+  } else {
+    if (waiting.length >= SHEET_LIMITS.maxQueuedWorkers) {
+      throw new AppError(503, 'parser_busy', 'Spreadsheet parser is busy — please retry in a moment');
+    }
+    await new Promise<void>((resolve) => waiting.push(resolve)); // slot handed over by release
+  }
+  peakWorkers = Math.max(peakWorkers, activeWorkers);
+}
+
+function releaseWorkerSlot(): void {
+  const next = waiting.shift();
+  if (next) next();
+  else activeWorkers--;
+}
+
+/** For tests/diagnostics. */
+export function parserWorkerStats(reset = false): { active: number; peak: number; queued: number } {
+  const stats = { active: activeWorkers, peak: peakWorkers, queued: waiting.length };
+  if (reset) peakWorkers = activeWorkers;
+  return stats;
+}
+
 /** Parse in a worker with a heap cap and a timeout; a hostile file kills only the worker. */
-function runParserWorker(input: { kind: 'xlsx' | 'csv'; buffer: Buffer; delimiter?: string }): Promise<WorkerSheet[]> {
+async function runParserWorker(input: { kind: 'xlsx' | 'csv'; buffer: Buffer; delimiter?: string }): Promise<WorkerSheet[]> {
+  await acquireWorkerSlot();
+  try {
+    return await spawnParserWorker(input);
+  } finally {
+    releaseWorkerSlot();
+  }
+}
+
+function spawnParserWorker(input: { kind: 'xlsx' | 'csv'; buffer: Buffer; delimiter?: string }): Promise<WorkerSheet[]> {
   return new Promise((resolve, reject) => {
     const worker = new Worker(workerPath(), {
       workerData: {
@@ -176,8 +301,8 @@ function runParserWorker(input: { kind: 'xlsx' | 'csv'; buffer: Buffer; delimite
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      void worker.terminate();
-      fn();
+      // settle only once the worker is really gone, so the semaphore slot covers its memory
+      worker.terminate().then(fn, fn);
     };
     const timer = setTimeout(
       () => finish(() => reject(new AppError(422, 'spreadsheet_too_complex', 'Spreadsheet took too long to parse'))),

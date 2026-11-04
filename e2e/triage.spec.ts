@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 
 test('a product_bug note with a Jira link auto-creates a bug (plain-text title) shown on Bugs', async ({ page }) => {
   await page.goto('/tests?search=Gift%20wrap');
-  await page.getByRole('link', { name: 'Gift wrap', exact: true }).first().click();
+  await page.getByRole('row').filter({ hasText: 'Gift wrap' }).getByRole('link', { name: /^TC-\d+$/ }).click();
   await expect(page.getByRole('heading', { name: 'Gift wrap', level: 1 })).toBeVisible();
 
   await page.getByLabel('Your name').fill('E2E Bot');

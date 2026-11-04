@@ -372,3 +372,127 @@ describe('F-09/F-10', () => {
     expect(suggestMapping(['constructor', 'toString', 'ID'])).toEqual({ ID: 'key' });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Security review round 2
+// ---------------------------------------------------------------------------
+
+async function relocatedXlsx(opts: { rowAttr: string; cell?: string; target?: string; entry?: string; duplicate?: boolean }): Promise<Buffer> {
+  const entries: Array<{ name: string; data: Buffer }> = [];
+  await readZip({ buffer: fs.readFileSync(path.join(FIXTURES, 'tracker.xlsx')) }, () => true, (name, data) => {
+    entries.push({ name, data });
+  });
+  const target = opts.target ?? 'evil/sheet1.xml';
+  const out = entries.map((e) => {
+    if (/worksheets\/sheet1\.xml$/.test(e.name)) {
+      const xml = e.data
+        .toString('utf8')
+        .replace('</sheetData>', `<row ${opts.rowAttr}><c r="${opts.cell ?? 'A1'}"><v>1</v></c></row></sheetData>`);
+      return { name: opts.entry ?? `xl/${target}`, data: Buffer.from(xml) };
+    }
+    if (e.name === 'xl/_rels/workbook.xml.rels') {
+      return { name: e.name, data: Buffer.from(e.data.toString('utf8').replace('Target="worksheets/sheet1.xml"', `Target="${target}"`)) };
+    }
+    return e;
+  });
+  if (opts.duplicate) out.push({ name: out[0]!.name, data: out[0]!.data });
+  return makeZip(out);
+}
+
+describe('R2-02: relocated worksheets and parser concurrency', () => {
+  let t: TestApp;
+  beforeAll(async () => {
+    t = await createTestApp();
+  });
+  afterAll(async () => t.close());
+  const preview = (file: Buffer) => {
+    const mp = multipart({}, [{ field: 'file', filename: 'x.xlsx', content: file }]);
+    return t.app.inject({ method: 'POST', url: '/api/test-cases/import/preview', payload: mp.payload, headers: mp.headers });
+  };
+
+  it('rejects a row-gap bomb whose sheet was moved out of xl/worksheets/ (413, fast)', async () => {
+    for (const rowAttr of ['r="60000000"', "r='60000000'", 'r = "6e7"', 'r="&#54;0000000"', 'r=" 60000000"']) {
+      const t0 = performance.now();
+      const res = await preview(await relocatedXlsx({ rowAttr }));
+      expect(res.statusCode, rowAttr).toBe(413);
+      expect(res.json().error).toBe('too_many_rows');
+      expect(performance.now() - t0).toBeLessThan(2000);
+    }
+  });
+
+  it('rejects worksheets the scanner cannot see and duplicate entries', async () => {
+    const hidden = await relocatedXlsx({ rowAttr: 'r="5"', target: 'evil/sheet1.bin' });
+    expect((await preview(hidden)).statusCode).toBe(400);
+    const dup = await relocatedXlsx({ rowAttr: 'r="5"', target: 'worksheets/sheet1.xml', duplicate: true });
+    expect((await preview(dup)).statusCode).toBe(400);
+    // a legitimately relocated, small sheet still parses
+    const ok = await relocatedXlsx({ rowAttr: 'r="30"', cell: 'A30' });
+    expect((await preview(ok)).statusCode).toBe(200);
+  });
+
+  it('bounds concurrent parser workers (10 parallel uploads)', async () => {
+    const { parserWorkerStats } = await import('../src/import/spreadsheet/parse.js');
+    const fresh = await createTestApp(); // own rate-limit bucket
+    parserWorkerStats(true);
+    const file = fs.readFileSync(path.join(FIXTURES, 'tracker.xlsx'));
+    const results = await Promise.all(
+      Array.from({ length: 10 }, () => {
+        const mp = multipart({}, [{ field: 'file', filename: 'x.xlsx', content: file }]);
+        return fresh.app.inject({ method: 'POST', url: '/api/test-cases/import/preview', payload: mp.payload, headers: mp.headers });
+      }),
+    );
+    await fresh.close();
+    const codes = results.map((r) => r.statusCode);
+    expect(codes.every((c) => c === 200 || c === 503), codes.join(',')).toBe(true);
+    expect(codes.filter((c) => c === 200).length).toBeGreaterThanOrEqual(2);
+    expect(parserWorkerStats().peak).toBeLessThanOrEqual(2);
+    expect(parserWorkerStats().active).toBe(0);
+  });
+});
+
+describe('R2-06: ingest-only token for CI', () => {
+  const INGEST_TOKEN = 'ingest-token-0123456789abcdef0123456789';
+  let t: TestApp;
+  beforeAll(async () => {
+    t = await createTestApp(authEnv({ VIEWER_TOKEN, INGEST_TOKEN }));
+  });
+  afterAll(async () => t.close());
+  const ingest = { authorization: `Bearer ${INGEST_TOKEN}` };
+
+  it('validates the token in config', () => {
+    expect(() => loadConfig({ DASHBOARD_TOKEN: EDITOR_TOKEN, INGEST_TOKEN: 'short' })).toThrow(/INGEST_TOKEN/);
+    expect(() => loadConfig({ DASHBOARD_TOKEN: EDITOR_TOKEN, INGEST_TOKEN: EDITOR_TOKEN })).toThrow(/differ/);
+    expect(() => loadConfig({ INGEST_TOKEN })).toThrow(/requires DASHBOARD_TOKEN/);
+  });
+
+  it('may only upload runs (and call health)', async () => {
+    const mp = multipart({}, [{ filename: '1-result.json', content: JSON.stringify({ name: 'x', fullName: 'tests.a#x', status: 'passed' }) }]);
+    const up = await t.app.inject({ method: 'POST', url: '/api/runs/import', payload: mp.payload, headers: { ...mp.headers, ...ingest } });
+    expect(up.statusCode).toBe(201);
+    expect((await t.app.inject({ url: '/api/health', headers: ingest })).statusCode).toBe(200);
+    const runId = up.json().run.id as number;
+    const denied: Array<[string, string]> = [
+      ['GET', '/api/test-cases'],
+      ['GET', '/api/runs'],
+      ['GET', `/api/runs/${runId}`],
+      ['GET', '/api/summary'],
+      ['GET', '/api/report'],
+      ['GET', '/api/settings'],
+      ['DELETE', `/api/runs/${runId}`],
+      ['POST', '/api/integrations/github/sync'],
+      ['GET', '/%61pi/test-cases'],
+    ];
+    for (const [method, url] of denied) {
+      const res = await t.app.inject({ method: method as 'GET', url, headers: ingest });
+      expect(res.statusCode, `${method} ${url}`).toBe(403);
+    }
+  });
+
+  it('cannot sign into the UI', async () => {
+    const login = await t.app.inject({ method: 'POST', url: '/api/auth/login', payload: { token: INGEST_TOKEN } });
+    expect(login.statusCode).toBe(401);
+    expect(login.headers['set-cookie']).toBeUndefined();
+    const session = await t.app.inject({ url: '/api/auth/session', headers: ingest });
+    expect(session.json()).toEqual({ authenticated: false, role: null, authRequired: true });
+  });
+});

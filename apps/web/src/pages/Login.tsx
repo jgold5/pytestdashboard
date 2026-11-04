@@ -7,16 +7,12 @@ import { Brand } from '../components/Brand';
 import { Button } from '../components/ui/button';
 import { Input, Label } from '../components/ui/input';
 import { ThemeToggle } from '../components/ThemeToggle';
+import { safeNextPath } from '../lib/url';
 
-function safeNext(raw: string | null): string {
-  // Only allow same-site relative paths (no protocol-relative //evil.com).
-  if (!raw || !raw.startsWith('/') || raw.startsWith('//') || raw.startsWith('/\\')) return '/';
-  return raw;
-}
 
 export function LoginPage() {
   const [params] = useSearchParams();
-  const next = safeNext(params.get('next'));
+  const next = safeNextPath(params.get('next'));
   const session = useSession();
   const login = useLogin();
   const navigate = useNavigate();

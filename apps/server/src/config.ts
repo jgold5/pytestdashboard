@@ -40,6 +40,8 @@ const EnvSchema = z.object({
   DATA_DIR: z.string().default('./data'),
   DASHBOARD_TOKEN: optionalStr,
   VIEWER_TOKEN: optionalStr,
+  /** Optional CI token: may only POST /api/runs/import. */
+  INGEST_TOKEN: optionalStr,
   SESSION_SECRET: optionalStr,
   // Capped at 30 days (stateless sessions can only be revoked by rotating SESSION_SECRET / tokens).
   SESSION_TTL_HOURS: z.coerce.number().int().min(1).max(720).default(168),
@@ -117,6 +119,8 @@ export interface AppConfig {
   dashboardToken: string | undefined;
   /** Optional read-only (Report-only) token. */
   viewerToken: string | undefined;
+  /** Optional upload-only token for CI (role 'ingest'). */
+  ingestToken: string | undefined;
   sessionSecret: string;
   sessionTtlHours: number;
   allowedOrigins: string[];
@@ -170,6 +174,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     if (e.VIEWER_TOKEN === e.DASHBOARD_TOKEN) problems.push('VIEWER_TOKEN must differ from DASHBOARD_TOKEN');
     if (e.DASHBOARD_TOKEN === undefined) problems.push('VIEWER_TOKEN requires DASHBOARD_TOKEN to be set');
   }
+  if (e.INGEST_TOKEN !== undefined) {
+    if (e.INGEST_TOKEN.length < MIN_SECRET) problems.push(`INGEST_TOKEN must be at least ${MIN_SECRET} characters`);
+    if (e.INGEST_TOKEN === e.DASHBOARD_TOKEN || e.INGEST_TOKEN === e.VIEWER_TOKEN) {
+      problems.push('INGEST_TOKEN must differ from DASHBOARD_TOKEN and VIEWER_TOKEN');
+    }
+    if (e.DASHBOARD_TOKEN === undefined) problems.push('INGEST_TOKEN requires DASHBOARD_TOKEN to be set');
+  }
   if (e.SESSION_SECRET !== undefined && e.SESSION_SECRET.length < MIN_SECRET) {
     problems.push(`SESSION_SECRET must be at least ${MIN_SECRET} characters`);
   }
@@ -207,6 +218,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const secrets = [
     e.DASHBOARD_TOKEN,
     e.VIEWER_TOKEN,
+    e.INGEST_TOKEN,
     e.SESSION_SECRET,
     e.GITHUB_TOKEN,
     e.JIRA_API_TOKEN,
@@ -224,6 +236,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     dataDir: path.resolve(e.DATA_DIR),
     dashboardToken: e.DASHBOARD_TOKEN,
     viewerToken: e.VIEWER_TOKEN,
+    ingestToken: e.INGEST_TOKEN,
     // Dev without SESSION_SECRET: random per-process secret (sessions reset on restart).
     sessionSecret: e.SESSION_SECRET ?? randomBytes(32).toString('hex'),
     sessionTtlHours: e.SESSION_TTL_HOURS,

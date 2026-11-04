@@ -22,7 +22,8 @@ export function runRoutes(app: FastifyInstance, { db }: Deps, zipLimits?: ZipLim
     return { items, total, page: q.page, pageSize: q.pageSize };
   });
 
-  app.post('/api/runs/import', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req, reply) => {
+  // 'ingest': editors, or the CI-only INGEST_TOKEN (which can call nothing else)
+  app.post('/api/runs/import', { config: { access: 'ingest', rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req, reply) => {
     const { bundle, fields } = await collectAllureUpload(req, zipLimits);
     const result = importAllureRun(db, bundle, fields);
     req.log.info(
