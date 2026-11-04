@@ -69,18 +69,24 @@ function normalizeOrigin(v: string): string | null {
 }
 
 /**
- * The server's own origin: PUBLIC_URL when configured (correct behind TLS proxies),
- * otherwise protocol + Host — but only when Host passed the allowlist check.
+ * Origins that count as "this server": PUBLIC_URL when configured (correct behind
+ * TLS proxies), plus protocol + Host of the request. Host is only trusted here
+ * because the onRequest hook has already rejected Hosts outside the allowlist
+ * whenever PUBLIC_URL/ALLOWED_HOSTS is set (or auth is off). This lets the person
+ * on the host machine use http://localhost:PORT while teammates use PUBLIC_URL.
  */
-function ownOrigin(config: AppConfig, req: FastifyRequest): string | null {
-  if (config.publicOrigin) return config.publicOrigin;
-  return normalizeOrigin(`${req.protocol}://${req.host}`);
+function ownOrigins(config: AppConfig, req: FastifyRequest): (string | null)[] {
+  const fromHost = normalizeOrigin(`${req.protocol}://${req.host}`);
+  return config.publicOrigin ? [config.publicOrigin, fromHost] : [fromHost];
 }
 
 function originAllowed(config: AppConfig, req: FastifyRequest, origin: string): boolean {
   const presented = normalizeOrigin(origin);
   if (presented === null) return false;
-  return presented === ownOrigin(config, req) || config.allowedOrigins.some((o) => normalizeOrigin(o) === presented);
+  return (
+    ownOrigins(config, req).includes(presented) ||
+    config.allowedOrigins.some((o) => normalizeOrigin(o) === presented)
+  );
 }
 
 /**

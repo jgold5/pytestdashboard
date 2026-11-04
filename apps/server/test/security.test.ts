@@ -542,6 +542,30 @@ describe('https-dependent headers follow PUBLIC_URL (plain-http LAN installs)', 
     }
   });
 
+  it('with PUBLIC_URL set, the host machine can still log in via localhost; foreign origins cannot', async () => {
+    const t = await createTestApp(authEnv({ NODE_ENV: 'production', PUBLIC_URL: 'http://192.168.1.50:3000' }));
+    try {
+      expect((await login(t, 'http://localhost:3000')).statusCode).toBe(204);
+      expect((await login(t, 'http://192.168.1.50:3000')).statusCode).toBe(204);
+      const foreign = await t.app.inject({
+        method: 'POST',
+        url: '/api/auth/login',
+        headers: { origin: 'http://evil.example', host: 'localhost:3000' },
+        payload: { token: EDITOR_TOKEN },
+      });
+      expect(foreign.statusCode).toBe(403);
+      const rebound = await t.app.inject({
+        method: 'POST',
+        url: '/api/auth/login',
+        headers: { origin: 'http://evil.example', host: 'evil.example' },
+        payload: { token: EDITOR_TOKEN },
+      });
+      expect(rebound.statusCode).toBe(403);
+    } finally {
+      await t.close();
+    }
+  });
+
   it('https PUBLIC_URL keeps Secure even outside production', () => {
     expect(loadConfig({ PUBLIC_URL: 'https://qa.example.com', ...authEnv() }).httpsOnly).toBe(true);
   });
