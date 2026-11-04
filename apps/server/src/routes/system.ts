@@ -11,6 +11,8 @@ import { getSummary } from '../domain/summary.js';
 
 export function systemRoutes(app: FastifyInstance, { config, db }: Deps): void {
   const authRequired = Boolean(config.dashboardToken);
+  // Secure in production, and whenever the public URL is https (TLS-terminating proxy).
+  const secureCookie = config.isProduction || (config.publicOrigin?.startsWith('https:') ?? false);
 
   app.get('/api/health', { config: { access: 'public' } }, async () => ({ ok: true }));
 
@@ -32,7 +34,7 @@ export function systemRoutes(app: FastifyInstance, { config, db }: Deps): void {
       reply.setCookie(SESSION_COOKIE, createSession(config.sessionSecret, role, token, ttl), {
         httpOnly: true,
         sameSite: 'strict',
-        secure: config.isProduction,
+        secure: secureCookie,
         path: '/',
         maxAge: ttl,
       });
@@ -41,7 +43,7 @@ export function systemRoutes(app: FastifyInstance, { config, db }: Deps): void {
   );
 
   app.post('/api/auth/logout', { config: { access: 'public' } }, async (_req, reply) => {
-    reply.clearCookie(SESSION_COOKIE, { path: '/', httpOnly: true, sameSite: 'strict', secure: config.isProduction });
+    reply.clearCookie(SESSION_COOKIE, { path: '/', httpOnly: true, sameSite: 'strict', secure: secureCookie });
     return reply.status(204).send();
   });
 
