@@ -2,8 +2,8 @@
   "uuid": "0ad05a3f-f913-5b1b-9fd0-950b1c6a086a",
   "historyId": "642f68d2ddb755278975aed4b8bc8b0e",
   "testCaseId": "ce00faba616954ceaf218aab314404d7",
-  "fullName": "tests.api.test_orders.TestCart#test_cart_total_includes_tax",
-  "name": "test_cart_total_includes_tax",
+  "fullName": "tests.routes.test_order_route.TestOrderRoute#test_order_route_publishes_to_queue",
+  "name": "test_order_route_publishes_to_queue",
   "status": "passed",
   "stage": "finished",
   "start": 1793700020063,
@@ -19,15 +19,15 @@
     },
     {
       "name": "package",
-      "value": "tests.api.test_orders"
+      "value": "tests.routes.test_order_route"
     },
     {
       "name": "parentSuite",
-      "value": "tests.api"
+      "value": "tests.routes"
     },
     {
       "name": "suite",
-      "value": "test_orders"
+      "value": "test_order_route"
     },
     {
       "name": "host",
@@ -39,11 +39,11 @@
     },
     {
       "name": "subSuite",
-      "value": "TestCart"
+      "value": "TestOrderRoute"
     },
     {
       "name": "feature",
-      "value": "Checkout"
+      "value": "Order routes"
     }
   ],
   "parameters": [],

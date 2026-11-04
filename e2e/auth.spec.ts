@@ -25,7 +25,7 @@ test('viewer token only sees the report and is redirected away from the workspac
   await page.getByLabel('Access token').fill(E2E.viewerToken);
   await page.getByRole('button', { name: 'Sign in' }).click();
   await expect(page).toHaveURL(/\/report$/);
-  await expect(page.getByRole('heading', { name: 'Shop QA' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Integration QA' })).toBeVisible();
   // no workspace switch / nav for viewers
   await expect(page.getByText('Workspace', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('link', { name: 'Test cases' })).toHaveCount(0);
@@ -33,7 +33,7 @@ test('viewer token only sees the report and is redirected away from the workspac
 
   await page.goto('/tests');
   await expect(page).toHaveURL(/\/report$/);
-  await expect(page.getByRole('heading', { name: 'Shop QA' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Integration QA' })).toBeVisible();
 
   // and the API agrees (server-side role check, not just the UI) — same cookie as the page
   const status = await page.evaluate(async () => (await fetch('/api/test-cases')).status);

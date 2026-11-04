@@ -54,7 +54,10 @@ import {
   ReviewBadge,
   ThreadsCount,
   TriageBadge,
+  PIPELINE_META,
+  PipelineStageBadge,
 } from '../components/status';
+import { STAGE_HINT, prsDrivingStage } from '../components/pipeline';
 import { AUTOMATION_OPTIONS, CaseFields, draftFromCase, validateCase, type CaseDraft } from '../components/TestCaseForm';
 import { AuthorField, NoteFields, validateNote, type NoteDraft } from '../components/NoteForm';
 import { ChangeBadge } from '../components/ChangeBadge';
@@ -134,6 +137,7 @@ function Detail({ t }: { t: TestCaseDetail }) {
             />
             {t.lastResult ? <ResultBadge status={t.lastResult.status} /> : null}
             {t.triage ? <TriageBadge triage={t.triage} /> : null}
+            <PipelineStageBadge stage={t.pipelineStage} />
             <InPrBadge prs={t.pullRequests} />
             {t.openBugs.map((b) => (
               <BugBadge key={b.id} bug={b} />
@@ -179,7 +183,7 @@ function Detail({ t }: { t: TestCaseDetail }) {
         <div className="min-w-0 space-y-4">
           <MetadataCard t={t} editing={editing} setEditing={setEditing} />
           <BugsCard t={t} onLog={() => setBugOpen(true)} />
-          <PullRequestsCard prs={t.pullRequests} />
+          <PullRequestsCard t={t} />
         </div>
       </div>
 
@@ -692,6 +696,7 @@ function MetadataCard({ t, editing, setEditing }: { t: TestCaseDetail; editing: 
             </MetaRow>
             <MetaRow label="Allure name">{t.allureFullName ? <span className="font-mono text-xs break-all">{t.allureFullName}</span> : null}</MetaRow>
             <MetaRow label="Allure ID">{t.allureId ? <span className="font-mono text-xs">{t.allureId}</span> : null}</MetaRow>
+            <MetaRow label="Automated via">{t.automatedVia ? AUTOMATED_VIA_LABEL[t.automatedVia] : null}</MetaRow>
             <MetaRow label="Created">{fmtDate(t.createdAt)}</MetaRow>
             <MetaRow label="Updated">{fmtRelative(t.updatedAt)}</MetaRow>
           </dl>
@@ -709,17 +714,44 @@ const LINKED_BY: Record<PullRequestRef['linkedBy'], string> = {
   test_name_in_diff: 'Test function added in the diff',
 };
 
-function PullRequestsCard({ prs }: { prs: PullRequestRef[] }) {
+const AUTOMATED_VIA_LABEL: Record<NonNullable<TestCaseDetail['automatedVia']>, string> = {
+  allure: 'Allure results',
+  pr_merge: 'PR merged (GitHub sync)',
+  manual: 'Set manually',
+  spreadsheet: 'Spreadsheet import',
+  jira: 'Jira sync',
+};
+
+/** Pipeline stage + the PR(s) driving it, then the other linked PRs. */
+function PullRequestsCard({ t }: { t: TestCaseDetail }) {
+  const prs = t.pullRequests;
+  const driving = prsDrivingStage(t.pipelineStage, prs);
+  const ordered = [...driving, ...prs.filter((p) => !driving.includes(p))];
+  const M = PIPELINE_META[t.pipelineStage];
   return (
     <Card>
-      <CardHeader title="Linked pull requests" icon={<GitPullRequest className="size-4 text-fg-3" aria-hidden />} />
+      <CardHeader title="Automation pipeline" icon={<GitPullRequest className="size-4 text-fg-3" aria-hidden />} />
       <CardBody>
+        <div className="mb-3 flex items-start gap-2.5 rounded-lg bg-surface-2/70 px-3 py-2.5">
+          <M.icon className="mt-0.5 size-4 shrink-0" style={{ color: M.color }} aria-hidden />
+          <div className="min-w-0">
+            <div className="text-[13px] font-semibold text-fg">{M.label}</div>
+            <p className="text-xs text-fg-2">
+              {STAGE_HINT[t.pipelineStage]}
+              {driving.length > 0 ? ` Driven by ${driving.map((p) => `#${p.number}`).join(', ')}.` : ''}
+            </p>
+          </div>
+        </div>
         {prs.length === 0 ? (
           <p className="text-xs text-fg-3">No linked PRs. The GitHub sync links PRs that mention this case’s key or add its test.</p>
         ) : (
-          <ul className="space-y-2.5">
-            {prs.map((p) => (
-              <li key={`${p.repo}#${p.number}`} className="rounded-lg border border-border p-2.5">
+          <ul className="space-y-2.5" aria-label="Linked pull requests">
+            {ordered.map((p) => (
+              <li
+                key={`${p.repo}#${p.number}`}
+                className={cn('rounded-lg border p-2.5', driving.includes(p) ? 'border-[color-mix(in_oklab,var(--accent)_45%,transparent)]' : 'border-border')}
+                aria-current={driving.includes(p) ? 'true' : undefined}
+              >
                 <div className="flex items-start gap-2">
                   <div className="min-w-0 flex-1">
                     <ExternalLink href={p.url} className="text-[13px] font-medium text-fg" showIcon={false} fallback={<span className="text-[13px] font-medium">{p.title}</span>}>
@@ -727,12 +759,13 @@ function PullRequestsCard({ prs }: { prs: PullRequestRef[] }) {
                     </ExternalLink>
                     <div className="mt-0.5 font-mono text-[11px] text-fg-3">
                       {p.repo}#{p.number}
-                      {p.author ? ` · ${p.author}` : ''} · {fmtRelative(p.updatedAt)}
+                      {p.author ? ` · ${p.author}` : ''} ·{' '}
+                      {p.mergedAt ? `merged ${fmtRelative(p.mergedAt)}` : p.approvedAt && p.readyToMerge ? `approved ${fmtRelative(p.approvedAt)}` : fmtRelative(p.updatedAt)}
                     </div>
                   </div>
                 </div>
                 <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                  <PrStateBadge state={p.state} />
+                  {p.readyToMerge ? <PipelineStageBadge stage="ready_to_merge" /> : <PrStateBadge state={p.state} />}
                   {p.state === 'open' || p.state === 'draft' ? (
                     <>
                       <ReviewBadge state={p.reviewState} />

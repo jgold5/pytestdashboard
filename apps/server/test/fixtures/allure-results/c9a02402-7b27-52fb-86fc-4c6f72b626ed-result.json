@@ -2,8 +2,8 @@
   "uuid": "c9a02402-7b27-52fb-86fc-4c6f72b626ed",
   "historyId": "e7643afa1fc35465bd9aa22e3bd41389",
   "testCaseId": "1ed577aead6c589392410fb4d0c42188",
-  "fullName": "tests.api.test_system#test_rate_limit_headers",
-  "name": "test_rate_limit_headers",
+  "fullName": "tests.routes.test_health#test_route_metrics_exposed",
+  "name": "test_route_metrics_exposed",
   "status": "passed",
   "stage": "finished",
   "start": 1793700021395,
@@ -19,15 +19,15 @@
     },
     {
       "name": "package",
-      "value": "tests.api.test_system"
+      "value": "tests.routes.test_health"
     },
     {
       "name": "parentSuite",
-      "value": "tests.api"
+      "value": "tests.routes"
     },
     {
       "name": "suite",
-      "value": "test_system"
+      "value": "test_health"
     },
     {
       "name": "host",

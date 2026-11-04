@@ -48,7 +48,7 @@ import { Skeleton } from '../components/ui/skeleton';
 import { ChartTooltipBox, Legend } from '../components/charts/ChartTooltip';
 import { FoundResolvedChart } from '../components/charts/FoundResolvedChart';
 import { SEVERITY_META } from '../components/bugs';
-import { REVIEW_META } from '../components/status';
+import { PIPELINE_META, REVIEW_META } from '../components/status';
 
 const PERIODS = [7, 30, 90, 180] as const;
 
@@ -133,6 +133,7 @@ export default function ReportPage() {
           <Section title="Automation coverage" subtitle="Automated cases over time, with the goal and the projected path at the current pace.">
             <CoverageGoalChart r={r} />
           </Section>
+          <InFlightSection r={r} />
           <QualitySection r={r} />
           <SuitesSection r={r} />
           <WinsAndRisks r={r} />
@@ -261,6 +262,12 @@ function Headline({ r, isEditor, onSetGoal }: { r: Report; isEditor: boolean; on
             <Delta value={delta} /> <span className="font-normal text-fg-3">this period</span>
           </span>
         </div>
+        {r.automationInFlight.projectedAutomationRate != null && r.automationInFlight.projectedAutomated > c.automated ? (
+          <p className="mt-2 text-base text-fg-2">
+            {fmtPct(c.automationRate)} automated ·{' '}
+            <b className="font-semibold text-fg">{fmtPct(r.automationInFlight.projectedAutomationRate)}</b> once ready PRs merge
+          </p>
+        ) : null}
         <p className="mt-3 text-sm text-fg-2">
           <b className="font-semibold text-fg">{fmtNumber(c.automated)}</b> of {fmtNumber(c.total - c.notAutomatable)} automatable test cases ·{' '}
           {fmtNumber(c.total)} total
@@ -669,6 +676,60 @@ function BugsSection({ r }: { r: Report }) {
         <Panel className="lg:col-span-2">
           <div className="mb-2 text-sm font-medium text-fg-2">Found vs resolved</div>
           <FoundResolvedChart trend={b.trend} height={230} />
+        </Panel>
+      </div>
+    </Section>
+  );
+}
+
+/** Work that is done or nearly done but not yet counted as automated. */
+function InFlightSection({ r }: { r: Report }) {
+  const f = r.automationInFlight;
+  const c = r.coverage;
+  const automatable = Math.max(1, c.total - c.notAutomatable);
+  const tiles = [
+    { stage: 'in_review', note: 'open PRs still in review, CI or discussion' },
+    { stage: 'ready_to_merge', note: 'approved, checks green — waiting to be merged' },
+    { stage: 'merged_awaiting_run', note: 'merged, waiting for the next run to confirm' },
+  ] as const;
+  const extra = Math.max(0, f.projectedAutomated - c.automated);
+  return (
+    <Section title="Automation in flight" subtitle="Test automation that is written but not yet merged or not yet confirmed by a run.">
+      <div className="grid gap-5 lg:grid-cols-5">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 lg:col-span-3">
+          {tiles.map(({ stage, note }) => {
+            const M = PIPELINE_META[stage];
+            return (
+              <div key={stage} className="print-avoid-break rounded-xl border border-border bg-surface p-4">
+                <div className="flex items-center gap-1.5 text-xs text-fg-2">
+                  <M.icon className="size-3.5" style={{ color: M.color }} aria-hidden />
+                  {M.label}
+                </div>
+                <div className="mt-1 text-3xl font-semibold text-fg tabular">{fmtNumber(f.stages[stage])}</div>
+                <p className="mt-1 text-xs text-fg-3">{note}</p>
+              </div>
+            );
+          })}
+        </div>
+        <Panel className="lg:col-span-2">
+          <div className="text-sm font-medium text-fg-2">Automated incl. ready-to-merge</div>
+          <div className="mt-2 flex flex-wrap items-baseline gap-x-3">
+            <span className="text-4xl font-semibold tracking-tight text-fg">{fmtPct(f.projectedAutomationRate, 1)}</span>
+            <span className="text-sm text-fg-3">
+              vs {fmtPct(c.automationRate, 1)} today{extra > 0 ? ` · +${pluralize(extra, 'case')}` : ''}
+            </span>
+          </div>
+          <div
+            className="mt-4 flex h-2.5 w-full gap-[2px] overflow-hidden rounded-full bg-surface-3"
+            role="img"
+            aria-label={`Automated ${c.automated}, ready to merge or merged awaiting run ${extra}, of ${automatable} automatable`}
+          >
+            <span className="h-full rounded-l-full" style={{ width: `${(c.automated / automatable) * 100}%`, background: 'var(--au-automated)' }} />
+            {extra > 0 ? (
+              <span className="hatch h-full" style={{ width: `${(extra / automatable) * 100}%`, background: 'color-mix(in oklab, var(--st-passed) 55%, transparent)' }} />
+            ) : null}
+          </div>
+          <p className="mt-2.5 text-xs text-fg-3">Projection counts cases whose PR is approved with green checks, or merged and waiting for a run.</p>
         </Panel>
       </div>
     </Section>

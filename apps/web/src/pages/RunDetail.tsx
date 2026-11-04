@@ -19,9 +19,12 @@ import {
   Search,
   Server,
   Trash2,
+  X,
 } from 'lucide-react';
 import { LIMITS, ResultChange, ResultStatus, RunUpdate, type FailureGroup, type Run } from '@ptd/shared';
-import { useDeleteRun, useMeta, useRun, useRunFailures, useRunResults, useUpdateRun } from '../api/hooks';
+import { useBulkNote, useDeleteRun, useMeta, useRun, useRunFailures, useRunResults, useUpdateRun } from '../api/hooks';
+import { useAuthor } from '../lib/author';
+import { readStorage, writeStorage } from '../lib/storage';
 import { ApiError } from '../api/client';
 import { useDebounced } from '../lib/useDebounced';
 import { safeHttpUrl } from '../lib/url';
@@ -37,7 +40,7 @@ import { Select } from '../components/ui/select';
 import { Skeleton, SkeletonRows } from '../components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { linkButton } from '../components/ui/link-button';
-import { RESULT_META, ResultBadge, TriageBadge } from '../components/status';
+import { RESULT_META, ResultBadge, TRIAGE_META, TriageBadge } from '../components/status';
 import { CHANGE_META, ChangeBadge } from '../components/ChangeBadge';
 import { RunGroupChip } from '../components/RunGroup';
 import { BulkNoteDialog } from '../components/NoteForm';
@@ -311,10 +314,75 @@ function FailuresTab({ r }: { r: Run }) {
   );
 }
 
+const dismissKey = (signature: string) => `ptd-dismissed-suggestion:${signature}`;
+
+function suggestionBody(g: FailureGroup): string {
+  const label = g.suggestedTriage ? TRIAGE_META[g.suggestedTriage].label.toLowerCase() : 'triage';
+  return `Looks like ${label} (suggested from the error): ${g.sampleMessage.slice(0, 200)}`;
+}
+
+/**
+ * Heuristic suggestion (server-side `suggestedTriage`, e.g. ORA-12541 / TNS-* /
+ * connection refused ⇒ environment) for groups nobody has triaged yet. Applying
+ * it creates the normal bulk triage note; dismissing is remembered per signature.
+ */
+function TriageSuggestion({ g, runId, onNeedDialog }: { g: FailureGroup; runId: number; onNeedDialog: () => void }) {
+  const [dismissed, setDismissed] = useState(() => readStorage(dismissKey(g.signature)) === '1');
+  const [author] = useAuthor();
+  const bulk = useBulkNote();
+  if (!g.suggestedTriage || g.triage || dismissed) return null;
+  const T = TRIAGE_META[g.suggestedTriage];
+  const apply = () => {
+    if (!author) return onNeedDialog();
+    bulk.mutate(
+      {
+        testCaseIds: g.testCases.map((t) => t.id),
+        runId,
+        author,
+        body: suggestionBody(g),
+        triage: g.suggestedTriage,
+        ticketUrl: null,
+      },
+      { onSuccess: (r) => toast.success(`Triaged ${pluralize(r.created, 'case')} as ${T.label.toLowerCase()}`) },
+    );
+  };
+  return (
+    <div
+      role="group"
+      aria-label="Triage suggestion"
+      className="mt-2 inline-flex max-w-full flex-wrap items-center gap-x-2 gap-y-1 rounded-full border py-0.5 pr-1 pl-2.5 text-xs text-fg"
+      style={{
+        background: `color-mix(in oklab, ${T.color} 9%, transparent)`,
+        borderColor: `color-mix(in oklab, ${T.color} 32%, transparent)`,
+      }}
+    >
+      <T.icon className="size-3.5 shrink-0" style={{ color: T.color }} aria-hidden />
+      <span>
+        Looks like <b className="font-semibold">{T.label.toLowerCase()}</b> — apply?
+      </span>
+      <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={apply} loading={bulk.isPending}>
+        Apply to {pluralize(g.testCases.length, 'case')}
+      </Button>
+      <button
+        type="button"
+        onClick={() => {
+          writeStorage(dismissKey(g.signature), '1');
+          setDismissed(true);
+        }}
+        aria-label="Dismiss suggestion"
+        className="grid size-5 place-items-center rounded-full text-fg-3 outline-none hover:bg-surface-2 hover:text-fg focus-visible:ring-2 focus-visible:ring-ring/50"
+      >
+        <X className="size-3" aria-hidden />
+      </button>
+    </div>
+  );
+}
+
 function FailureGroupCard({ g, runId }: { g: FailureGroup; runId: number }) {
   const [open, setOpen] = useState(false);
   const [triageOpen, setTriageOpen] = useState(false);
   const [bugOpen, setBugOpen] = useState(false);
+  const [suggestDialog, setSuggestDialog] = useState(false);
   const M = RESULT_META[g.status];
   const isNew = g.newFailures > 0;
   return (
@@ -358,6 +426,7 @@ function FailureGroupCard({ g, runId }: { g: FailureGroup; runId: number }) {
           <button type="button" onClick={() => setOpen((o) => !o)} className="mt-1.5 block w-full text-left outline-none">
             <code className={cn('block font-mono text-xs leading-relaxed break-words text-fg-2', !open && 'line-clamp-2')}>{g.sampleMessage || '(no message)'}</code>
           </button>
+          <TriageSuggestion g={g} runId={runId} onNeedDialog={() => setSuggestDialog(true)} />
         </div>
         <div className="flex shrink-0 flex-col gap-1.5 sm:flex-row">
           <Button size="sm" variant="outline" onClick={() => setTriageOpen(true)}>
@@ -389,6 +458,18 @@ function FailureGroupCard({ g, runId }: { g: FailureGroup; runId: number }) {
         description={`Adds the same note to all ${pluralize(g.testCases.length, 'test case')} with this error.`}
         defaultTriage={g.triage ?? 'needs_investigation'}
       />
+      {g.suggestedTriage ? (
+        <BulkNoteDialog
+          open={suggestDialog}
+          onOpenChange={setSuggestDialog}
+          testCaseIds={g.testCases.map((t) => t.id)}
+          runId={runId}
+          title={`Triage as ${TRIAGE_META[g.suggestedTriage].label.toLowerCase()}`}
+          description={`Adds the same note to all ${pluralize(g.testCases.length, 'test case')} with this error.`}
+          defaultTriage={g.suggestedTriage}
+          defaultBody={suggestionBody(g)}
+        />
+      ) : null}
       <BugDialog
         open={bugOpen}
         onOpenChange={setBugOpen}

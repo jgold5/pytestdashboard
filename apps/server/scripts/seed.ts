@@ -3,11 +3,15 @@
  *   pnpm --filter @ptd/server seed            (refuses if the DB already has data)
  *   pnpm --filter @ptd/server seed -- --reset (deletes DATA_DIR/dashboard.db first)
  *
- * ~120 cases over 6 suites, 3 run groups (tests/api, tests/ui, smoke) with
- * 15–25 runs each over ~120 days (regressions that get fixed, flaky tests, a
- * slowly-degrading test), notes with triage, ~15 bugs in every verification
- * state, automation PRs in various review states, 120 days of coverage
- * snapshots trending up, and a team goal.
+ * A pytest suite testing Apache Camel integration routes against Oracle:
+ * ~120 cases over 6 suites, 3 run groups (tests/routes, tests/db, tests/smoke)
+ * with 15–25 runs each over ~120 days — an Oracle listener outage (ORA-12541
+ * across a whole run), a real product bug (ORA-00001 on PK_INVOICE), fixed
+ * regressions, resolved-but-still-failing bugs, flaky JMS timing, a slowly
+ * degrading test — notes with triage, ~15 bugs in every verification state,
+ * automation PRs that put cases in every pipeline stage (drafts, in review,
+ * ready to merge, merged awaiting a run), 120 days of coverage snapshots
+ * trending up, and a team goal.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -66,7 +70,8 @@ if (db.select({ id: testCases.id }).from(testCases).limit(1).get()) {
 }
 
 // --- test cases ----------------------------------------------------------------
-type Group = 'tests/api' | 'tests/ui';
+type Group = 'tests/routes' | 'tests/db';
+type AnyGroup = Group | 'tests/smoke';
 interface SuiteDef {
   suite: string;
   group: Group;
@@ -75,54 +80,55 @@ interface SuiteDef {
   owner: string;
   names: string[];
 }
+// Per suite, by index: 0–13 automated, 14–15 in progress, 16–18 backlog, 19 not automatable.
 const SUITES: SuiteDef[] = [
   {
-    suite: 'Authentication',
-    group: 'tests/api',
-    module: 'tests.api.test_auth',
-    cls: 'TestAuth',
+    suite: 'Order routes',
+    group: 'tests/routes',
+    module: 'tests.routes.test_order_route',
+    cls: 'TestOrderRoute',
     owner: 'Priya Natarajan',
-    names: ['login_valid_credentials', 'login_wrong_password', 'lockout_after_five_attempts', 'logout_clears_session', 'token_refresh', 'token_expiry', 'password_reset_email', 'password_reset_link_expires', 'mfa_enrollment', 'mfa_challenge', 'sso_saml_login', 'sso_oidc_login', 'remember_me_cookie', 'session_idle_timeout', 'api_key_rotation', 'csrf_token_required', 'login_rate_limited', 'audit_log_on_login', 'disabled_user_cannot_login', 'password_complexity'],
+    names: ['order_route_publishes_to_queue', 'order_route_sets_correlation_id', 'order_route_idempotent_consumer', 'order_route_rejects_invalid_payload', 'order_route_enriches_from_oracle_lookup', 'order_route_splits_multi_line_orders', 'order_route_aggregates_by_customer', 'order_route_content_based_router', 'order_route_wiretap_audit', 'order_route_transacted_rollback', 'order_route_throttles_bursts', 'order_route_jms_reply_to', 'order_route_sftp_poller', 'order_route_resequencer', 'order_route_header_propagation', 'order_route_large_payload_streaming', 'order_route_xml_schema_validation', 'order_route_priority_queue', 'order_route_graceful_shutdown', 'order_route_xa_transaction'],
   },
   {
-    suite: 'User management',
-    group: 'tests/api',
-    module: 'tests.api.test_users',
-    cls: 'TestUsers',
-    owner: 'Marco Rossi',
-    names: ['create_user', 'update_profile', 'delete_user', 'invite_by_email', 'bulk_import_csv', 'assign_role', 'revoke_role', 'list_users_paginated', 'search_users', 'deactivate_user', 'reactivate_user', 'avatar_upload', 'email_change_confirmation', 'gdpr_export', 'gdpr_delete', 'team_membership', 'org_transfer', 'user_preferences', 'timezone_setting', 'locale_setting'],
-  },
-  {
-    suite: 'Payments',
-    group: 'tests/api',
-    module: 'tests.api.test_payments',
-    cls: 'TestPayments',
+    suite: 'Invoice routes',
+    group: 'tests/routes',
+    module: 'tests.routes.test_invoice_route',
+    cls: 'TestInvoiceRoute',
     owner: 'Lena Fischer',
-    names: ['charge_card', 'charge_declined_card', 'refund_full', 'refund_partial', '3ds_challenge', 'saved_card_charge', 'paypal_checkout', 'apple_pay', 'currency_rounding', 'invoice_pdf', 'tax_calculation_eu', 'tax_calculation_us', 'webhook_signature', 'webhook_retry', 'idempotency_key', 'subscription_create', 'subscription_cancel', 'proration', 'chargeback_flow', 'payout_report'],
+    names: ['invoice_upsert_merge_into_oracle', 'invoice_route_transforms_xml', 'invoice_route_retries_on_timeout', 'invoice_route_currency_rounding', 'invoice_route_tax_lookup', 'invoice_route_multi_currency', 'invoice_route_batch_commit', 'invoice_route_duplicate_detection', 'invoice_route_credit_note', 'invoice_route_partial_payment', 'invoice_route_status_callback', 'invoice_route_numbering_sequence', 'invoice_route_csv_export', 'invoice_route_archive_purge', 'invoice_route_pdf_rendering', 'invoice_route_einvoice_peppol', 'invoice_route_late_fee_job', 'invoice_route_dunning_letters', 'invoice_route_vat_reverse_charge', 'invoice_route_manual_tax_audit'],
   },
   {
-    suite: 'Platform',
-    group: 'tests/api',
-    module: 'tests.api.test_platform',
-    cls: 'TestPlatform',
+    suite: 'Customer sync',
+    group: 'tests/routes',
+    module: 'tests.routes.test_customer_sync',
+    cls: 'TestCustomerSync',
+    owner: 'Marco Rossi',
+    names: ['customer_sync_paginates', 'customer_sync_handles_429_throttling', 'customer_sync_resumes_after_restart', 'customer_sync_empty_page_ends_route', 'customer_sync_merge_keeps_latest', 'customer_sync_address_normalization', 'customer_sync_delta_since_watermark', 'customer_sync_soft_delete', 'customer_sync_kafka_fanout', 'customer_sync_duplicate_email', 'customer_sync_timezone_conversion', 'customer_sync_unicode_names', 'customer_sync_bulk_upsert', 'customer_sync_metrics', 'customer_sync_gdpr_erasure', 'customer_sync_rest_oauth_refresh', 'customer_sync_schema_drift', 'customer_sync_rate_limit_backoff', 'customer_sync_dormant_customers_report', 'customer_sync_legacy_crm_manual'],
+  },
+  {
+    suite: 'Error handling',
+    group: 'tests/routes',
+    module: 'tests.routes.test_error_handling',
+    cls: 'TestErrorHandling',
     owner: 'Sam Okafor',
-    names: ['health_endpoint', 'readiness_probe', 'rate_limit_headers', 'request_id_propagation', 'cors_preflight', 'gzip_responses', 'pagination_links', 'error_envelope', 'feature_flags', 'config_reload', 'metrics_endpoint', 'db_migration_idempotent', 'cache_invalidation', 'search_index_rebuild', 'background_jobs', 'retry_policy', 'timeouts', 'openapi_schema', 'deprecation_headers', 'maintenance_mode'],
+    names: ['dead_letter_channel_on_ora_00001', 'redelivery_policy_exponential_backoff', 'poison_message_parked', 'on_exception_marks_handled', 'circuit_breaker_opens_on_db_down', 'dlq_message_carries_exchange_headers', 'error_handler_logs_exchange_id', 'retry_on_ora_00060_deadlock', 'timeout_on_slow_endpoint', 'http_5xx_retried', 'http_4xx_not_retried', 'jms_transaction_redelivery', 'sftp_failure_moves_to_error_dir', 'no_consumers_on_direct_endpoint', 'dead_letter_channel_on_jms_outage', 'compensation_on_partial_failure', 'saga_rollback', 'idempotent_repository_cleanup', 'error_route_alerting', 'chaos_failover_manual'],
   },
   {
-    suite: 'Checkout',
-    group: 'tests/ui',
-    module: 'tests.ui.test_checkout',
-    cls: 'TestCheckoutPage',
+    suite: 'Oracle schema & PL/SQL',
+    group: 'tests/db',
+    module: 'tests.db.test_plsql',
+    cls: 'TestPlsql',
     owner: 'Lena Fischer',
-    names: ['add_to_cart', 'remove_from_cart', 'update_quantity', 'apply_coupon', 'expired_coupon_rejected', 'guest_checkout', 'address_autocomplete', 'shipping_options', 'order_summary', 'place_order', 'order_confirmation_email', 'saved_addresses', 'gift_wrap', 'split_shipment', 'cart_persistence', 'mini_cart', 'out_of_stock_warning', 'checkout_accessibility', 'checkout_mobile_layout', 'payment_error_banner'],
+    names: ['plsql_pkg_invoice_totals', 'plsql_trigger_audit_columns', 'merge_statement_upsert', 'sequence_no_gaps_under_load', 'materialized_view_refresh', 'partition_pruning_by_month', 'unique_constraint_on_order_ref', 'fk_cascade_on_customer_delete', 'check_constraint_status_values', 'lob_storage_for_payloads', 'scheduler_job_purges_staging', 'synonym_grants_for_app_user', 'plsql_exception_maps_to_error_code', 'timestamp_with_timezone_roundtrip', 'nls_date_format_independent', 'bulk_collect_forall_batch', 'flashback_query_audit', 'index_used_for_lookup', 'db_link_to_reporting', 'rman_restore_drill'],
   },
   {
-    suite: 'Search',
-    group: 'tests/ui',
-    module: 'tests.ui.test_search',
-    cls: 'TestSearchPage',
+    suite: 'Data integrity',
+    group: 'tests/db',
+    module: 'tests.db.test_integrity',
+    cls: 'TestIntegrity',
     owner: 'Marco Rossi',
-    names: ['search_by_keyword', 'search_by_sku', 'typo_tolerance', 'facet_filters', 'filters_persist_in_url', 'sort_by_price', 'sort_by_rating', 'empty_state', 'autocomplete_suggestions', 'recent_searches', 'pagination', 'infinite_scroll', 'search_analytics_event', 'synonyms', 'category_landing', 'price_slider', 'availability_filter', 'search_accessibility', 'search_mobile_layout', 'zero_results_recovery'],
+    names: ['order_totals_match_lines', 'invoice_ledger_balances', 'customer_dedup_by_email', 'orphan_rows_none', 'staging_tables_empty_after_run', 'referential_integrity_nightly', 'null_checks_mandatory_columns', 'currency_codes_iso4217', 'row_counts_source_vs_target', 'checksum_matches_source', 'reconciliation_report', 'soft_deleted_hidden_from_views', 'scd2_history_rows', 'cdc_events_complete', 'late_arriving_facts', 'pii_masked_in_reporting', 'retention_policy_applied', 'archive_tables_partitioned', 'encryption_at_rest_columns', 'manual_data_steward_review'],
   },
 ];
 
@@ -136,13 +142,19 @@ interface CaseInfo {
 }
 const cases: CaseInfo[] = [];
 let tcNum = 1000;
-const titleOf = (n: string) => n.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
+const ACRONYMS: Record<string, string> = { xml: 'XML', jms: 'JMS', sftp: 'SFTP', xa: 'XA', pdf: 'PDF', csv: 'CSV', vat: 'VAT', gdpr: 'GDPR', rest: 'REST', oauth: 'OAuth', plsql: 'PL/SQL', pkg: 'PKG', dlq: 'DLQ', http: 'HTTP', ora: 'ORA', nls: 'NLS', fk: 'FK', lob: 'LOB', scd2: 'SCD2', cdc: 'CDC', pii: 'PII', rman: 'RMAN', iso4217: 'ISO 4217', crm: 'CRM', db: 'DB', peppol: 'PEPPOL', einvoice: 'e-invoice', '5xx': '5xx', '4xx': '4xx' };
+const titleOf = (n: string) =>
+  n
+    .replace(/ora_(\d{5})/g, 'ORA-$1')
+    .split('_')
+    .map((w) => ACRONYMS[w] ?? w)
+    .join(' ')
+    .replace(/^./, (c) => c.toUpperCase());
 const PRIORITIES = ['P0', 'P1', 'P1', 'P2', 'P2', 'P2', 'P3'] as const;
 
 for (const s of SUITES) {
   s.names.forEach((n, i) => {
     tcNum++;
-    // per suite: 13–14 automated, 2 in progress, 3–4 backlog, 1 not automatable
     let status: CaseInfo['status'] = 'automated';
     if (i >= 14) status = i === 19 ? 'not_automatable' : i >= 16 ? 'not_automated' : 'in_progress';
     // ~55% automated 120 days ago, the rest automated progressively since
@@ -158,12 +170,13 @@ for (const s of SUITES) {
         priority: pick(PRIORITIES),
         automationStatus: status,
         owner: s.owner,
-        tags: [s.group === 'tests/ui' ? 'ui' : 'api', ...(i < 4 ? ['smoke'] : []), ...(i % 5 === 0 ? ['regression'] : [])],
+        tags: [s.group === 'tests/db' ? 'oracle' : 'camel', ...(i < 4 ? ['smoke'] : []), ...(i % 5 === 0 ? ['regression'] : [])],
         externalUrl: tcNum % 3 === 0 ? `https://acme.atlassian.net/browse/QA-${tcNum}` : null,
         allureFullName: status === 'automated' || status === 'in_progress' ? fullName : null,
         jiraKey: tcNum % 3 === 0 ? `QA-${tcNum}` : null,
         source: 'spreadsheet',
         automatedAt: automatedDaysAgo !== null ? at(automatedDaysAgo, 9).toISOString() : null,
+        automatedVia: automatedDaysAgo !== null ? (i < 8 ? 'spreadsheet' : 'allure') : null,
         createdAt: at(createdDaysAgo, 9).toISOString(),
         updatedAt: at(Math.min(createdDaysAgo, automatedDaysAgo ?? createdDaysAgo), 10).toISOString(),
       })
@@ -179,88 +192,110 @@ const byName = (n: string) => {
 };
 
 // --- scenario: what fails when ---------------------------------------------------
+const HOSTS = ['ci-runner-3', 'ci-runner-7', 'ci-runner-11'];
+const exchangeId = () => `ID-${pick(HOSTS)}-${Math.floor(30000 + rand() * 30000)}-${1793700000000 + Math.floor(rand() * 9e8)}-0-${Math.floor(rand() * 400)}`;
+const camelWrap = (cause: string) =>
+  `org.apache.camel.CamelExecutionException: Exception occurred during execution on the exchange: Exchange[${exchangeId()}]\nCaused by: ${cause}`;
 const MSG = {
-  http500: () => `AssertionError: expected status 201 but got 500 for user ${uuid()}\nassert 500 == 201`,
-  declined: () => `AssertionError: payment ${hex(10)} was declined: card_declined (amount=${Math.floor(rand() * 900 + 100)}.00)`,
-  timeout: () => `TimeoutError: page.wait_for_selector: Timeout ${Math.floor(rand() * 5 + 25)}000ms exceeded waiting for "[data-test=login-form]"`,
-  reset: () => `ConnectionResetError: [Errno 104] Connection reset by peer (host='staging-${Math.floor(rand() * 4)}.internal')`,
-  coupon: () => `AssertionError: expected discount 15.00 but got 0.00 for coupon 'SPRING${Math.floor(rand() * 90 + 10)}'`,
-  tax: () => `AssertionError: assert ${(rand() * 10 + 10).toFixed(2)} == ${(rand() * 10 + 20).toFixed(2)}  # VAT for DE`,
-  db: () => `psycopg2.OperationalError: could not connect to server: Connection refused at 0x${hex(12)}`,
-  index: () => `KeyError: 'facets' in response from /api/search?q=${hex(6)}`,
+  // real product bug: MERGE on a redelivered exchange violates the invoice PK
+  ora00001: () =>
+    rand() < 0.5
+      ? `oracledb.exceptions.IntegrityError: ORA-00001: unique constraint (APP.PK_INVOICE) violated\nHelp: https://docs.oracle.com/error-help/db/ora-00001/`
+      : camelWrap('java.sql.SQLIntegrityConstraintViolationException: ORA-00001: unique constraint (APP.PK_INVOICE) violated'),
+  // environment: Oracle listener down
+  ora12541: () =>
+    pick([
+      'oracledb.exceptions.OperationalError: ORA-12541: TNS:no listener',
+      'cx_Oracle.DatabaseError: ORA-12541: TNS:no listener',
+      camelWrap('java.sql.SQLRecoverableException: Listener refused the connection with the following error: ORA-12541: TNS:no listener'),
+    ]),
+  ora12514: () =>
+    'cx_Oracle.DatabaseError: ORA-12514: TNS:listener does not currently know of service requested in connect descriptor',
+  ora01400: () => `oracledb.exceptions.IntegrityError: ORA-01400: cannot insert NULL into ("APP"."CUSTOMER"."EMAIL")`,
+  ora00060: () => camelWrap('java.sql.SQLException: ORA-00060: deadlock detected while waiting for resource'),
+  ledger: () =>
+    `AssertionError: ledger imbalance for batch ${Math.floor(rand() * 9000 + 1000)}: debit ${(rand() * 900 + 100).toFixed(2)} != credit ${(rand() * 900 + 100).toFixed(2)}`,
+  jpy: () => `AssertionError: assert Decimal('${Math.floor(rand() * 900 + 100)}.01') == Decimal('${Math.floor(rand() * 900 + 100)}.00')  # PKG_INVOICE.total JPY rounding`,
+  http500: () =>
+    `org.apache.camel.http.base.HttpOperationFailedException: HTTP operation failed invoking http://orders-api:8080/api/orders/${Math.floor(rand() * 90000)} with statusCode: 500`,
+  queue: () =>
+    rand() < 0.6
+      ? `AssertionError: expected 1 message on queue ORDERS.OUT within 5s, got 0`
+      : `org.apache.camel.ExchangeTimedOutException: The OUT message was not received within: 20000 millis. Exchange[${exchangeId()}]`,
+  reset: () => `ConnectionResetError: [Errno 104] Connection reset by peer (host='amq-${Math.floor(rand() * 3)}.staging.internal')`,
 };
 
 interface Rule {
-  names: string[];
-  group?: Group | 'smoke';
+  names: string[] | 'all';
+  group?: AnyGroup;
   from: number; // days ago (inclusive)
   to: number; // days ago (inclusive), 0 = still failing
   status: 'failed' | 'broken';
   msg: () => string;
 }
 const RULES: Rule[] = [
-  // fixed product regression (bug verified fixed)
-  { names: ['create_user', 'delete_user', 'invite_by_email'], from: 62, to: 50, status: 'failed', msg: MSG.http500 },
-  // UI environment outage (no bug)
-  { names: ['add_to_cart', 'place_order', 'guest_checkout', 'saved_addresses'], group: 'tests/ui', from: 34, to: 30, status: 'broken', msg: MSG.timeout },
-  // staging DB down for one run window
-  { names: ['health_endpoint', 'readiness_probe', 'background_jobs'], from: 78, to: 76, status: 'broken', msg: MSG.db },
-  // resolved-but-still-failing bug #1 (declined cards)
-  { names: ['charge_card', 'saved_card_charge'], from: 14, to: 0, status: 'failed', msg: MSG.declined },
-  // resolved-but-still-failing bug #2 (coupon)
-  { names: ['apply_coupon'], group: 'tests/ui', from: 20, to: 0, status: 'failed', msg: MSG.coupon },
-  // fixed tax regression (bug verified fixed)
-  { names: ['tax_calculation_eu', 'invoice_pdf'], from: 45, to: 38, status: 'failed', msg: MSG.tax },
-  // open bug, currently failing
-  { names: ['facet_filters', 'filters_persist_in_url'], group: 'tests/ui', from: 9, to: 0, status: 'failed', msg: MSG.index },
-  // brand-new failure in the latest api run (untriaged)
-  { names: ['webhook_retry'], from: 3, to: 0, status: 'failed', msg: () => `AssertionError: expected 3 webhook attempts, got ${Math.floor(rand() * 2) + 1}` },
+  // fixed product regression (bug verified fixed): customer sync inserted NULL emails
+  { names: ['customer_sync_merge_keeps_latest', 'customer_sync_duplicate_email', 'customer_sync_address_normalization'], from: 62, to: 50, status: 'failed', msg: MSG.ora01400 },
+  // environment outage: the Oracle listener was down for one whole routes run
+  { names: 'all', group: 'tests/routes', from: 58, to: 58, status: 'broken', msg: MSG.ora12541 },
+  // fixed ledger regression (bug verified fixed)
+  { names: ['invoice_ledger_balances', 'order_totals_match_lines'], from: 45, to: 38, status: 'failed', msg: MSG.ledger },
+  // resolved-but-still-failing bug #1 (JPY rounding)
+  { names: ['invoice_route_currency_rounding', 'invoice_route_multi_currency'], from: 14, to: 0, status: 'failed', msg: MSG.jpy },
+  // resolved-but-still-failing bug #2 (deadlock)
+  { names: ['retry_on_ora_00060_deadlock'], group: 'tests/routes', from: 20, to: 0, status: 'failed', msg: MSG.ora00060 },
+  // real product bug, open: ORA-00001 on PK_INVOICE for redelivered exchanges
+  { names: ['invoice_upsert_merge_into_oracle', 'dead_letter_channel_on_ora_00001', 'invoice_route_duplicate_detection'], group: 'tests/routes', from: 9, to: 0, status: 'failed', msg: MSG.ora00001 },
+  // the reporting DB service is not registered with the listener (latest db run, untriaged)
+  { names: ['materialized_view_refresh', 'reconciliation_report', 'row_counts_source_vs_target', 'checksum_matches_source'], group: 'tests/db', from: 3, to: 0, status: 'broken', msg: MSG.ora12514 },
+  // brand-new failure in the latest routes run (untriaged)
+  { names: ['http_5xx_retried'], group: 'tests/routes', from: 3, to: 0, status: 'failed', msg: MSG.http500 },
 ];
-const FLAKY = ['token_refresh', 'sort_by_price', 'cors_preflight'];
-const SLOW = 'search_index_rebuild';
-const ALWAYS_SKIPPED = 'sso_saml_login';
-const SMOKE = ['login_valid_credentials', 'logout_clears_session', 'token_refresh', 'create_user', 'charge_card', 'refund_full', 'health_endpoint', 'readiness_probe', 'rate_limit_headers', 'error_envelope', 'feature_flags', 'metrics_endpoint'];
+const FLAKY = ['order_route_resequencer', 'customer_sync_kafka_fanout', 'timeout_on_slow_endpoint'];
+const SLOW = 'sequence_no_gaps_under_load';
+const ALWAYS_SKIPPED = 'order_route_sftp_poller';
+const SMOKE = ['order_route_publishes_to_queue', 'order_route_sets_correlation_id', 'order_route_resequencer', 'invoice_upsert_merge_into_oracle', 'invoice_route_transforms_xml', 'customer_sync_paginates', 'dead_letter_channel_on_ora_00001', 'poison_message_parked', 'plsql_pkg_invoice_totals', 'merge_statement_upsert', 'order_totals_match_lines', 'referential_integrity_nightly'];
 
-function outcome(c: CaseInfo, group: Group | 'smoke', daysAgo: number): { status: ResultStatus; message: string | null; durationMs: number } {
+function outcome(c: CaseInfo, group: AnyGroup, daysAgo: number): { status: ResultStatus; message: string | null; durationMs: number } {
   const name = c.fullName.split('#test_')[1] ?? '';
-  let durationMs = Math.floor(300 + rand() * (c.suite.group === 'tests/ui' ? 6000 : 1500));
+  let durationMs = Math.floor(300 + rand() * (c.suite.group === 'tests/db' ? 2500 : 4000));
   if (name === SLOW) durationMs = Math.floor(2000 + (120 - daysAgo) * 65 + rand() * 300);
-  if (name === ALWAYS_SKIPPED && group !== 'smoke') return { status: 'skipped', message: 'Skipped: SAML IdP not available in CI', durationMs: 1 };
+  if (name === ALWAYS_SKIPPED && group !== 'tests/smoke') return { status: 'skipped', message: 'Skipped: SFTP server not available in CI', durationMs: 1 };
   for (const r of RULES) {
     if (r.group && r.group !== group) continue;
-    if (r.names.includes(name) && daysAgo <= r.from && daysAgo >= r.to) return { status: r.status, message: r.msg(), durationMs };
+    if ((r.names === 'all' || r.names.includes(name)) && daysAgo <= r.from && daysAgo >= r.to) return { status: r.status, message: r.msg(), durationMs };
   }
-  if (FLAKY.includes(name) && rand() < 0.33) return { status: 'failed', message: MSG.reset(), durationMs };
+  if (FLAKY.includes(name) && rand() < 0.33) return { status: 'failed', message: MSG.queue(), durationMs };
   if (rand() < 0.004) return { status: 'broken', message: MSG.reset(), durationMs };
   return { status: 'passed', message: null, durationMs };
 }
 
 // --- runs --------------------------------------------------------------------------
 interface Schedule {
-  group: Group | 'smoke';
+  group: AnyGroup;
   every: number;
   start: number;
   name: string;
 }
 const SCHEDULES: Schedule[] = [
-  { group: 'tests/api', every: 5, start: 118, name: 'api nightly' },
-  { group: 'tests/ui', every: 6, start: 117, name: 'ui e2e' },
-  { group: 'smoke', every: 7, start: 116, name: 'smoke' },
+  { group: 'tests/routes', every: 5, start: 118, name: 'routes nightly' },
+  { group: 'tests/db', every: 6, start: 117, name: 'db nightly' },
+  { group: 'tests/smoke', every: 7, start: 116, name: 'smoke' },
 ];
 let buildNo = 3100;
 const runIdsByGroup = new Map<string, number[]>();
 const plannedRuns: Array<{ s: Schedule; daysAgo: number }> = [];
 for (const s of SCHEDULES) {
   for (let d = s.start; d >= 0; d -= s.every) plannedRuns.push({ s, daysAgo: d });
-  if (s.group === 'tests/api') plannedRuns.push({ s, daysAgo: 0 }); // freshest data
+  if (s.group === 'tests/routes') plannedRuns.push({ s, daysAgo: 0 }); // freshest data
 }
 plannedRuns.sort((a, b) => b.daysAgo - a.daysAgo);
 
 for (const { s, daysAgo } of plannedRuns) {
-  const started = at(daysAgo, s.group === 'smoke' ? 6 : 1);
+  const started = at(daysAgo, s.group === 'tests/smoke' ? 6 : 1);
   const members = cases.filter((c) => {
     if (c.automatedDaysAgo === null || c.automatedDaysAgo < daysAgo) return false;
-    if (s.group === 'smoke') return SMOKE.some((n) => c.fullName.endsWith(`#test_${n}`));
+    if (s.group === 'tests/smoke') return SMOKE.some((n) => c.fullName.endsWith(`#test_${n}`));
     return c.suite.group === s.group;
   });
   if (members.length === 0) continue;
@@ -268,6 +303,7 @@ for (const { s, daysAgo } of plannedRuns) {
   let clock = started.getTime();
   for (const c of members) {
     const o = outcome(c, s.group, daysAgo);
+    const pkg = c.suite.module;
     const result: ParsedResult = {
       file: `${uuid()}-result.json`,
       uuid: uuid(),
@@ -277,12 +313,15 @@ for (const { s, daysAgo } of plannedRuns) {
       name: `test_${c.fullName.split('#test_')[1]}`,
       status: o.status,
       message: o.message,
-      trace: o.message ? `Traceback (most recent call last):\n  File "${c.suite.module.replace(/\./g, '/')}.py", line ${Math.floor(rand() * 200 + 20)}, in test\n${o.message}` : null,
+      trace: o.message
+        ? `Traceback (most recent call last):\n  File "${pkg.replace(/\./g, '/')}.py", line ${Math.floor(rand() * 200 + 20)}, in test\n    exchange = route.send(payload)\n${o.message}`
+        : null,
       start: clock,
       stop: clock + o.durationMs,
       labels: [
         { name: 'feature', value: c.suite.suite },
         { name: 'framework', value: 'pytest' },
+        { name: 'package', value: pkg },
       ],
       parameters: [],
       links: [],
@@ -290,9 +329,15 @@ for (const { s, daysAgo } of plannedRuns) {
     clock += o.durationMs + 20;
     bundle.results.push(result);
   }
-  bundle.environment = { Python: '3.12.4', Environment: 'staging', 'Base.URL': 'https://staging.acme.dev' };
+  bundle.environment = {
+    Python: '3.12.4',
+    'Oracle.DB': '19c (APPDB staging)',
+    Camel: '4.8.1',
+    'Broker': 'Artemis 2.37',
+    Environment: 'staging',
+  };
   buildNo++;
-  const branch = s.group === 'tests/api' && daysAgo % 25 === 3 ? 'release/2.4' : 'main';
+  const branch = s.group === 'tests/routes' && daysAgo % 25 === 3 ? 'release/2.4' : 'main';
   const res = importAllureRun(
     db,
     bundle,
@@ -301,37 +346,12 @@ for (const { s, daysAgo } of plannedRuns) {
       runGroup: s.group,
       branch,
       commit: hex(40),
-      buildUrl: `https://github.com/acme/shop/actions/runs/${9_000_000 + buildNo}`,
+      buildUrl: `https://github.com/acme/camel-routes/actions/runs/${9_000_000 + buildNo}`,
     },
     new Date(started.getTime() + 45 * 60_000),
   );
   runIdsByGroup.set(s.group, [...(runIdsByGroup.get(s.group) ?? []), res.run.id]);
 }
-
-// --- notes (timestamps back-dated after creation) -------------------------------------
-function note(
-  name: string,
-  daysAgo: number,
-  author: string,
-  body: string,
-  triage: Parameters<typeof createNote>[1]['triage'],
-  ticketUrl: string | null = null,
-) {
-  const c = byName(name);
-  const n = createNote(db, { testCaseId: c.id, author, body, triage, ticketUrl });
-  const ts = at(daysAgo, 11).toISOString();
-  db.update(notes).set({ createdAt: ts, updatedAt: ts }).where(eq(notes.id, n.id)).run();
-  return n;
-}
-note('add_to_cart', 33, 'Lena Fischer', 'Staging frontend was down during the deploy window — not a test problem.', 'environment');
-note('place_order', 33, 'Lena Fischer', 'Same staging outage as add_to_cart.', 'environment');
-note('token_refresh', 20, 'Sam Okafor', 'Connection resets from the staging LB, happens ~1 in 3 runs. Adding retries in the client fixture.', 'flaky');
-note('sort_by_price', 12, 'Marco Rossi', 'Flaky ordering when two products have the same price; test needs a deterministic tiebreak.', 'test_bug');
-note('cors_preflight', 8, 'Sam Okafor', 'Probably LB again. Watching.', 'flaky');
-note('facet_filters', 8, 'Marco Rossi', 'Search API dropped `facets` from the response after the indexer upgrade.', 'product_bug', 'https://acme.atlassian.net/browse/SHOP-311');
-note('create_user', 60, 'Priya Natarajan', 'User service returns 500 when the email contains a plus sign.\nRepro: POST /users with a+b@example.com', 'product_bug', 'https://acme.atlassian.net/browse/SHOP-204');
-note('update_profile', 90, 'Marco Rossi', 'Converted to API test; UI version removed.', null);
-note('webhook_retry', 0.5, 'Lena Fischer', 'Looking into this — retry backoff config changed yesterday?', 'needs_investigation');
 
 // --- bugs ------------------------------------------------------------------------------------
 function bug(opts: {
@@ -388,36 +408,63 @@ function bug(opts: {
     .run();
 }
 // verified fixed (fix shipped, later runs pass)
-bug({ key: 'SHOP-204', title: 'User service 500s on emails containing "+"', severity: 'major', status: 'closed', createdDaysAgo: 60, resolvedDaysAgo: 52, cases: ['create_user', 'delete_user', 'invite_by_email'], assignee: 'Dev: Ana' });
-bug({ key: 'SHOP-221', title: 'EU VAT computed on net instead of gross for DE', severity: 'critical', status: 'resolved', createdDaysAgo: 44, resolvedDaysAgo: 39, cases: ['tax_calculation_eu', 'invoice_pdf'], assignee: 'Dev: Tom' });
-bug({ key: 'SHOP-180', title: 'Health endpoint reports OK while DB is down', severity: 'minor', status: 'resolved', createdDaysAgo: 77, resolvedDaysAgo: 70, cases: ['health_endpoint'], assignee: 'Dev: Ana' });
-bug({ key: 'SHOP-233', title: 'Refund webhook missing idempotency key', severity: 'major', status: 'closed', createdDaysAgo: 35, resolvedDaysAgo: 28, cases: ['refund_partial', 'refund_full'], fromAutomation: false });
+bug({ key: 'INT-204', title: 'Customer sync inserts NULL email (ORA-01400)', severity: 'major', status: 'closed', createdDaysAgo: 60, resolvedDaysAgo: 52, cases: ['customer_sync_merge_keeps_latest', 'customer_sync_duplicate_email', 'customer_sync_address_normalization'], assignee: 'Dev: Ana' });
+bug({ key: 'INT-221', title: 'Ledger imbalance from PKG_INVOICE rounding', severity: 'critical', status: 'resolved', createdDaysAgo: 44, resolvedDaysAgo: 39, cases: ['invoice_ledger_balances', 'order_totals_match_lines'], assignee: 'Dev: Tom' });
+bug({ key: 'INT-180', title: 'Synonym grants missing after schema migration', severity: 'minor', status: 'resolved', createdDaysAgo: 77, resolvedDaysAgo: 70, cases: ['synonym_grants_for_app_user'], assignee: 'DBA: Ana' });
+bug({ key: 'INT-233', title: 'DLQ drops the JMSCorrelationID header', severity: 'major', status: 'closed', createdDaysAgo: 35, resolvedDaysAgo: 28, cases: ['dlq_message_carries_exchange_headers', 'error_handler_logs_exchange_id'], fromAutomation: false });
 // resolved but still failing
-bug({ key: 'SHOP-298', title: 'Saved cards declined after PSP migration', severity: 'critical', status: 'resolved', createdDaysAgo: 13, resolvedDaysAgo: 8, cases: ['charge_card', 'saved_card_charge'], assignee: 'Dev: Tom' });
-bug({ key: 'SHOP-276', title: 'Coupon discount not applied for SPRING codes', severity: 'major', status: 'resolved', createdDaysAgo: 19, resolvedDaysAgo: 10, cases: ['apply_coupon'], assignee: 'Dev: Kim' });
+bug({ key: 'INT-298', title: 'JPY totals off by one unit in PKG_INVOICE.total', severity: 'critical', status: 'resolved', createdDaysAgo: 13, resolvedDaysAgo: 8, cases: ['invoice_route_currency_rounding', 'invoice_route_multi_currency'], assignee: 'Dev: Tom' });
+bug({ key: 'INT-276', title: 'Deadlock (ORA-00060) between invoice batch and purge job', severity: 'major', status: 'resolved', createdDaysAgo: 19, resolvedDaysAgo: 10, cases: ['retry_on_ora_00060_deadlock'], assignee: 'DBA: Kim' });
 // resolved, awaiting a run (group hasn't run since)
-bug({ key: 'SHOP-305', title: 'Gift wrap option resets on address change', severity: 'minor', status: 'resolved', createdDaysAgo: 6, resolvedDaysAgo: 0.2, cases: ['add_to_cart'], fromAutomation: false });
+bug({ key: 'INT-305', title: 'Partial payment callback double-posts', severity: 'minor', status: 'resolved', createdDaysAgo: 6, resolvedDaysAgo: 0.2, cases: ['plsql_exception_maps_to_error_code'], fromAutomation: false });
 // open / in progress
-bug({ key: 'SHOP-311', title: 'Search API no longer returns facets', severity: 'critical', status: 'in_progress', createdDaysAgo: 8, cases: ['facet_filters', 'filters_persist_in_url'], assignee: 'Dev: Kim' });
-bug({ key: 'SHOP-312', title: 'Webhook retries stop after first attempt', severity: 'major', status: 'open', createdDaysAgo: 1, cases: ['webhook_retry'] });
-bug({ key: 'SHOP-290', title: 'Staging LB resets idle connections', severity: 'minor', status: 'in_progress', createdDaysAgo: 22, cases: ['token_refresh', 'cors_preflight'], assignee: 'SRE: Jo', fromAutomation: true });
-bug({ key: 'SHOP-301', title: 'Mobile checkout layout overlaps pay button', severity: 'major', status: 'open', createdDaysAgo: 5, cases: ['checkout_mobile_layout'], fromAutomation: false });
-bug({ key: 'SHOP-302', title: 'Autocomplete suggestions flicker', severity: 'trivial', status: 'open', createdDaysAgo: 4, cases: ['autocomplete_suggestions'], fromAutomation: false });
-bug({ key: 'SHOP-266', title: 'Sorting by price unstable for ties', severity: 'minor', status: 'open', createdDaysAgo: 12, cases: ['sort_by_price'] });
-bug({ key: 'SHOP-150', title: 'Legacy XML export truncates names', severity: 'trivial', status: 'wont_fix', createdDaysAgo: 100, resolvedDaysAgo: 95, cases: ['payout_report'], fromAutomation: false });
-bug({ key: 'SHOP-310', title: 'Tax rounding off by one cent for JPY', severity: 'minor', status: 'open', createdDaysAgo: 2, cases: ['currency_rounding'], fromAutomation: false });
+bug({ key: 'INT-311', title: 'Invoice MERGE violates PK_INVOICE on redelivered exchanges (ORA-00001)', severity: 'critical', status: 'in_progress', createdDaysAgo: 8, cases: ['invoice_upsert_merge_into_oracle', 'dead_letter_channel_on_ora_00001', 'invoice_route_duplicate_detection'], assignee: 'Dev: Kim' });
+bug({ key: 'INT-312', title: 'Orders API returns 500 on retried POST', severity: 'major', status: 'open', createdDaysAgo: 1, cases: ['http_5xx_retried'] });
+bug({ key: 'INT-290', title: 'Artemis drops idle consumers on staging', severity: 'minor', status: 'in_progress', createdDaysAgo: 22, cases: ['order_route_resequencer', 'customer_sync_kafka_fanout'], assignee: 'SRE: Jo', fromAutomation: true });
+bug({ key: 'INT-301', title: 'XA recovery leaves in-doubt transactions', severity: 'major', status: 'open', createdDaysAgo: 5, cases: ['order_route_transacted_rollback'], fromAutomation: false });
+bug({ key: 'INT-302', title: 'Route metrics report negative in-flight exchanges', severity: 'trivial', status: 'open', createdDaysAgo: 4, cases: ['customer_sync_metrics'], fromAutomation: false });
+bug({ key: 'INT-266', title: 'Slow-endpoint timeout too aggressive', severity: 'minor', status: 'open', createdDaysAgo: 12, cases: ['timeout_on_slow_endpoint'] });
+bug({ key: 'INT-150', title: 'Legacy CSV export truncates long names', severity: 'trivial', status: 'wont_fix', createdDaysAgo: 100, resolvedDaysAgo: 95, cases: ['invoice_route_csv_export'], fromAutomation: false });
+bug({ key: 'INT-310', title: 'PKG_REPORTS depends on NLS_DATE_FORMAT', severity: 'minor', status: 'open', createdDaysAgo: 2, cases: ['timestamp_with_timezone_roundtrip'], fromAutomation: false });
 
-// --- pull requests ------------------------------------------------------------------------------
+// --- notes (timestamps back-dated after creation) -------------------------------------
+function note(
+  name: string,
+  daysAgo: number,
+  author: string,
+  body: string,
+  triage: Parameters<typeof createNote>[1]['triage'],
+  ticketUrl: string | null = null,
+) {
+  const c = byName(name);
+  const n = createNote(db, { testCaseId: c.id, author, body, triage, ticketUrl });
+  const ts = at(daysAgo, 11).toISOString();
+  db.update(notes).set({ createdAt: ts, updatedAt: ts }).where(eq(notes.id, n.id)).run();
+  return n;
+}
+note('order_route_publishes_to_queue', 57, 'Sam Okafor', 'ORA-12541 on every route test: the staging listener was down during the DB patch window. Not a test problem.', 'environment');
+note('invoice_route_transforms_xml', 57, 'Sam Okafor', 'Same listener outage (ORA-12541) as the rest of the run.', 'environment');
+note('order_route_resequencer', 20, 'Priya Natarajan', 'Artemis drops idle consumers; the resequencer sometimes misses the 5s window. ~1 in 3 runs.', 'flaky');
+note('timeout_on_slow_endpoint', 12, 'Sam Okafor', 'Timeout too tight for the stubbed slow endpoint; needs a deterministic clock.', 'test_bug');
+note('customer_sync_kafka_fanout', 8, 'Marco Rossi', 'Probably the broker again. Watching.', 'flaky');
+note('invoice_upsert_merge_into_oracle', 8, 'Lena Fischer', 'Redelivered exchanges re-run the MERGE without the idempotent repository → ORA-00001 on PK_INVOICE.', 'product_bug', 'https://acme.atlassian.net/browse/INT-311');
+note('customer_sync_merge_keeps_latest', 60, 'Marco Rossi', 'CRM sends customers without email; the route maps them to NULL.\nRepro: replay customer 4711 from the CRM sandbox.', 'product_bug', 'https://acme.atlassian.net/browse/INT-204');
+note('customer_sync_paginates', 90, 'Marco Rossi', 'Moved from the old SOAP poller to the REST source.', null);
+note('http_5xx_retried', 0.5, 'Lena Fischer', 'Orders API 500s on retried POSTs since yesterday — related to the new idempotency header?', 'needs_investigation');
+
+// --- pull requests: every pipeline stage ---------------------------------------------------------
+const HOUR = 3_600_000;
+const ago = (hours: number) => new Date(NOW - hours * HOUR).toISOString();
 const pr = (
   number: number,
   title: string,
   state: PullRequestUpsert['state'],
   review: PullRequestUpsert['reviewState'],
-  opts: Partial<PullRequestUpsert> & { createdDaysAgo: number; updatedDaysAgo: number },
+  opts: Partial<PullRequestUpsert> & { createdHoursAgo: number; updatedHoursAgo: number },
 ): PullRequestUpsert => ({
   number,
   title,
-  url: `https://github.com/acme/shop-tests/pull/${number}`,
+  url: `https://github.com/acme/camel-routes-tests/pull/${number}`,
   state,
   author: opts.author ?? pick(['priya-n', 'mrossi', 'lfischer', 'sokafor']),
   headBranch: opts.headBranch ?? `qa/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 30)}`,
@@ -425,31 +472,51 @@ const pr = (
   requestedReviewers: opts.requestedReviewers ?? [],
   unresolvedThreads: opts.unresolvedThreads ?? 0,
   checks: opts.checks ?? 'passing',
-  createdAt: at(opts.createdDaysAgo, 14).toISOString(),
-  updatedAt: at(opts.updatedDaysAgo, 15).toISOString(),
-  mergedAt: state === 'merged' ? at(opts.updatedDaysAgo, 15).toISOString() : null,
+  createdAt: ago(opts.createdHoursAgo),
+  updatedAt: ago(opts.updatedHoursAgo),
+  mergedAt: opts.mergedAt ?? null,
+  approvedAt: opts.approvedAt ?? (review === 'approved' ? ago(opts.updatedHoursAgo + 2) : null),
 });
-const backlog = cases.filter((c) => c.status === 'in_progress' || c.status === 'not_automated');
-const prs: PullRequestUpsert[] = [
-  pr(412, 'Automate MFA enrollment + challenge (QA-1009)', 'open', 'review_required', { createdDaysAgo: 3, updatedDaysAgo: 1, requestedReviewers: ['sokafor'] }),
-  pr(415, 'Add API key rotation tests', 'open', 'changes_requested', { createdDaysAgo: 6, updatedDaysAgo: 2, unresolvedThreads: 4, author: 'mrossi' }),
-  pr(418, 'Bulk user import via CSV', 'draft', 'none', { createdDaysAgo: 2, updatedDaysAgo: 0.3, checks: 'pending' }),
-  pr(420, 'Subscription cancel/proration tests', 'open', 'approved', { createdDaysAgo: 5, updatedDaysAgo: 0.5 }),
-  pr(421, 'Chargeback flow e2e', 'open', 'review_required', { createdDaysAgo: 4, updatedDaysAgo: 1, checks: 'failing', requestedReviewers: ['priya-n', 'qa-leads'] }),
-  pr(423, 'Search synonyms + category landing', 'open', 'approved', { createdDaysAgo: 3, updatedDaysAgo: 1, unresolvedThreads: 1 }),
-  pr(401, 'Automate GDPR export', 'merged', 'approved', { createdDaysAgo: 20, updatedDaysAgo: 12 }),
-  pr(395, 'Price slider tests', 'merged', 'approved', { createdDaysAgo: 26, updatedDaysAgo: 21 }),
-  pr(390, 'Old: availability filter (superseded)', 'closed', 'none', { createdDaysAgo: 40, updatedDaysAgo: 30 }),
+// [PR, linked test names]
+const PRS: Array<[PullRequestUpsert, string[]]> = [
+  // ready to merge — "done, awaiting merge"
+  [pr(431, 'Automate header propagation + priority queue', 'open', 'approved', { createdHoursAgo: 120, updatedHoursAgo: 20, approvedAt: ago(26), author: 'priya-n' }), ['order_route_header_propagation', 'order_route_priority_queue']],
+  [pr(433, 'PEPPOL e-invoice + late fee job route tests', 'open', 'approved', { createdHoursAgo: 96, updatedHoursAgo: 30, approvedAt: ago(52), author: 'lfischer' }), ['invoice_route_einvoice_peppol', 'invoice_route_late_fee_job']],
+  [pr(436, 'GDPR erasure via customer sync (QA-1075)', 'open', 'approved', { createdHoursAgo: 70, updatedHoursAgo: 6, approvedAt: ago(9), author: 'mrossi' }), ['customer_sync_gdpr_erasure']],
+  [pr(438, 'BULK COLLECT / FORALL batch + flashback audit', 'open', 'approved', { createdHoursAgo: 150, updatedHoursAgo: 44, approvedAt: ago(98), author: 'lfischer' }), ['bulk_collect_forall_batch', 'flashback_query_audit']],
+  [pr(439, 'Late-arriving facts integrity check', 'open', 'approved', { createdHoursAgo: 40, updatedHoursAgo: 3, checks: 'none', approvedAt: ago(4), author: 'mrossi' }), ['late_arriving_facts']],
+  // in review — not ready yet
+  [pr(440, 'Compensation on partial failure', 'open', 'review_required', { createdHoursAgo: 50, updatedHoursAgo: 18, requestedReviewers: ['priya-n', 'qa-leads'], author: 'sokafor' }), ['compensation_on_partial_failure']],
+  [pr(441, 'OAuth token refresh in customer sync', 'open', 'changes_requested', { createdHoursAgo: 140, updatedHoursAgo: 28, unresolvedThreads: 3, author: 'mrossi' }), ['customer_sync_rest_oauth_refresh']],
+  [pr(442, 'PII masking checks on reporting views', 'open', 'approved', { createdHoursAgo: 90, updatedHoursAgo: 12, checks: 'failing', author: 'lfischer' }), ['pii_masked_in_reporting']],
+  [pr(443, 'Schema drift detection for customer payloads', 'open', 'approved', { createdHoursAgo: 60, updatedHoursAgo: 8, unresolvedThreads: 1, author: 'mrossi' }), ['customer_sync_schema_drift']],
+  // drafts
+  [pr(445, 'WIP: XML schema validation for orders', 'draft', 'none', { createdHoursAgo: 30, updatedHoursAgo: 5, checks: 'pending', author: 'priya-n' }), ['order_route_xml_schema_validation']],
+  [pr(446, 'WIP: dunning letters route', 'draft', 'none', { createdHoursAgo: 20, updatedHoursAgo: 7, checks: 'pending', author: 'lfischer' }), ['invoice_route_dunning_letters']],
+  // merged, awaiting the next run of their group (auto-promoted to automated)
+  [pr(425, 'Dead letter channel on JMS outage', 'merged', 'approved', { createdHoursAgo: 160, updatedHoursAgo: 3, mergedAt: ago(3), author: 'sokafor' }), ['dead_letter_channel_on_jms_outage']],
+  [pr(427, 'Index usage check + saga rollback tests', 'merged', 'approved', { createdHoursAgo: 100, updatedHoursAgo: 26, mergedAt: ago(26), author: 'lfischer' }), ['index_used_for_lookup', 'saga_rollback']],
+  // maintenance PR on an already automated (flaky) test: "In PR" badge, stage stays automated
+  [pr(447, 'Stabilize resequencer test (flaky)', 'open', 'review_required', { createdHoursAgo: 15, updatedHoursAgo: 4, requestedReviewers: ['sokafor'], author: 'priya-n' }), ['order_route_resequencer']],
+  [pr(390, 'Old: SOAP customer poller (superseded)', 'closed', 'none', { createdHoursAgo: 40 * 24, updatedHoursAgo: 30 * 24 }), ['customer_sync_legacy_crm_manual']],
 ];
-const links = prs.flatMap((p, i) => {
-  const targets = [backlog[(i * 3) % backlog.length], backlog[(i * 3 + 1) % backlog.length]].filter(Boolean) as CaseInfo[];
-  return targets.slice(0, i % 2 === 0 ? 2 : 1).map((c, j) => ({
-    prNumber: p.number,
-    testCaseId: c.id,
-    linkedBy: (['key_in_title', 'marker_in_diff', 'test_name_in_diff', 'key_in_branch'] as const)[(i + j) % 4]!,
-  }));
+// merged earlier and already verified by later runs (automated)
+const verified = cases
+  .filter((c) => c.automatedDaysAgo !== null && c.automatedDaysAgo >= 6 && c.automatedDaysAgo <= 25)
+  .slice(0, 3);
+verified.forEach((c, i) => {
+  const mergedAt = at(c.automatedDaysAgo!, 8).toISOString();
+  PRS.push([
+    { ...pr(400 + i, `Automate ${titleOf(c.fullName.split('#test_')[1] ?? '').toLowerCase()}`, 'merged', 'approved', { createdHoursAgo: (c.automatedDaysAgo! + 4) * 24, updatedHoursAgo: c.automatedDaysAgo! * 24 }), mergedAt, updatedAt: mergedAt },
+    [c.fullName.split('#test_')[1] ?? ''],
+  ]);
 });
-replaceRepoPullRequests(db, 'acme/shop-tests', prs, links);
+const prs = PRS.map(([p]) => p);
+const linkKinds = ['key_in_title', 'marker_in_diff', 'test_name_in_diff', 'key_in_branch'] as const;
+const links = PRS.flatMap(([p, names], i) =>
+  names.map((n, j) => ({ prNumber: p.number, testCaseId: byName(n).id, linkedBy: linkKinds[(i + j) % linkKinds.length]! })),
+);
+const { promoted } = replaceRepoPullRequests(db, 'acme/camel-routes-tests', prs, links);
 
 // --- coverage snapshots (reconstructed per day) + settings ---------------------------------
 const all = db.select().from(testCases).all();
@@ -467,7 +534,7 @@ for (let d = 120; d >= 0; d--) {
   db.insert(coverageSnapshots).values(row).onConflictDoUpdate({ target: coverageSnapshots.date, set: row }).run();
 }
 putSettings(db, {
-  teamName: 'Shop QA',
+  teamName: 'Integration QA',
   goal: { targetRate: 0.8, targetDate: isoDate(new Date(NOW + 90 * DAY)) },
 });
 
@@ -478,6 +545,7 @@ const counts = {
   groups: Object.fromEntries([...runIdsByGroup].map(([g, ids]) => [g, ids.length])),
   bugs: db.select().from(bugs).all().length,
   prs: prs.length,
+  promotedByMerge: promoted,
 };
 handle.close();
 console.log(`[seed] done → ${dbFile}`, counts);

@@ -10,6 +10,7 @@ import { addDays, isoDate } from '../util/time.js';
 import { automationRate, computeCoverage } from './coverage.js';
 import { FLAKY_THRESHOLD } from './flakiness.js';
 import { computePrPipeline } from './pullRequests.js';
+import { computePipelineCounts, countProjectedAutomated } from './pipeline.js';
 import { passRate } from './runs.js';
 import { getSettings } from './settings.js';
 import { bugTrend, computeVerifications, meanDaysToResolve, openBySeverity } from './bugs.js';
@@ -272,5 +273,13 @@ export function getReport(db: Db, periodDays: number, today: Date = new Date()):
       meanDaysToResolve: meanDaysToResolve(db, today),
     },
     prPipeline,
+    automationInFlight: (() => {
+      const projectedAutomated = countProjectedAutomated(db);
+      return {
+        stages: computePipelineCounts(db),
+        projectedAutomated,
+        projectedAutomationRate: automationRate(coverage.total, projectedAutomated, coverage.notAutomatable),
+      };
+    })(),
   };
 }

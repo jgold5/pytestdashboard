@@ -2,8 +2,8 @@
   "uuid": "fc993756-d36c-5a65-bd92-a83ac7b611bf",
   "historyId": "2df6fd066a9e5cf981161a364ca0cb77",
   "testCaseId": "d0f189ef8ab9597a94a93fe6845b4929",
-  "fullName": "tests.api.test_search#test_pagination",
-  "name": "test_pagination[2]",
+  "fullName": "tests.routes.test_customer_sync#test_customer_sync_paginates",
+  "name": "test_customer_sync_paginates",
   "status": "passed",
   "stage": "finished",
   "start": 1793700021052,
@@ -19,15 +19,15 @@
     },
     {
       "name": "package",
-      "value": "tests.api.test_search"
+      "value": "tests.routes.test_customer_sync"
     },
     {
       "name": "parentSuite",
-      "value": "tests.api"
+      "value": "tests.routes"
     },
     {
       "name": "suite",
-      "value": "test_search"
+      "value": "test_customer_sync"
     },
     {
       "name": "host",
@@ -39,13 +39,13 @@
     },
     {
       "name": "feature",
-      "value": "Search"
+      "value": "Customer sync"
     }
   ],
   "parameters": [
     {
-      "name": "page",
-      "value": "2"
+      "name": "page_size",
+      "value": "500"
     }
   ],
   "links": [],

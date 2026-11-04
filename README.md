@@ -18,6 +18,11 @@ The app has two sides. Editors use both; viewers see only the Report.
 - **Overview**: KPIs (total cases, automation rate, in progress, last-run pass rate,
   untriaged failures), coverage trend, results per run for each run group, suite and
   owner breakdowns, triage mix, top flaky tests, and the PR pipeline.
+- **Automation pipeline (GitHub-driven)**: every case gets a derived stage — Not
+  started → In progress → PR draft → In review → Ready to merge → Merged (awaiting run)
+  → Automated. The Overview funnel links each stage to the filtered test list and
+  calls out "N tests done, awaiting merge" with the approved PRs. When the sync sees a
+  linked PR merged, its cases are promoted to `automated` automatically.
 - **Test cases**: a searchable, filterable, server-paginated inventory. You can edit
   the automation status inline, run bulk actions and export to CSV. Each case has a
   detail page with history per run group, a duration trend, the latest failure and
@@ -25,7 +30,11 @@ The app has two sides. Editors use both; viewers see only the Report.
 - **Runs and history**:
   - The runs list shows change chips (new failures, fixed).
   - Run detail compares the run with the previous one and groups failures by
-    normalized error signature. You can triage a whole group at once.
+    normalized error signature. You can triage a whole group at once. Signatures are
+    Camel/Oracle aware: `ORA-`/`TNS-` codes, SQLSTATEs, HTTP statuses and exception
+    class names are kept, exchange/message ids and timestamps are stripped, and
+    connectivity failures (ORA-12541, TNS-*, connection refused, JMS broker down…)
+    get a one-click "Looks like environment — apply?" suggestion.
   - The **history matrix** shows tests × runs as a heatmap.
   - **Compare** puts any two runs side by side.
 - **Bugs**: Jira-linked defects with a verification state, for example "resolved but
@@ -49,7 +58,8 @@ The Report shows aggregates only: no notes, traces or names. It includes:
 - suite readiness;
 - highlights and risks;
 - bug metrics;
-- the PR pipeline.
+- the PR pipeline and automation in flight (in review, ready to merge, merged
+  awaiting a run, and the projected rate once ready PRs merge).
 
 **Print / PDF** uses a dedicated print stylesheet.
 

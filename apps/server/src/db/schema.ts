@@ -5,7 +5,7 @@
  */
 import { sql } from 'drizzle-orm';
 import { index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
-import type { AutomationStatus, BugSeverity, BugStatus, Priority, ResultChange, ResultStatus, TriageCategory } from '@ptd/shared';
+import type { AutomatedVia, AutomationStatus, BugSeverity, BugStatus, Priority, ResultChange, ResultStatus, TriageCategory } from '@ptd/shared';
 
 export type CaseSource = 'manual' | 'spreadsheet' | 'allure' | 'jira';
 export type PrState = 'open' | 'draft' | 'merged' | 'closed';
@@ -31,6 +31,8 @@ export const testCases = sqliteTable(
     source: text('source').$type<CaseSource>().notNull().default('manual'),
     /** Last time the case transitioned to `automated` (for "newly automated" stats). */
     automatedAt: text('automated_at'),
+    /** What moved the case to `automated` last (audit; null = legacy/unknown). */
+    automatedVia: text('automated_via').$type<AutomatedVia>(),
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull(),
     // --- denormalized stats, maintained by domain/caseStats.ts ---
@@ -185,10 +187,13 @@ export const pullRequests = sqliteTable(
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull(),
     mergedAt: text('merged_at'),
+    /** submittedAt of the latest APPROVED review (when known). */
+    approvedAt: text('approved_at'),
   },
   (t) => [
     uniqueIndex('pull_requests_repo_number_uq').on(t.repo, t.number),
     index('pull_requests_state_idx').on(t.state),
+    index('pull_requests_merged_at_idx').on(t.mergedAt),
   ],
 );
 

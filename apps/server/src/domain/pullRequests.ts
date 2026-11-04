@@ -12,6 +12,8 @@ import {
   type ReviewState,
 } from '../db/schema.js';
 import { nowIso } from '../util/time.js';
+import { recordCoverageSnapshot } from './coverage.js';
+import { isReadyToMerge, promoteCasesForMergedPrs, readyToMergeSql } from './pipeline.js';
 
 export type PrPipeline = Summary['prPipeline'];
 
@@ -33,6 +35,8 @@ export function listPullRequests(db: Db, q: PullRequestQuery): PullRequest[] {
   if (q.state) conds.push(eq(pullRequests.state, q.state));
   if (q.reviewState) conds.push(eq(pullRequests.reviewState, q.reviewState));
   if (q.needsAttention !== undefined) conds.push(eq(pullRequests.needsAttention, q.needsAttention));
+  if (q.readyToMerge === true) conds.push(readyToMergeSql);
+  if (q.readyToMerge === false) conds.push(sql`NOT ${readyToMergeSql}`);
   if (q.repo !== undefined) conds.push(eq(pullRequests.repo, q.repo));
   if (q.author !== undefined) conds.push(eq(pullRequests.author, q.author));
   if (q.linkedOnly) conds.push(isLinked);
@@ -76,6 +80,9 @@ export function serializePullRequests(db: Db, rows: PullRequestRow[]): PullReque
     unresolvedThreads: r.unresolvedThreads,
     checks: r.checks,
     needsAttention: r.needsAttention,
+    mergedAt: r.mergedAt,
+    approvedAt: r.approvedAt,
+    readyToMerge: isReadyToMerge(r),
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
     testCases: cases.get(r.id) ?? [],
@@ -90,6 +97,7 @@ export function computePrPipeline(db: Db): PrPipeline {
       reviewState: pullRequests.reviewState,
       unresolvedThreads: pullRequests.unresolvedThreads,
       needsAttention: pullRequests.needsAttention,
+      checks: pullRequests.checks,
     })
     .from(pullRequests)
     .where(and(inArray(pullRequests.state, ['open', 'draft']), isLinked))
@@ -102,10 +110,12 @@ export function computePrPipeline(db: Db): PrPipeline {
     approved: 0,
     unresolvedThreads: 0,
     needsAttention: 0,
+    readyToMerge: 0,
   };
   for (const r of rows) {
     p.unresolvedThreads += r.unresolvedThreads;
     if (r.needsAttention) p.needsAttention++;
+    if (isReadyToMerge(r)) p.readyToMerge++;
     if (r.state === 'draft') p.draft++;
     else if (r.reviewState === 'changes_requested') p.changesRequested++;
     else if (r.reviewState === 'approved') p.approved++;
@@ -132,6 +142,8 @@ export interface PullRequestUpsert {
   createdAt: string;
   updatedAt: string;
   mergedAt: string | null;
+  /** submittedAt of the latest approving review (optional; null/omitted = unknown). */
+  approvedAt?: string | null;
 }
 
 export interface PullRequestLink {
@@ -140,20 +152,38 @@ export interface PullRequestLink {
   linkedBy: LinkedBy;
 }
 
+/** Normalize a timestamp to ISO-8601 with ms (so string comparisons with run/sort times are exact). */
+export function normalizeIso(v: string | null | undefined): string | null {
+  if (!v) return null;
+  const t = Date.parse(v);
+  return Number.isNaN(t) ? null : new Date(t).toISOString();
+}
+
 /**
  * Upsert a repo's PRs and atomically replace all of that repo's case links.
  * PRs no longer returned by GitHub are kept (history for "merged in period")
- * but lose their links. Returns the number of links written.
+ * but lose their links. PRs that became `merged` in this call auto-promote their
+ * linked not_automated / in_progress cases to `automated` (SPEC "Automation
+ * pipeline"). Returns links written and cases promoted.
  */
 export function replaceRepoPullRequests(
   db: Db,
   repo: string,
   prs: PullRequestUpsert[],
   links: PullRequestLink[],
-): number {
+): { linked: number; promoted: number } {
   return db.transaction((tx) => {
     const idByNumber = new Map<number, number>();
     const syncedAt = nowIso();
+    const previousState = new Map(
+      tx
+        .select({ number: pullRequests.number, state: pullRequests.state })
+        .from(pullRequests)
+        .where(eq(pullRequests.repo, repo))
+        .all()
+        .map((r) => [r.number, r.state]),
+    );
+    const newlyMerged: number[] = [];
     for (const pr of prs) {
       const values = {
         repo,
@@ -170,7 +200,8 @@ export function replaceRepoPullRequests(
         needsAttention: computeNeedsAttention(pr),
         createdAt: pr.createdAt || syncedAt,
         updatedAt: pr.updatedAt || syncedAt,
-        mergedAt: pr.mergedAt,
+        mergedAt: normalizeIso(pr.mergedAt),
+        approvedAt: normalizeIso(pr.approvedAt),
       };
       const row = tx
         .insert(pullRequests)
@@ -179,6 +210,7 @@ export function replaceRepoPullRequests(
         .returning({ id: pullRequests.id })
         .get();
       idByNumber.set(pr.number, row.id);
+      if (pr.state === 'merged' && previousState.get(pr.number) !== 'merged') newlyMerged.push(row.id);
     }
     const repoPrIds = tx
       .select({ id: pullRequests.id })
@@ -201,6 +233,8 @@ export function replaceRepoPullRequests(
     for (let i = 0; i < rows.length; i += 500) {
       tx.insert(testCasePullRequests).values(rows.slice(i, i + 500)).run();
     }
-    return rows.length;
+    const promoted = promoteCasesForMergedPrs(tx, newlyMerged, syncedAt);
+    if (promoted > 0) recordCoverageSnapshot(tx);
+    return { linked: rows.length, promoted };
   });
 }

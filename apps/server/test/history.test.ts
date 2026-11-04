@@ -21,7 +21,7 @@ const api = (name: string, status: ResultSpec['status'], start: number, extra: P
   ...extra,
 });
 const ui = (name: string, status: ResultSpec['status'], start: number): ResultSpec => ({
-  fullName: `tests.ui.test_pages#${name}`,
+  fullName: `tests.db.test_tables#${name}`,
   status,
   start,
   message: status === 'failed' ? 'TimeoutError: page did not load' : undefined,
@@ -55,7 +55,7 @@ describe('run history', () => {
     const u2 = await importResults(t, [ui('p1', 'failed', daysAgo(1))], { branch: 'main' });
 
     expect(a1.run.runGroup).toBe('tests/api');
-    expect(u1.run.runGroup).toBe('tests/ui');
+    expect(u1.run.runGroup).toBe('tests/db');
     expect(a1.run.previousRunId).toBeNull();
     expect(a1.run.changes.newTests).toBe(2);
     expect(a2.run.previousRunId).toBe(a1.run.id);
@@ -169,7 +169,7 @@ describe('run history', () => {
     expect(all.total).toBe(3);
     // default group = group of latest run
     const def = (await t.app.inject({ url: '/api/history/matrix' })).json<HistoryMatrix>();
-    expect(def.runGroup).toBe('tests/ui');
+    expect(def.runGroup).toBe('tests/db');
   });
 
   it('computes case history stats and per-group flakiness', async () => {

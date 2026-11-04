@@ -16,6 +16,7 @@ import { containsPattern } from '../util/sql.js';
 import { refreshCaseStats } from './caseStats.js';
 import { findNextRun, linkRun } from './history.js';
 import { bugRefsForFailureGroups } from './bugs.js';
+import { anchorLine, messageLines, suggestTriage } from './signature.js';
 
 export function passRate(c: { passed: number; skipped: number; total: number }): number | null {
   const executed = c.total - c.skipped;
@@ -196,6 +197,7 @@ function serializeResult(r: typeof testResults.$inferSelect, key: string): TestR
     message: r.message,
     trace: r.trace,
     failureSignature: r.failureSignature,
+    suggestedTriage: r.status === 'failed' || r.status === 'broken' ? suggestTriage(r.message) : null,
     change: r.change,
     retries: r.retries,
     parameters: r.parameters,
@@ -237,6 +239,7 @@ export function runFailureGroups(db: Db, runId: number): FailureGroup[] {
   interface Acc {
     signature: string;
     sampleMessage: string;
+    suggestedTriage: TriageCategory | null;
     count: number;
     newFailures: number;
     failed: number;
@@ -251,7 +254,9 @@ export function runFailureGroups(db: Db, runId: number): FailureGroup[] {
     if (!g) {
       g = {
         signature: sig,
-        sampleMessage: (r.message ?? '').split(/\r?\n/)[0]?.slice(0, 500) ?? '',
+        // the line that drives the signature (e.g. the ORA- line under a Camel wrapper)
+        sampleMessage: anchorLine(messageLines(r.message)).line.slice(0, 500),
+        suggestedTriage: suggestTriage(r.message),
         count: 0,
         newFailures: 0,
         failed: 0,
@@ -292,6 +297,7 @@ export function runFailureGroups(db: Db, runId: number): FailureGroup[] {
         status: g.broken > g.failed ? ('broken' as const) : ('failed' as const),
         testCases: [...g.cases.values()],
         triage,
+        suggestedTriage: g.suggestedTriage,
         bugs: bugRefs.get(g.signature) ?? [],
       };
     })

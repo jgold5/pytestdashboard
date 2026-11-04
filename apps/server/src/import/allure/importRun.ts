@@ -201,6 +201,7 @@ export function importAllureRun(
             allureFullName: r.fullName,
             source: 'allure',
             automatedAt: importedAt,
+            automatedVia: 'allure',
             createdAt: importedAt,
             updatedAt: importedAt,
           })
@@ -227,7 +228,7 @@ export function importAllureRun(
       const ids = [...toPromote];
       for (let i = 0; i < ids.length; i += 500) {
         tx.update(testCases)
-          .set({ automationStatus: 'automated', automatedAt: importedAt, updatedAt: importedAt })
+          .set({ automationStatus: 'automated', automatedAt: importedAt, automatedVia: 'allure', updatedAt: importedAt })
           .where(inArray(testCases.id, ids.slice(i, i + 500)))
           .run();
       }

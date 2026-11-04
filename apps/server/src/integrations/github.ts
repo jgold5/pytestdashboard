@@ -143,7 +143,11 @@ const GqlPr = z
       .nullish(),
     reviews: z
       .object({
-        nodes: z.array(z.object({ author: Login, state: z.string() }).nullish()).nullish(),
+        nodes: z
+          .array(
+            z.object({ author: Login, state: z.string(), submittedAt: z.string().nullish() }).nullish(),
+          )
+          .nullish(),
       })
       .nullish(),
     reviewThreads: z
@@ -226,6 +230,19 @@ export function deriveChecks(rollup: string | null | undefined): ChecksState {
   }
 }
 
+/** submittedAt of the latest APPROVED review (null if none visible / no timestamps). */
+export function latestApprovalAt(
+  reviews: ReadonlyArray<{ state: string; submittedAt?: string | null }>,
+): string | null {
+  let best: number | null = null;
+  for (const r of reviews) {
+    if (r.state !== 'APPROVED' || !r.submittedAt) continue;
+    const t = Date.parse(r.submittedAt);
+    if (!Number.isNaN(t) && (best === null || t > best)) best = t;
+  }
+  return best === null ? null : new Date(best).toISOString();
+}
+
 export function graphqlUrl(apiUrl: string): string {
   const u = new URL(apiUrl);
   return u.hostname === 'api.github.com' ? `${u.origin}/graphql` : `${u.origin}/api/graphql`;
@@ -239,7 +256,7 @@ function safeHtmlUrl(raw: string | null | undefined, fallback: string): string {
 const PR_FRAGMENT = `fragment PrInfo on PullRequest {
   number isDraft reviewDecision
   reviewRequests(first: 20) { nodes { requestedReviewer { ... on User { login } ... on Team { name slug } ... on Mannequin { login } ... on Bot { login } } } }
-  reviews(last: 50) { nodes { author { login } state } }
+  reviews(last: 50) { nodes { author { login } state submittedAt } }
   reviewThreads(first: 100) { nodes { isResolved } }
   commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
 }`;
@@ -461,7 +478,11 @@ export function createGithubProvider(
       const requestedReviewers = [...new Set(g ? gReviewers : restReviewers)].slice(0, 50);
       const reviews = (g?.reviews?.nodes ?? [])
         .filter((r): r is NonNullable<typeof r> => Boolean(r))
-        .map((r) => ({ author: r.author?.login ?? null, state: r.state }));
+        .map((r) => ({
+          author: r.author?.login ?? null,
+          state: r.state,
+          submittedAt: r.submittedAt ?? null,
+        }));
       const unresolvedThreads = (g?.reviewThreads?.nodes ?? []).filter(
         (t) => t && !t.isResolved,
       ).length;
@@ -472,6 +493,7 @@ export function createGithubProvider(
         merged_at: pr.merged_at,
       });
 
+      const reviewState = deriveReviewState(g?.reviewDecision, reviews, requestedReviewers);
       upserts.push({
         number: pr.number,
         title: pr.title.slice(0, 500),
@@ -479,13 +501,14 @@ export function createGithubProvider(
         state,
         author: pr.user?.login ?? null,
         headBranch: pr.head?.ref ?? null,
-        reviewState: deriveReviewState(g?.reviewDecision, reviews, requestedReviewers),
+        reviewState,
         requestedReviewers,
         unresolvedThreads,
         checks: deriveChecks(rollup),
         createdAt: pr.created_at,
         updatedAt: pr.updated_at,
         mergedAt: pr.merged_at ?? null,
+        approvedAt: reviewState === 'approved' ? latestApprovalAt(reviews) : null,
       });
       for (const l of linksByPr.get(pr.number) ?? []) {
         links.push({ prNumber: pr.number, testCaseId: l.testCaseId, linkedBy: l.linkedBy });
@@ -500,9 +523,10 @@ export function createGithubProvider(
         .all()
         .map((r) => r.number),
     );
-    const linked = replaceRepoPullRequests(db, repo, upserts, links);
+    const { linked, promoted } = replaceRepoPullRequests(db, repo, upserts, links);
     const created = upserts.filter((p) => !existing.has(p.number)).length;
-    return { fetched: upserts.length, created, updated: upserts.length - created, linked };
+    // updated = test cases auto-promoted to `automated` because a linked PR merged
+    return { fetched: upserts.length, created, updated: promoted, linked };
   }
 
   return {

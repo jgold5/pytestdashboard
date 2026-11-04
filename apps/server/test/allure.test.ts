@@ -1,11 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { RunImportResponse, TestCase, TestCaseList, TestResultList } from '@ptd/shared';
+import type { FailureGroup, RunImportResponse, TestCase, TestCaseList, TestResultList } from '@ptd/shared';
 import { AllureBundle, parseProperties } from '../src/import/allure/parse.js';
 import { dedupeRetries, humanizeModule, linkCandidates, suiteFromResult } from '../src/import/allure/importRun.js';
 import { deriveRunGroup } from '../src/import/allure/runGroup.js';
-import { failureSignature, normalizeFailureMessage } from '../src/domain/signature.js';
+import { failureSignature, normalizeFailureMessage, suggestTriage } from '../src/domain/signature.js';
 import { createTestApp, multipart, type TestApp } from './helpers/app.js';
 import { importResults } from './helpers/allure.js';
 
@@ -23,6 +23,124 @@ describe('failure signatures', () => {
     expect(failureSignature('Timeout after 30s')).toBe(failureSignature('Timeout after 45s'));
     expect(failureSignature('Timeout after 30s')).not.toBe(failureSignature('Connection refused'));
     expect(normalizeFailureMessage('hash deadbeef12 mismatch')).toBe('hash <hex> mismatch');
+  });
+
+  const sig = failureSignature;
+  const norm = normalizeFailureMessage;
+
+  it('preserves Oracle error codes (ORA/TNS/PLS/SP2) — different codes never group', () => {
+    expect(sig('cx_Oracle.DatabaseError: ORA-00942: table or view does not exist')).not.toBe(
+      sig('cx_Oracle.DatabaseError: ORA-00001: unique constraint (APP.PK_INVOICE) violated'),
+    );
+    expect(sig('ORA-12541: TNS:no listener')).not.toBe(sig('ORA-12514: TNS:listener does not currently know of service'));
+    expect(norm('TNS-12560: TNS:protocol adapter error')).toBe('tns-12560: tns:protocol adapter error');
+    expect(norm('PLS-00201: identifier MY_PKG must be declared')).toBe('pls-00201: identifier my_pkg must be declared');
+    expect(norm('SP2-0310: unable to open file "seed_42.sql"')).toBe('sp2-0310: unable to open file <str>');
+    expect(sig('PLS-00201: x')).not.toBe(sig('PLS-00302: x'));
+    expect(sig('SP2-0310: x')).not.toBe(sig('SP2-0042: x'));
+  });
+
+  it('the same Oracle error groups across drivers / wrappers; the ORA line drives the signature', () => {
+    const a = 'cx_Oracle.DatabaseError: ORA-12541: TNS:no listener';
+    const b = 'oracledb.exceptions.OperationalError: ORA-12541: TNS:no listener';
+    const c =
+      'org.apache.camel.CamelExecutionException: Exception occurred during execution on the exchange: Exchange[ID-ci-7-41235-1793700000000-0-5]\n' +
+      'Caused by: java.sql.SQLRecoverableException: ORA-12541: TNS:no listener';
+    const d = 'AssertionError: assert route did not complete\nE   oracledb.exceptions.OperationalError: ORA-12541: TNS:no listener';
+    expect(norm(a)).toBe('ora-12541: tns:no listener');
+    expect(new Set([sig(a), sig(b), sig(c), sig(d)]).size).toBe(1);
+    // object names in quotes still normalize; constraint names (unquoted) are kept
+    expect(norm('ORA-01400: cannot insert NULL into ("APP"."INVOICE"."ID")')).toBe('ora-01400: cannot insert null into (<str>.<str>.<str>)');
+    expect(sig('ORA-00001: unique constraint (APP.PK_INVOICE) violated')).not.toBe(
+      sig('ORA-00001: unique constraint (APP.PK_ORDER) violated'),
+    );
+    // a code inside a quoted value is kept, the rest of the line is not dropped
+    expect(norm("AssertionError: expected 'ORA-00001' got 'ok'")).toBe('assertionerror: expected <str ora-00001> got <str>');
+  });
+
+  it('keeps SQLSTATE and HTTP status codes', () => {
+    expect(norm('java.sql.SQLException: SQLSTATE[23000] integrity violation')).toBe('sqlexception: sqlstate 23000 integrity violation');
+    expect(sig('SQLState: 08006 connection failure')).not.toBe(sig('SQLState: 08001 connection failure'));
+    expect(norm('org.apache.camel.http.base.HttpOperationFailedException: HTTP operation failed invoking http://orders:8080/api with statusCode: 503')).toContain(
+      'httpoperationfailedexception: http operation failed invoking',
+    );
+    expect(sig('HttpOperationFailedException: HTTP operation failed with statusCode: 503')).not.toBe(
+      sig('HttpOperationFailedException: HTTP operation failed with statusCode: 500'),
+    );
+    expect(norm('requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: x')).toBe(
+      'httperror: http 500: internal server error for url: x',
+    );
+    expect(sig('upstream returned HTTP 502')).not.toBe(sig('upstream returned HTTP 504'));
+    expect(norm('HTTP/1.1 404 Not Found')).toBe('http 404 not found');
+    // other numbers are still stripped
+    expect(sig('expected 3 rows but got 2')).toBe(sig('expected 7 rows but got 5'));
+  });
+
+  it('reduces Java/Camel/Python exception classes to the simple class name', () => {
+    expect(norm('org.apache.camel.CamelExecutionException: boom')).toBe('camelexecutionexception: boom');
+    expect(norm('java.sql.SQLRecoverableException: IO Error: The Network Adapter could not establish the connection')).toBe(
+      'sqlrecoverableexception: io error: the network adapter could not establish the connection',
+    );
+    expect(norm('org.apache.camel.component.jms.JmsException: broker gone')).toBe('jmsexception: broker gone');
+    expect(sig('org.apache.camel.CamelExecutionException: boom')).not.toBe(sig('org.apache.camel.NoSuchEndpointException: boom'));
+  });
+
+  it('strips Camel exchange ids, message ids, route/endpoint counters and timestamps', () => {
+    const ex = (id: string, route: number, ts: string) =>
+      `org.apache.camel.CamelExchangeException: Failed delivery on route${route} at ${ts} on the exchange: Exchange[${id}] MessageId: ID:amq-${route}-1700000000000-1:1:1:1:${route}`;
+    const a = ex('ID-ci-runner-7-41235-1793700000000-0-5', 12, '2026-11-04T01:02:03.456Z');
+    const b = ex('ID-ci-runner-2-39999-1793700099999-3-117', 3, '2026-11-05 22:10:09,001');
+    expect(sig(a)).toBe(sig(b));
+    expect(norm(a)).toBe(
+      'camelexchangeexception: failed delivery on route<n> at <ts> on the exchange: exchange[<exchange-id>] messageid: <msg-id>',
+    );
+  });
+
+  it('only the first lines are considered (later lines never change the signature)', () => {
+    const head = Array.from({ length: 8 }, (_, i) => `AssertionError line ${i}`).join('\n');
+    expect(sig(`${head}\nORA-00942: x`)).toBe(sig(`${head}\nORA-00001: y`));
+  });
+});
+
+describe('suggested triage', () => {
+  it('suggests environment for Oracle connectivity / infra codes', () => {
+    for (const code of ['12541', '12514', '12170', '03113', '03114', '12537', '01017', '28000', '00018', '00020']) {
+      expect(suggestTriage(`oracledb.exceptions.DatabaseError: ORA-${code}: x`), code).toBe('environment');
+    }
+    expect(suggestTriage('TNS-12560: TNS:protocol adapter error')).toBe('environment');
+    expect(
+      suggestTriage('org.apache.camel.CamelExecutionException: Exception occurred\nCaused by: java.sql.SQLException: ORA-03113: end-of-file on communication channel'),
+    ).toBe('environment');
+  });
+
+  it('suggests environment for network / broker failures', () => {
+    for (const m of [
+      "requests.exceptions.ConnectionError: HTTPConnectionPool(host='orders-api', port=8080): Failed to establish a new connection: [Errno 111] Connection refused",
+      'ConnectionResetError: [Errno 104] Connection reset by peer',
+      'socket.timeout: timed out',
+      'java.net.UnknownHostException: oracle-db.staging.internal',
+      'javax.jms.JMSException: Could not connect to broker URL: tcp://amq:61616',
+      'org.apache.activemq.artemis.api.core.ActiveMQNotConnectedException: AMQ219007: Cannot connect to server(s)',
+      'ActiveMQ transport failed: tcp://amq:61616',
+      'org.apache.camel.component.direct.DirectConsumerNotAvailableException: No consumers available on endpoint: direct://invoices',
+      'java.sql.SQLRecoverableException: IO Error: The Network Adapter could not establish the connection',
+    ]) {
+      expect(suggestTriage(m), m).toBe('environment');
+    }
+  });
+
+  it('returns null for product / test failures', () => {
+    for (const m of [
+      'oracledb.exceptions.IntegrityError: ORA-00001: unique constraint (APP.PK_INVOICE) violated',
+      'cx_Oracle.DatabaseError: ORA-00942: table or view does not exist',
+      'AssertionError: assert 3 == 2',
+      'HttpOperationFailedException: HTTP operation failed invoking http://x with statusCode: 500',
+      'ORA-01400: cannot insert NULL into ("APP"."INVOICE"."ID")',
+      null,
+      '',
+    ]) {
+      expect(suggestTriage(m), String(m)).toBeNull();
+    }
   });
 });
 
@@ -79,7 +197,7 @@ describe('allure parsing', () => {
     );
     expect(deriveRunGroup([r('tests.api.users.test_login#a'), r('tests.api.orders.test_o#b')])).toBe('tests/api');
     expect(deriveRunGroup([r('tests.api.a.b.c.test_x#t')])).toBe('tests/api/a');
-    expect(deriveRunGroup([r('tests/ui/checkout/test_pay.py::TestPay::test_ok')])).toBe('tests/ui/checkout');
+    expect(deriveRunGroup([r('tests/db/invoices/test_merge.py::TestMerge::test_ok')])).toBe('tests/db/invoices');
     expect(deriveRunGroup([r('api.test_a#t'), r('ui.test_b#t')])).toBe('default');
     expect(deriveRunGroup([r(null, [{ name: 'parentSuite', value: 'x' }])])).toBe('default');
     expect(deriveRunGroup([r(null, [{ name: 'package', value: 'tests.smoke.test_a' }])])).toBe('tests/smoke');
@@ -100,8 +218,9 @@ describe('POST /api/runs/import', () => {
     expect(res.statusCode).toBe(201);
     const body = res.json<RunImportResponse>();
     expect(body.run.name).toBe('nightly #482');
-    expect(body.run.buildUrl).toBe('https://github.com/acme/shop/actions/runs/123456');
-    expect(body.run.runGroup).toBe('tests/api');
+    expect(body.run.buildUrl).toBe('https://github.com/acme/camel-routes/actions/runs/123456');
+    expect(body.run.runGroup).toBe('tests/routes');
+    expect(body.run.environment.Camel).toBe('4.8.1');
     expect(body.run.environment.Python).toBe('3.12.4');
     expect(body.run.counts).toMatchObject({ total: 14, passed: 10, failed: 2, broken: 1, skipped: 1 });
     expect(body.createdTestCases).toBe(13);
@@ -109,14 +228,23 @@ describe('POST /api/runs/import', () => {
     expect(body.warnings.some((w) => w.includes('auto-detected'))).toBe(true);
 
     const results = (
-      await t.app.inject({ url: `/api/runs/${body.run.id}/results?search=cart_total` })
+      await t.app.inject({ url: `/api/runs/${body.run.id}/results?search=publishes_to_queue` })
     ).json<TestResultList>();
     expect(results.items[0]?.retries).toBe(1);
     expect(results.items[0]?.status).toBe('passed');
 
-    const failures = (await t.app.inject({ url: `/api/runs/${body.run.id}/failures` })).json<Array<{ count: number }>>();
-    expect(failures[0]?.count).toBe(2); // create_user + delete_user share a signature
+    const failures = (await t.app.inject({ url: `/api/runs/${body.run.id}/failures` })).json<FailureGroup[]>();
+    // the Camel-wrapped JDBC error and the python oracledb error share ORA-00001
+    expect(failures[0]).toMatchObject({
+      count: 2,
+      status: 'failed',
+      suggestedTriage: null,
+      sampleMessage: expect.stringMatching(/ORA-00001: unique constraint \(APP\.PK_INVOICE\) violated$/),
+    });
+    expect(failures[1]).toMatchObject({ count: 1, status: 'broken', suggestedTriage: 'environment' });
     expect(failures).toHaveLength(2);
+    const broken = (await t.app.inject({ url: `/api/runs/${body.run.id}/results?status=broken` })).json<TestResultList>();
+    expect(broken.items[0]).toMatchObject({ suggestedTriage: 'environment', testCaseKey: expect.stringContaining('test_payment_route') });
   });
 
   it('links by allureId, jiraKey, allureFullName and key before auto-creating; promotes', async () => {
@@ -173,7 +301,7 @@ describe('suite names for auto-created cases', () => {
     expect(suiteFromResult(res([{ name: 'suite', value: 'test_orders' }, { name: 'parentSuite', value: 'tests.api' }]))).toBe('Orders');
     expect(suiteFromResult(res([{ name: 'parentSuite', value: 'tests.api' }]))).toBe('Api');
     expect(suiteFromResult(res([], 'tests.api.test_user_profile.TestProfile#test_x'))).toBe('User profile');
-    expect(suiteFromResult(res([], 'tests/ui/checkout_flow_test.py::test_x'))).toBe('Checkout flow');
+    expect(suiteFromResult(res([], 'tests/routes/order_flow_test.py::test_x'))).toBe('Order flow');
     expect(suiteFromResult(res([{ name: 'suite', value: 'Payments API' }]))).toBe('Payments API');
     expect(humanizeModule('test_')).toBe('test_');
   });

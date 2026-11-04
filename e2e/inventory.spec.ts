@@ -28,8 +28,8 @@ test('spreadsheet wizard: map columns, dry run, commit', async ({ page }) => {
   await expect(page.getByText('Created', { exact: true })).toBeVisible();
 
   await page.getByRole('link', { name: 'View test cases' }).click();
-  await page.getByRole('searchbox', { name: 'Search test cases' }).fill('Login with SSO');
-  await expect(page.getByRole('row').filter({ hasText: 'Login with SSO' }).getByRole('link', { name: 'TC-001' })).toBeVisible();
+  await page.getByRole('searchbox', { name: 'Search test cases' }).fill('Order route publishes');
+  await expect(page.getByRole('row').filter({ hasText: 'Order route publishes to ORDERS.IN queue' }).getByRole('link', { name: 'TC-001' })).toBeVisible();
 });
 
 test('inline automation status change persists after reload', async ({ page }) => {

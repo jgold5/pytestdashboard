@@ -2,8 +2,8 @@
   "uuid": "5bc56dc3-7660-525b-ab42-7c8be9af13f4",
   "historyId": "32252e7901b85bc98ef2e0250579f626",
   "testCaseId": "73b2d780947556f6a361143a23055bd8",
-  "fullName": "tests.api.test_auth.TestLogin#test_logout_clears_session",
-  "name": "test_logout_clears_session",
+  "fullName": "tests.routes.test_order_route.TestOrderRoute#test_order_route_sets_correlation_id",
+  "name": "test_order_route_sets_correlation_id",
   "status": "passed",
   "stage": "finished",
   "start": 1793700000412,
@@ -19,15 +19,15 @@
     },
     {
       "name": "package",
-      "value": "tests.api.test_auth"
+      "value": "tests.routes.test_order_route"
     },
     {
       "name": "parentSuite",
-      "value": "tests.api"
+      "value": "tests.routes"
     },
     {
       "name": "suite",
-      "value": "test_auth"
+      "value": "test_order_route"
     },
     {
       "name": "host",
@@ -39,11 +39,11 @@
     },
     {
       "name": "subSuite",
-      "value": "TestLogin"
+      "value": "TestOrderRoute"
     },
     {
       "name": "feature",
-      "value": "Authentication"
+      "value": "Order routes"
     }
   ],
   "parameters": [],

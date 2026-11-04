@@ -2,8 +2,8 @@
   "uuid": "ca326949-fcc4-5186-afb4-c16d1fb3be52",
   "historyId": "71ef6e44c2b052e2bb81aeaa429500e9",
   "testCaseId": "78a3a8d9dd355b398b2f011f8fbfff35",
-  "fullName": "tests.api.test_auth.TestLogin#test_token_refresh",
-  "name": "test_token_refresh",
+  "fullName": "tests.routes.test_order_route.TestOrderRoute#test_order_route_idempotent_consumer",
+  "name": "test_order_route_idempotent_consumer",
   "status": "passed",
   "stage": "finished",
   "start": 1793700000645,
@@ -19,15 +19,15 @@
     },
     {
       "name": "package",
-      "value": "tests.api.test_auth"
+      "value": "tests.routes.test_order_route"
     },
     {
       "name": "parentSuite",
-      "value": "tests.api"
+      "value": "tests.routes"
     },
     {
       "name": "suite",
-      "value": "test_auth"
+      "value": "test_order_route"
     },
     {
       "name": "host",
@@ -39,11 +39,11 @@
     },
     {
       "name": "subSuite",
-      "value": "TestLogin"
+      "value": "TestOrderRoute"
     },
     {
       "name": "feature",
-      "value": "Authentication"
+      "value": "Order routes"
     }
   ],
   "parameters": [],

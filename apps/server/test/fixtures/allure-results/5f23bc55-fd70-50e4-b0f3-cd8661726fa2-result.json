@@ -2,8 +2,8 @@
   "uuid": "5f23bc55-fd70-50e4-b0f3-cd8661726fa2",
   "historyId": "6da32d531974579f8314c7e8d3f14080",
   "testCaseId": "ea2e551023075638b9c20e30d6a08d86",
-  "fullName": "tests.api.test_users#test_update_profile",
-  "name": "test_update_profile",
+  "fullName": "tests.routes.test_invoice_route#test_invoice_route_transforms_xml",
+  "name": "test_invoice_route_transforms_xml",
   "status": "passed",
   "stage": "finished",
   "start": 1793700003973,
@@ -19,15 +19,15 @@
     },
     {
       "name": "package",
-      "value": "tests.api.test_users"
+      "value": "tests.routes.test_invoice_route"
     },
     {
       "name": "parentSuite",
-      "value": "tests.api"
+      "value": "tests.routes"
     },
     {
       "name": "suite",
-      "value": "test_users"
+      "value": "test_invoice_route"
     },
     {
       "name": "host",
@@ -39,7 +39,7 @@
     },
     {
       "name": "feature",
-      "value": "User management"
+      "value": "Invoice routes"
     }
   ],
   "parameters": [],

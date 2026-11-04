@@ -2,8 +2,8 @@
   "uuid": "42241b11-ecf5-5afc-ae0d-0b840d407ace",
   "historyId": "ad73a8962c505d2ca687cfe43e76f3e5",
   "testCaseId": "26d97d4b6604533aacd52840446d9a22",
-  "fullName": "tests.api.test_system#test_health_endpoint",
-  "name": "test_health_endpoint",
+  "fullName": "tests.routes.test_health#test_health_endpoint_reports_db_up",
+  "name": "test_health_endpoint_reports_db_up",
   "status": "passed",
   "stage": "finished",
   "start": 1793700021350,
@@ -19,15 +19,15 @@
     },
     {
       "name": "package",
-      "value": "tests.api.test_system"
+      "value": "tests.routes.test_health"
     },
     {
       "name": "parentSuite",
-      "value": "tests.api"
+      "value": "tests.routes"
     },
     {
       "name": "suite",
-      "value": "test_system"
+      "value": "test_health"
     },
     {
       "name": "host",

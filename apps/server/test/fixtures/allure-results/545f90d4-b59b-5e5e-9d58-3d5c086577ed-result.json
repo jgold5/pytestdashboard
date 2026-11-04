@@ -2,8 +2,8 @@
   "uuid": "545f90d4-b59b-5e5e-9d58-3d5c086577ed",
   "historyId": "83a84c2840875d2ca0d6226f174cc48d",
   "testCaseId": "e4fba5d5ec99559d91f953448c933b3c",
-  "fullName": "tests.api.test_orders.TestCheckout#test_checkout_with_card",
-  "name": "test_checkout_with_card",
+  "fullName": "tests.routes.test_payment_route.TestPaymentRoute#test_payment_route_writes_ledger",
+  "name": "test_payment_route_writes_ledger",
   "status": "broken",
   "stage": "finished",
   "start": 1793700004328,
@@ -19,15 +19,15 @@
     },
     {
       "name": "package",
-      "value": "tests.api.test_orders"
+      "value": "tests.routes.test_payment_route"
     },
     {
       "name": "parentSuite",
-      "value": "tests.api"
+      "value": "tests.routes"
     },
     {
       "name": "suite",
-      "value": "test_orders"
+      "value": "test_payment_route"
     },
     {
       "name": "host",
@@ -39,11 +39,11 @@
     },
     {
       "name": "subSuite",
-      "value": "TestCheckout"
+      "value": "TestPaymentRoute"
     },
     {
       "name": "feature",
-      "value": "Checkout"
+      "value": "Payment routes"
     }
   ],
   "parameters": [],
@@ -51,7 +51,7 @@
   "steps": [],
   "attachments": [],
   "statusDetails": {
-    "message": "requests.exceptions.ConnectionError: HTTPSConnectionPool(host='payments.staging.internal', port=443): Max retries exceeded with url: /v1/charge (Caused by NewConnectionError('<urllib3.connection.HTTPSConnection object at 0x7f3b2c1d4e50>: Failed to establish a new connection: [Errno 111] Connection refused'))",
-    "trace": "Traceback (most recent call last):\n  File \"/usr/lib/python3.12/site-packages/urllib3/connection.py\", line 198, in _new_conn\nConnectionRefusedError: [Errno 111] Connection refused"
+    "message": "oracledb.exceptions.OperationalError: ORA-12541: TNS:no listener\nHelp: https://docs.oracle.com/error-help/db/ora-12541/",
+    "trace": "Traceback (most recent call last):\n  File \"tests/routes/test_payment_route.py\", line 88, in test_payment_route_writes_ledger\n    route.run()\noracledb.exceptions.OperationalError: ORA-12541: TNS:no listener"
   }
 }

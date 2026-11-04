@@ -45,6 +45,7 @@ const EXPORT_COLUMNS: Array<[string, (c: TestCase) => unknown]> = [
   ['triage', (c) => c.triage],
   ['flakiness', (c) => c.flakiness],
   ['inOpenPr', (c) => (c.inOpenPr ? 'yes' : 'no')],
+  ['pipelineStage', (c) => c.pipelineStage],
   ['noteCount', (c) => c.noteCount],
   ['updatedAt', (c) => c.updatedAt],
 ];

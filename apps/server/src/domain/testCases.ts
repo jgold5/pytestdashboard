@@ -28,6 +28,7 @@ import { openBugRefsForCases } from './bugs.js';
 import { serializeNote } from './notes.js';
 import { recomputeRunCounts } from './runs.js';
 import { caseHistory } from './caseHistory.js';
+import { isReadyToMerge, pipelineStageFilter, pipelineStagesForCases } from './pipeline.js';
 
 // ---------------------------------------------------------------------------
 // Serialization
@@ -59,6 +60,9 @@ export function prRefsForCases(db: Db, caseIds: number[]): Map<number, PullReque
       unresolvedThreads: r.pr.unresolvedThreads,
       checks: r.pr.checks,
       needsAttention: r.pr.needsAttention,
+      mergedAt: r.pr.mergedAt,
+      approvedAt: r.pr.approvedAt,
+      readyToMerge: isReadyToMerge(r.pr),
     });
     map.set(r.caseId, list);
   }
@@ -82,6 +86,7 @@ export function serializeCases(db: Db, rows: TestCaseRow[]): TestCase[] {
   const ids = rows.map((r) => r.id);
   const prs = prRefsForCases(db, ids);
   const openBugs = openBugRefsForCases(db, ids);
+  const stages = pipelineStagesForCases(db, ids);
   const names = runNames(
     db,
     rows.flatMap((r) => (r.lastRunId ? [r.lastRunId] : [])),
@@ -108,6 +113,8 @@ export function serializeCases(db: Db, rows: TestCaseRow[]): TestCase[] {
       source: r.source,
       pullRequests: pullRequestsForCase,
       inOpenPr: pullRequestsForCase.some((p) => p.state === 'open' || p.state === 'draft'),
+      pipelineStage: stages.get(r.id) ?? 'not_started',
+      automatedVia: r.automatedVia,
       lastResult,
       triage: r.triage,
       openBugs: openBugs.get(r.id) ?? [],
@@ -176,6 +183,7 @@ export function buildCaseWhere(f: CaseFilters): SQL | undefined {
   if (f.flakyOnly === true) conds.push(sql`${testCases.flakiness} >= ${FLAKY_THRESHOLD}`);
   if (f.inOpenPr === true) conds.push(openPrExists);
   if (f.inOpenPr === false) conds.push(sql`NOT ${openPrExists}`);
+  if (f.pipelineStage) conds.push(pipelineStageFilter(f.pipelineStage));
   return conds.length ? and(...conds) : undefined;
 }
 
@@ -263,6 +271,7 @@ export function createCase(db: Db, input: TestCaseCreate, source: CaseSource = '
       jiraKey: input.jiraKey ?? null,
       source,
       automatedAt: input.automationStatus === 'automated' ? now : null,
+      automatedVia: input.automationStatus === 'automated' ? 'manual' : null,
       createdAt: now,
       updatedAt: now,
     })
@@ -281,7 +290,10 @@ export function patchToSet(patch: TestCaseUpdate, current?: Pick<TestCaseRow, 'a
   if (patch.priority !== undefined) set.priority = patch.priority;
   if (patch.automationStatus !== undefined) {
     set.automationStatus = patch.automationStatus;
-    if (patch.automationStatus === 'automated' && current?.automationStatus !== 'automated') set.automatedAt = nowIso();
+    if (patch.automationStatus === 'automated' && current?.automationStatus !== 'automated') {
+      set.automatedAt = nowIso();
+      set.automatedVia = 'manual';
+    }
   }
   if (patch.owner !== undefined) set.owner = patch.owner;
   if (patch.tags !== undefined) set.tags = patch.tags;
@@ -306,12 +318,13 @@ export function bulkUpdateCases(db: Db, input: TestCaseBulkUpdate): number {
   const ids = [...new Set(input.ids)];
   const set = patchToSet(input.patch);
   delete set.automatedAt;
+  delete set.automatedVia;
   const now = nowIso();
   set.updatedAt = now;
   if (input.patch.automationStatus === 'automated') {
     // stamp only the cases that transition into `automated`
     db.update(testCases)
-      .set({ automatedAt: now })
+      .set({ automatedAt: now, automatedVia: 'manual' })
       .where(and(inArray(testCases.id, ids), ne(testCases.automationStatus, 'automated')))
       .run();
   }

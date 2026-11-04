@@ -2,8 +2,8 @@
   "uuid": "c6dd5638-b6b3-5f75-9233-2160d100b068",
   "historyId": "7a9653f390605795862454e130ce83d4",
   "testCaseId": "0798d5dac38b5767a9ce665fbaae92bb",
-  "fullName": "tests.api.test_orders.TestCheckout#test_apply_coupon",
-  "name": "test_apply_coupon",
+  "fullName": "tests.routes.test_dead_letter.TestJmsOutage#test_dead_letter_channel_on_jms_outage",
+  "name": "test_dead_letter_channel_on_jms_outage",
   "status": "skipped",
   "stage": "finished",
   "start": 1793700019360,
@@ -19,15 +19,15 @@
     },
     {
       "name": "package",
-      "value": "tests.api.test_orders"
+      "value": "tests.routes.test_dead_letter"
     },
     {
       "name": "parentSuite",
-      "value": "tests.api"
+      "value": "tests.routes"
     },
     {
       "name": "suite",
-      "value": "test_orders"
+      "value": "test_dead_letter"
     },
     {
       "name": "host",
@@ -39,11 +39,11 @@
     },
     {
       "name": "subSuite",
-      "value": "TestCheckout"
+      "value": "TestJmsOutage"
     },
     {
       "name": "feature",
-      "value": "Checkout"
+      "value": "Dead letter channel"
     }
   ],
   "parameters": [],
@@ -51,7 +51,6 @@
   "steps": [],
   "attachments": [],
   "statusDetails": {
-    "message": "Skipped: coupon service disabled in staging",
-    "trace": null
+    "message": "Skipped: JMS broker (Artemis) not available in this environment"
   }
 }

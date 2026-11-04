@@ -2,10 +2,9 @@ import { useMemo, useState, type ReactNode } from 'react';
 import { Link } from 'react-router';
 import {
   ArrowRight,
-  Bot,
-  CircleDashed,
   FileSpreadsheet,
   GitPullRequest,
+  GitPullRequestArrow,
   ListChecks,
   MessageSquare,
   Shuffle,
@@ -13,7 +12,7 @@ import {
   Upload,
 } from 'lucide-react';
 import type { Summary, TriageCategory } from '@ptd/shared';
-import { useBugStats, useSummary } from '../api/hooks';
+import { useBugStats, usePullRequests, useSummary } from '../api/hooks';
 import { Card, CardBody, CardHeader } from '../components/ui/card';
 import { Skeleton } from '../components/ui/skeleton';
 import { EmptyState, ErrorState } from '../components/ui/empty-state';
@@ -21,7 +20,8 @@ import { PageHeader, SegmentedBar } from '../components/ui/misc';
 import { linkButton } from '../components/ui/link-button';
 import { CoverageTrendChart } from '../components/charts/CoverageTrendChart';
 import { RunTrendChart } from '../components/charts/RunTrendChart';
-import { FlakyMeter, REVIEW_META, Swatch, TRIAGE_META } from '../components/status';
+import { FlakyMeter, REVIEW_META, TRIAGE_META } from '../components/status';
+import { PipelineFunnel, stageHref } from '../components/pipeline';
 import { RunGroupChip } from '../components/RunGroup';
 import { cn, fmtNumber, fmtPct, fmtRelative, pluralize } from '../lib/utils';
 
@@ -68,6 +68,7 @@ export function OverviewPage() {
         <div className="space-y-4">
           <KpiRow s={s} />
           <StillFailingCallout />
+          <ReadyToMergeCallout s={s} />
           <PipelineCard s={s} />
           <div className="grid gap-4 xl:grid-cols-2">
             <Card>
@@ -215,22 +216,16 @@ function KpiRow({ s }: { s: Summary }) {
 }
 
 // ---------------------------------------------------------------------------
-// Automation pipeline: Automated / In PR / In progress / Not automated
+// Automation pipeline: progress bar + the GitHub-driven stage funnel
 
 function PipelineCard({ s }: { s: Summary }) {
   const c = s.coverage;
   const automatable = c.total - c.notAutomatable;
-  const stages = [
-    { key: 'automated', label: 'Automated', value: c.automated, color: 'var(--au-automated)', icon: Bot, to: '/tests?automationStatus=automated' },
-    { key: 'inpr', label: 'In PR', value: c.inOpenPr, color: 'var(--au-inpr)', icon: GitPullRequest, to: '/tests?inOpenPr=true', note: 'open PR linked' },
-    { key: 'progress', label: 'In progress', value: c.inProgress, color: 'var(--au-progress)', icon: CircleDashed, to: '/tests?automationStatus=in_progress' },
-    { key: 'not', label: 'Not automated', value: c.notAutomated, color: 'var(--au-not)', icon: ListChecks, to: '/tests?automationStatus=not_automated' },
-  ];
   return (
     <Card>
       <CardHeader
         title="Automation progress"
-        description={`${fmtNumber(c.automated)} of ${fmtNumber(automatable)} automatable cases automated`}
+        description={`${fmtNumber(c.automated)} of ${fmtNumber(automatable)} automatable cases automated · pipeline from GitHub PRs and runs`}
         actions={<span className="text-2xl font-semibold tracking-tight text-fg">{fmtPct(c.automationRate, 1)}</span>}
       />
       <CardBody>
@@ -260,42 +255,101 @@ function PipelineCard({ s }: { s: Summary }) {
               );
             })}
         </div>
-        <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-5">
-          {stages.map((st, i) => (
-            <Link
-              key={st.key}
-              to={st.to}
-              className="group relative rounded-lg border border-border px-3 py-2.5 outline-none transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-ring/50"
-            >
-              <div className="flex items-center gap-1.5 text-xs text-fg-2">
-                <Swatch color={st.color} />
-                {st.label}
-              </div>
-              <div className="mt-1 flex items-baseline gap-1.5">
-                <span className="text-lg font-semibold text-fg tabular">{fmtNumber(st.value)}</span>
-                {st.note ? <span className="text-[11px] text-fg-3">{st.note}</span> : null}
-              </div>
-              {i < stages.length - 1 ? (
-                <ArrowRight className="absolute top-1/2 -right-[11px] z-10 hidden size-3.5 -translate-y-1/2 rounded-full bg-surface text-fg-3 sm:block" aria-hidden />
-              ) : null}
-            </Link>
-          ))}
+        <PipelineFunnel counts={s.pipeline} className="mt-4" />
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-fg-3">
+          <span>Stages are derived from linked GitHub PRs (draft → review → approved → merged) and the next run after a merge.</span>
           <Link
-            to="/tests?automationStatus=not_automatable"
-            className="col-span-2 rounded-lg border border-dashed border-border px-3 py-2.5 outline-none hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-ring/50 sm:col-span-4 lg:col-span-1"
+            to={stageHref('not_automatable')}
+            className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 outline-none hover:bg-surface-2 hover:text-fg focus-visible:ring-2 focus-visible:ring-ring/50"
           >
-            <div className="flex items-center gap-1.5 text-xs text-fg-2">
-              <span className="hatch inline-block size-2.5 rounded-[3px] border border-border" aria-hidden />
-              Not automatable
-            </div>
-            <div className="mt-1 flex items-baseline gap-1.5">
-              <span className="text-lg font-semibold text-fg tabular">{fmtNumber(c.notAutomatable)}</span>
-              <span className="text-[11px] text-fg-3">excluded from %</span>
-            </div>
+            <span className="hatch inline-block size-2.5 rounded-[3px] border border-border" aria-hidden />
+            {fmtNumber(c.notAutomatable)} not automatable (excluded from %)
           </Link>
         </div>
       </CardBody>
     </Card>
+  );
+}
+
+/** "N tests done, awaiting merge": approved PRs with green checks and no open threads. */
+function ReadyToMergeCallout({ s }: { s: Summary }) {
+  const n = s.pipeline.ready_to_merge;
+  const prs = usePullRequests({ readyToMerge: true });
+  if (n === 0) return null;
+  const c = s.coverage;
+  const automatable = c.total - c.notAutomatable;
+  const projected = automatable > 0 ? (c.automated + n) / automatable : null;
+  const list = [...(prs.data ?? [])].sort((a, b) => (a.approvedAt ?? a.updatedAt).localeCompare(b.approvedAt ?? b.updatedAt));
+  return (
+    <section
+      aria-labelledby="ready-to-merge-title"
+      className="rounded-xl border border-[color-mix(in_oklab,var(--st-passed)_40%,transparent)] bg-[color-mix(in_oklab,var(--st-passed)_6%,var(--surface))] shadow-sm"
+    >
+      <div className="flex flex-wrap items-center gap-3 px-4 py-3">
+        <span className="grid size-8 shrink-0 place-items-center rounded-full bg-st-passed text-white">
+          <GitPullRequestArrow className="size-4" aria-hidden />
+        </span>
+        <div className="min-w-0 flex-1">
+          <h2 id="ready-to-merge-title" className="text-[13px] font-semibold text-fg">
+            {pluralize(n, 'test')} done, awaiting merge
+          </h2>
+          <p className="text-xs text-fg-2">
+            {pluralize(s.prPipeline.readyToMerge, 'approved PR')} with green checks and no open threads
+            {projected !== null ? (
+              <>
+                {' '}— merging takes automation from <b className="font-semibold text-fg">{fmtPct(c.automationRate, 1)}</b> to{' '}
+                <b className="font-semibold text-fg">{fmtPct(projected, 1)}</b>
+              </>
+            ) : null}
+            .
+          </p>
+        </div>
+        <div className="flex gap-1.5">
+          <Link to={stageHref('ready_to_merge')} className={linkButton('outline', 'sm')}>
+            Show tests
+          </Link>
+          <Link to="/pulls?filter=ready" className={linkButton('ghost', 'sm')}>
+            All ready PRs <ArrowRight className="size-3.5" aria-hidden />
+          </Link>
+        </div>
+      </div>
+      {list.length > 0 ? (
+        <ul className="border-t border-[color-mix(in_oklab,var(--st-passed)_20%,transparent)] px-2 py-1.5">
+          {list.slice(0, 5).map((p) => (
+            <li key={p.id}>
+              <a
+                href={p.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-3 rounded-md px-2 py-1.5 text-[13px] outline-none hover:bg-surface/70 focus-visible:ring-2 focus-visible:ring-ring/50"
+              >
+                <span className="w-48 shrink-0 truncate font-mono text-[11px] text-fg-3 max-sm:hidden" title={`${p.repo}#${p.number}`}>
+                  {p.repo}#{p.number}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-fg">
+                  <span className="font-mono text-[11px] text-fg-3 sm:hidden">#{p.number} </span>
+                  {p.title}
+                </span>
+                <span className="hidden shrink-0 text-xs text-fg-2 md:inline">{p.author ?? '—'}</span>
+                <span className="hidden shrink-0 text-xs text-fg-3 tabular sm:inline">
+                  {pluralize(p.testCases.length, 'test')}
+                </span>
+                <span className="shrink-0 text-right text-xs whitespace-nowrap text-fg-3 sm:w-36">
+                  {p.approvedAt ? `approved ${fmtRelative(p.approvedAt)}` : `updated ${fmtRelative(p.updatedAt)}`}
+                </span>
+              </a>
+            </li>
+          ))}
+          {list.length > 5 ? (
+            <li className="px-2 py-1 text-xs text-fg-3">
+              <Link to="/pulls?filter=ready" className="hover:text-fg hover:underline">
+                +{list.length - 5} more
+              </Link>
+            </li>
+          ) : null}
+        </ul>
+      ) : null}
+    </section>
   );
 }
 

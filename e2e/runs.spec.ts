@@ -1,8 +1,8 @@
 import { expect, test } from '@playwright/test';
 
 test('run detail shows "vs previous run" and failure groups', async ({ page }) => {
-  await page.goto('/runs?group=tests%2Fapi');
-  const firstRun = page.getByRole('link', { name: /^api nightly #\d+$/ }).first();
+  await page.goto('/runs?group=tests%2Froutes');
+  const firstRun = page.getByRole('link', { name: /^routes nightly #\d+$/ }).first();
   const name = (await firstRun.textContent())!.trim();
   await firstRun.click();
   await expect(page.getByRole('heading', { name, level: 1 })).toBeVisible();
@@ -20,7 +20,7 @@ test('run detail shows "vs previous run" and failure groups', async ({ page }) =
 });
 
 test('history matrix renders and a cell click opens the test case', async ({ page }) => {
-  await page.goto('/runs/history?group=tests%2Fapi');
+  await page.goto('/runs/history?group=tests%2Froutes');
   const grid = page.getByRole('grid', { name: 'Test history matrix' });
   await expect(grid).toBeVisible();
   await expect(page.getByText(/\d+ tests × \d+ runs/)).toBeVisible();
@@ -34,7 +34,7 @@ test('history matrix renders and a cell click opens the test case', async ({ pag
 });
 
 test('compare two runs', async ({ page }) => {
-  await page.goto('/runs/compare?group=tests%2Fapi');
+  await page.goto('/runs/compare?group=tests%2Froutes');
   const base = page.getByLabel('Base (before)');
   const head = page.getByLabel('Head (after)');
   await expect(base).toBeVisible();

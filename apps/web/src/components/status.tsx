@@ -10,6 +10,7 @@ import {
   Hand,
   GitMerge,
   GitPullRequest,
+  GitPullRequestArrow,
   GitPullRequestClosed,
   GitPullRequestDraft,
   Microscope,
@@ -25,8 +26,10 @@ import {
 } from 'lucide-react';
 import {
   AUTOMATION_STATUS_LABELS,
+  PIPELINE_STAGE_LABELS,
   TRIAGE_LABELS,
   type AutomationStatus,
+  type PipelineStage,
   type PullRequestRef,
   type ResultStatus,
   type TriageCategory,
@@ -61,6 +64,18 @@ export const AUTOMATION_META: Record<AutomationStatus, StatusMeta> = {
   in_progress: { label: AUTOMATION_STATUS_LABELS.in_progress, icon: CircleDashed, color: 'var(--au-progress)' },
   not_automated: { label: AUTOMATION_STATUS_LABELS.not_automated, icon: CircleDot, color: 'var(--fg-3)' },
   not_automatable: { label: AUTOMATION_STATUS_LABELS.not_automatable, icon: Hand, color: 'var(--fg-3)' },
+};
+
+/** Automation pipeline stages (derived from automation status + linked PRs + runs). */
+export const PIPELINE_META: Record<PipelineStage, StatusMeta> = {
+  not_started: { label: PIPELINE_STAGE_LABELS.not_started, icon: CircleDot, color: 'var(--fg-3)' },
+  in_progress: { label: PIPELINE_STAGE_LABELS.in_progress, icon: CircleDashed, color: 'var(--au-progress)' },
+  pr_draft: { label: PIPELINE_STAGE_LABELS.pr_draft, icon: GitPullRequestDraft, color: 'var(--st-skipped)' },
+  in_review: { label: PIPELINE_STAGE_LABELS.in_review, icon: GitPullRequest, color: 'var(--warn)' },
+  ready_to_merge: { label: PIPELINE_STAGE_LABELS.ready_to_merge, icon: GitPullRequestArrow, color: 'var(--st-passed)' },
+  merged_awaiting_run: { label: PIPELINE_STAGE_LABELS.merged_awaiting_run, icon: GitMerge, color: 'var(--st-unknown)' },
+  automated: { label: PIPELINE_STAGE_LABELS.automated, icon: Bot, color: 'var(--au-automated)' },
+  not_automatable: { label: PIPELINE_STAGE_LABELS.not_automatable, icon: Hand, color: 'var(--fg-3)' },
 };
 
 export const TRIAGE_META: Record<TriageCategory, StatusMeta> = {
@@ -125,6 +140,18 @@ export function ResultBadge({ status, compact, className }: { status: ResultStat
 
 export function AutomationBadge({ status, className }: { status: AutomationStatus; className?: string }) {
   return <TintBadge meta={AUTOMATION_META[status]} className={className} />;
+}
+
+export function PipelineStageBadge({
+  stage,
+  className,
+  compact,
+}: {
+  stage: PipelineStage;
+  className?: string;
+  compact?: boolean;
+}) {
+  return <TintBadge meta={PIPELINE_META[stage]} className={className} compact={compact} />;
 }
 
 export function TriageBadge({ triage, className }: { triage: TriageCategory; className?: string }) {

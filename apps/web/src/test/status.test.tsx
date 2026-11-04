@@ -22,7 +22,8 @@ describe('status badges carry a text label (never color alone)', () => {
     const pr: PullRequestRef = {
       repo: 'acme/t', number: 1, title: 'x', url: 'https://github.com/acme/t/pull/1', state: 'merged', author: null,
       updatedAt: new Date().toISOString(), linkedBy: 'key_in_title', reviewState: 'approved', requestedReviewers: [],
-      unresolvedThreads: 0, checks: 'passing', needsAttention: false,
+      unresolvedThreads: 0, checks: 'passing', needsAttention: false, mergedAt: new Date().toISOString(), approvedAt: null,
+      readyToMerge: false,
     };
     const { rerender, container } = render(<TooltipProvider><InPrBadge prs={[pr]} /></TooltipProvider>);
     expect(container.textContent).toBe('');

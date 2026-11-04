@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 
 test('report renders and has a print layout', async ({ page }) => {
   await page.goto('/report');
-  await expect(page.getByRole('heading', { name: 'Shop QA', level: 1 })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Integration QA', level: 1 })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Automation coverage' })).toBeVisible();
   const printBtn = page.getByRole('button', { name: 'Print / PDF' });
   await expect(printBtn).toBeVisible();

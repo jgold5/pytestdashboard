@@ -488,7 +488,8 @@ describe('GitHub sync', () => {
     expect(status.lastError).toBeNull();
     expect(status).toMatchObject({
       state: 'idle',
-      lastStats: { fetched: 7, created: 7, updated: 0, linked: 6 },
+      // updated = cases auto-promoted: PAY-1 is linked to merged PR #6
+      lastStats: { fetched: 7, created: 7, updated: 1, linked: 6 },
     });
     expect(status.target).toContain('acme/api (127.0.0.1');
 
@@ -509,7 +510,10 @@ describe('GitHub sync', () => {
       reviewState: 'approved',
       checks: 'passing',
       needsAttention: false,
+      readyToMerge: true,
+      mergedAt: null,
     });
+    expect(pr(2).readyToMerge).toBe(false); // checks failing
     expect(pr(2)).toMatchObject({
       reviewState: 'approved',
       checks: 'failing',
@@ -529,8 +533,10 @@ describe('GitHub sync', () => {
       checks: 'none',
       needsAttention: false,
     });
+    expect(pr(6).mergedAt).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
     expect(pr(6)).toMatchObject({
       state: 'merged',
+      readyToMerge: false,
       reviewState: 'review_required',
       checks: 'failing',
       needsAttention: false,
@@ -565,7 +571,10 @@ describe('GitHub sync', () => {
     const s2 = (await t.app.inject({ url: '/api/integrations' }))
       .json<IntegrationStatus[]>()
       .find((s) => s.name === 'github')!;
-    expect(s2.lastStats).toEqual({ fetched: 7, created: 0, updated: 7, linked: 6 });
+    // no PR newly merged → nothing promoted again
+    expect(s2.lastStats).toEqual({ fetched: 7, created: 0, updated: 0, linked: 6 });
+    const ready = (await t.app.inject({ url: '/api/pull-requests?readyToMerge=true' })).json<PullRequest[]>();
+    expect(ready.map((p) => p.number)).toEqual([1]);
   });
 
   it('refreshes PRs that were open but are no longer listed', async () => {
@@ -662,8 +671,13 @@ describe('GitHub sync', () => {
     expect(row.last_error).not.toContain(TOKEN);
   });
 
-  it('does not change automationStatus (inOpenPr is derived)', async () => {
-    mock = await startMockServer(githubHandler('acme/api', scenario()));
+  it('an open PR does not change automationStatus (inOpenPr / pipelineStage are derived)', async () => {
+    mock = await startMockServer(
+      githubHandler(
+        'acme/api',
+        scenario().filter((p) => p.number !== 6), // #6 merged would auto-promote PAY-1
+      ),
+    );
     t = await createTestApp(env(mock.url));
     await importResults(t, [{ fullName: 'x.test_a', status: 'passed', start: daysAgo(1) }]);
     const c1 = await createCase({ key: 'PAY-1', jiraKey: 'PAY-1' });
@@ -672,6 +686,77 @@ describe('GitHub sync', () => {
     const c = (await t.app.inject({ url: `/api/test-cases/${c1.id}` })).json<TestCase>();
     expect(c.automationStatus).toBe('not_automated');
     expect(c.inOpenPr).toBe(true);
+    expect(c.pipelineStage).toBe('ready_to_merge');
+  });
+
+  it('auto-promotes linked cases when a PR merges; merged_awaiting_run until a later run', async () => {
+    const merged = iso(0.5);
+    const pr10: FakePr = {
+      number: 10,
+      title: 'PAY-10 PAY-11 PAY-12 PAY-13 order route tests',
+      branch: 'qa/order-route',
+      gql: gqlNode({ decision: 'APPROVED', rollup: 'SUCCESS' }),
+    };
+    pr10.gql = {
+      ...(pr10.gql as object),
+      reviews: { nodes: [{ author: { login: 'lead' }, state: 'APPROVED', submittedAt: '2026-11-01T10:00:00Z' }] },
+    };
+    const prs = [pr10];
+    mock = await startMockServer(githubHandler('acme/api', prs));
+    t = await createTestApp(env(mock.url));
+    const a = await createCase({ key: 'PAY-10', jiraKey: 'PAY-10', automationStatus: 'not_automated' });
+    const b = await createCase({ key: 'PAY-11', jiraKey: 'PAY-11', automationStatus: 'in_progress' });
+    const c = await createCase({ key: 'PAY-12', jiraKey: 'PAY-12', automationStatus: 'not_automatable' });
+    const d = await createCase({ key: 'PAY-13', jiraKey: 'PAY-13', automationStatus: 'automated' });
+    // d was automated long before the PR (a maintenance PR, not new automation)
+    t.dbHandle.sqlite.prepare('UPDATE test_cases SET automated_at = ? WHERE id = ?').run(iso(30), d.id);
+    const sync = async () => {
+      await t!.app.inject({ method: 'POST', url: '/api/integrations/github/sync' });
+      await t!.runner.waitForIdle();
+      return (await t!.app.inject({ url: '/api/integrations' })).json<IntegrationStatus[]>()[0]!;
+    };
+    const get = async (id: number) =>
+      (await t!.app.inject({ url: `/api/test-cases/${id}` })).json<TestCase>();
+
+    // 1) open + approved: ready to merge, nothing promoted
+    let s = await sync();
+    expect(s.lastStats).toMatchObject({ updated: 0, linked: 4 });
+    expect((await get(a.id)).pipelineStage).toBe('ready_to_merge');
+    expect((await get(b.id)).pipelineStage).toBe('ready_to_merge');
+    expect((await get(c.id)).pipelineStage).toBe('not_automatable');
+    expect((await get(d.id)).pipelineStage).toBe('automated'); // maintenance PR on an automated case
+    const pr = (await get(a.id)).pullRequests[0]!;
+    expect(pr).toMatchObject({ readyToMerge: true, approvedAt: '2026-11-01T10:00:00.000Z' });
+    const list = (await t.app.inject({ url: '/api/test-cases?pipelineStage=ready_to_merge' })).json<{
+      items: TestCase[];
+    }>();
+    expect(list.items.map((x) => x.key).sort()).toEqual(['PAY-10', 'PAY-11']);
+
+    // 2) merged: not_automated / in_progress promoted; not_automatable untouched
+    prs[0] = { ...pr10, state: 'closed', merged_at: merged, updated_at: merged };
+    s = await sync();
+    expect(s.lastStats).toMatchObject({ updated: 2 });
+    for (const id of [a.id, b.id]) {
+      const x = await get(id);
+      expect(x).toMatchObject({ automationStatus: 'automated', automatedVia: 'pr_merge', pipelineStage: 'merged_awaiting_run' });
+    }
+    expect(await get(c.id)).toMatchObject({ automationStatus: 'not_automatable', pipelineStage: 'not_automatable' });
+    expect(await get(d.id)).toMatchObject({ automationStatus: 'automated', automatedVia: 'manual', pipelineStage: 'automated' });
+    const summary = (await t.app.inject({ url: '/api/summary' })).json<{ pipeline: Record<string, number>; coverage: { automated: number } }>();
+    expect(summary.pipeline).toMatchObject({ merged_awaiting_run: 2, automated: 1, not_automatable: 1, ready_to_merge: 0 });
+    expect(summary.coverage.automated).toBe(3);
+
+    // 3) a later run: passed → automated; broken does not count as a verifying run
+    await importResults(t, [
+      { fullName: 'tests.routes.test_order#a', status: 'passed', start: Date.now() - 3_600_000, links: [{ name: 'PAY-10', type: 'tms' }] },
+      { fullName: 'tests.routes.test_order#b', status: 'broken', message: 'ORA-12541: TNS:no listener', start: Date.now() - 3_600_000, links: [{ name: 'PAY-11', type: 'tms' }] },
+    ]);
+    expect((await get(a.id)).pipelineStage).toBe('automated');
+    expect((await get(b.id)).pipelineStage).toBe('merged_awaiting_run');
+
+    // 4) re-sync: the merge was already seen → no re-promotion
+    s = await sync();
+    expect(s.lastStats).toMatchObject({ updated: 0 });
   });
 
   it('R2-04: pagination stops on empty pages, repeated next URLs and the page cap', async () => {

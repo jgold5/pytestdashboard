@@ -58,6 +58,24 @@ describe.skipIf(process.env.PERF !== '1')('perf: history matrix', () => {
       const detail = (await t.app.inject({ url: '/api/test-cases/97' })).json<TestCaseDetail>();
       const detailMs = performance.now() - d;
 
+      // Pipeline stage is computed per case on read: list, filter, summary and report.
+      const timed = async (url: string) => {
+        await t.app.inject({ url });
+        const a = performance.now();
+        const res = await t.app.inject({ url });
+        expect(res.statusCode).toBe(200);
+        return performance.now() - a;
+      };
+      const listMs = await timed('/api/test-cases?pageSize=50&sort=lastRun&order=desc');
+      const stageMs = await timed('/api/test-cases?pipelineStage=ready_to_merge&pageSize=50');
+      const summaryMs = await timed('/api/summary');
+      const reportMs = await timed('/api/report?periodDays=90');
+      console.log(
+        `[perf] list ${listMs.toFixed(1)} ms; stage filter ${stageMs.toFixed(1)} ms; summary ${summaryMs.toFixed(1)} ms; report ${reportMs.toFixed(1)} ms`,
+      );
+      expect(Math.max(listMs, stageMs)).toBeLessThan(500);
+      expect(Math.max(summaryMs, reportMs)).toBeLessThan(2000);
+
       timings.sort((a, b) => a - b);
       const median = timings[2]!;
       console.log(

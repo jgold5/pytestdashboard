@@ -202,4 +202,9 @@ CREATE INDEX "test_results_case_idx" ON "test_results" ("test_case_id");
 CREATE INDEX "test_results_run_sig_idx" ON "test_results" ("run_id","failure_signature");
 CREATE INDEX "test_results_case_run_idx" ON "test_results" ("test_case_id","run_id");
 `,
+  /* v2 — automation pipeline: automatedVia audit + PR approval time */ `
+ALTER TABLE "test_cases" ADD COLUMN "automated_via" text;
+ALTER TABLE "pull_requests" ADD COLUMN "approved_at" text;
+CREATE INDEX "pull_requests_merged_at_idx" ON "pull_requests" ("merged_at");
+`,
 ];

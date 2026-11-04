@@ -41,6 +41,35 @@ export const TriageCategory = z.enum([
 ]);
 export type TriageCategory = z.infer<typeof TriageCategory>;
 
+/**
+ * Where a test case sits in the GitHub-driven automation pipeline. Derived on
+ * read (never stored) from automationStatus, linked PRs and results — see
+ * SPEC "Automation pipeline" for the precedence:
+ *   1. not_automatable      — automationStatus not_automatable (always wins)
+ *   2. ready_to_merge / in_review / pr_draft — automationStatus ≠ automated and
+ *      ≥1 linked open/draft PR; the most advanced linked PR wins
+ *      (ready_to_merge > in_review > pr_draft)
+ *   3. merged_awaiting_run  — a linked PR merged at M (latest mergedAt), the case
+ *      was not automated before M (status ≠ automated, or automatedAt ≥ M), and no
+ *      passed/failed result exists in a run started after M
+ *   4. automated / in_progress / not_started — from automationStatus
+ */
+export const PipelineStage = z.enum([
+  'not_started',
+  'in_progress',
+  'pr_draft',
+  'in_review',
+  'ready_to_merge',
+  'merged_awaiting_run',
+  'automated',
+  'not_automatable',
+]);
+export type PipelineStage = z.infer<typeof PipelineStage>;
+
+/** What last moved a case to `automated` (audit only; null when never automated or unknown/legacy). */
+export const AutomatedVia = z.enum(['allure', 'pr_merge', 'manual', 'spreadsheet', 'jira']);
+export type AutomatedVia = z.infer<typeof AutomatedVia>;
+
 // ---------------------------------------------------------------------------
 // Shared primitives / limits (enforced server-side; mirrored in UI forms)
 // ---------------------------------------------------------------------------
@@ -153,6 +182,15 @@ export const PullRequestRef = z.object({
   checks: z.enum(['passing', 'failing', 'pending', 'none']),
   /** Open PRs waiting on the author: changes requested OR unresolved threads OR failing checks. */
   needsAttention: z.boolean(),
+  /** GitHub merged_at (null unless state = merged). */
+  mergedAt: z.string().nullable(),
+  /** Submission time of the latest approving review, when known (null otherwise). */
+  approvedAt: z.string().nullable(),
+  /**
+   * "Done, awaiting merge": state open (not draft) AND reviewState approved AND
+   * checks passing or none AND unresolvedThreads = 0.
+   */
+  readyToMerge: z.boolean(),
 });
 export type PullRequestRef = z.infer<typeof PullRequestRef>;
 
@@ -179,6 +217,10 @@ export const TestCase = z.object({
   pullRequests: z.array(PullRequestRef),
   /** True if any linked PR is open (incl. draft). UI shows an "In PR" badge. */
   inOpenPr: z.boolean(),
+  /** Derived automation-pipeline stage (see PipelineStage for the precedence). */
+  pipelineStage: PipelineStage,
+  /** What last moved the case to `automated` (null if unknown / never). */
+  automatedVia: AutomatedVia.nullable(),
   lastResult: LastResult.nullable(),
   /** Latest triage category from the newest note that set one (null if none). */
   triage: TriageCategory.nullable(),
@@ -249,6 +291,7 @@ export const TestCaseQuery = z.object({
   owner: z.string().max(LIMITS.shortTextMax).optional(),
   flakyOnly: z.stringbool().optional(),
   inOpenPr: z.stringbool().optional(),
+  pipelineStage: PipelineStage.optional(),
   source: z.enum(['manual', 'spreadsheet', 'allure', 'jira']).optional(),
   sort: TestCaseSort.default('key'),
   order: z.enum(['asc', 'desc']).default('asc'),
@@ -367,6 +410,12 @@ export const TestResult = z.object({
   trace: z.string().nullable(), // truncated to LIMITS.traceMax
   /** Normalized hash of message — groups similar failures. Null if not failed/broken. */
   failureSignature: z.string().nullable(),
+  /**
+   * Heuristic triage suggestion from the message (e.g. ORA-12541 / TNS-* /
+   * "Connection refused" ⇒ environment). Null if none or not failed/broken.
+   * A suggestion only — no note is ever created server-side.
+   */
+  suggestedTriage: TriageCategory.nullable(),
   /** Allure retries (multiple results with same historyId in one run). */
   retries: z.number().int(),
   change: ResultChange,
@@ -472,13 +521,18 @@ export type HistoryMatrix = z.infer<typeof HistoryMatrix>;
 /** Failures in a run grouped by normalized error signature. */
 export const FailureGroup = z.object({
   signature: z.string(),
-  /** Representative (first) message, truncated. */
+  /** Representative message line (the line that drives the signature, e.g. the ORA- line), truncated. */
   sampleMessage: z.string(),
   count: z.number().int(),
   status: z.enum(['failed', 'broken']),
   testCases: z.array(z.object({ id: z.number().int(), key: z.string(), title: z.string() })),
   /** Most common triage category among the affected cases, if any. */
   triage: TriageCategory.nullable(),
+  /**
+   * Heuristic suggestion from the group's sample message (see TestResult.suggestedTriage).
+   * The UI offers it as a one-click bulk triage note; never applied automatically.
+   */
+  suggestedTriage: TriageCategory.nullable(),
   /** Bugs already linked to this signature or to all affected cases. */
   bugs: z.array(BugRef),
   /** How many of the group's results are new failures vs previous run. */
@@ -697,6 +751,10 @@ export const CoverageTotals = z.object({
 });
 export type CoverageTotals = z.infer<typeof CoverageTotals>;
 
+/** Number of test cases in each PipelineStage (all stages present; sums to total cases). */
+export const PipelineCounts = z.record(PipelineStage, z.number().int());
+export type PipelineCounts = z.infer<typeof PipelineCounts>;
+
 /** GET /api/summary */
 export const Summary = z.object({
   coverage: CoverageTotals,
@@ -741,7 +799,11 @@ export const Summary = z.object({
     approved: z.number().int(),
     unresolvedThreads: z.number().int(), // sum across open PRs
     needsAttention: z.number().int(),
+    /** Open linked PRs that are readyToMerge. */
+    readyToMerge: z.number().int(),
   }),
+  /** Test cases per derived PipelineStage (the Overview funnel). */
+  pipeline: PipelineCounts,
 });
 export type Summary = z.infer<typeof Summary>;
 
@@ -945,6 +1007,14 @@ export const Report = z.object({
     meanDaysToResolve: z.number().nullable(),
   }),
   prPipeline: Summary.shape.prPipeline,
+  /** Automation work in flight (derived pipeline stages) + the projected rate once ready PRs merge. */
+  automationInFlight: z.object({
+    stages: PipelineCounts,
+    /** automated + cases whose stage is ready_to_merge or merged_awaiting_run but not yet `automated`. */
+    projectedAutomated: z.number().int(),
+    /** projectedAutomated / (total − notAutomatable); null if denominator is 0. */
+    projectedAutomationRate: z.number().nullable(),
+  }),
 });
 export type Report = z.infer<typeof Report>;
 
@@ -991,8 +1061,8 @@ export const IntegrationStatus = z.object({
   lastStats: z
     .object({
       fetched: z.number().int(), // PRs or issues fetched
-      created: z.number().int(), // test cases created (jira only)
-      updated: z.number().int(), // test cases updated
+      created: z.number().int(), // jira: test cases created; github: PRs seen for the first time
+      updated: z.number().int(), // jira: test cases updated; github: cases auto-promoted to automated by a merged PR
       linked: z.number().int(), // PR↔case links (github only)
     })
     .nullable(),
@@ -1015,6 +1085,8 @@ export const PullRequestQuery = z.object({
   state: z.enum(['open', 'draft', 'merged', 'closed']).optional(),
   reviewState: z.enum(['review_required', 'changes_requested', 'approved', 'none']).optional(),
   needsAttention: z.stringbool().optional(),
+  /** Only PRs that are readyToMerge (true) / are not (false). */
+  readyToMerge: z.stringbool().optional(),
   repo: z.string().max(LIMITS.shortTextMax).optional(),
   author: z.string().max(LIMITS.shortTextMax).optional(),
   /** Only PRs linked to at least one test case (default true). */
@@ -1046,6 +1118,28 @@ export const AUTOMATION_STATUS_LABELS: Record<AutomationStatus, string> = {
   not_automated: 'Not automated',
   not_automatable: 'Not automatable',
 };
+
+export const PIPELINE_STAGE_LABELS: Record<PipelineStage, string> = {
+  not_started: 'Not started',
+  in_progress: 'In progress',
+  pr_draft: 'PR draft',
+  in_review: 'In review',
+  ready_to_merge: 'Ready to merge',
+  merged_awaiting_run: 'Merged (awaiting run)',
+  automated: 'Automated',
+  not_automatable: 'Not automatable',
+};
+
+/** Funnel order (left → right); not_automatable is shown separately. */
+export const PIPELINE_FUNNEL: readonly PipelineStage[] = [
+  'not_started',
+  'in_progress',
+  'pr_draft',
+  'in_review',
+  'ready_to_merge',
+  'merged_awaiting_run',
+  'automated',
+];
 
 export const TRIAGE_LABELS: Record<TriageCategory, string> = {
   needs_investigation: 'Needs investigation',

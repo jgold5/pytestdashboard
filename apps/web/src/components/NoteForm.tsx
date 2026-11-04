@@ -116,6 +116,7 @@ export function BulkNoteDialog({
   title = 'Add note',
   description,
   defaultTriage = null,
+  defaultBody = '',
   onDone,
 }: {
   open: boolean;
@@ -125,11 +126,12 @@ export function BulkNoteDialog({
   title?: string;
   description?: string;
   defaultTriage?: TriageCategory | null;
+  defaultBody?: string;
   onDone?: () => void;
 }) {
   const [author, setAuthor] = useAuthor();
   const [authorDraft, setAuthorDraft] = useState(author);
-  const [draft, setDraft] = useState<NoteDraft>({ body: '', triage: defaultTriage, ticketUrl: '' });
+  const [draft, setDraft] = useState<NoteDraft>({ body: defaultBody, triage: defaultTriage, ticketUrl: '' });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const bulk = useBulkNote();
   const effectiveAuthor = author || authorDraft;
@@ -147,7 +149,7 @@ export function BulkNoteDialog({
       {
         onSuccess: (r) => {
           toast.success(`Note added to ${pluralize(r.created, 'case')}`);
-          setDraft({ body: '', triage: defaultTriage, ticketUrl: '' });
+          setDraft({ body: defaultBody, triage: defaultTriage, ticketUrl: '' });
           setErrors({});
           onOpenChange(false);
           onDone?.();

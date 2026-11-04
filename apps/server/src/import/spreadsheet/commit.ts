@@ -155,7 +155,10 @@ export function commitImport(db: Db, sheet: ParsedSheet, req: ImportCommitReques
           if (candidate.priority !== undefined) set.priority = data.priority ?? null;
           if (candidate.automationStatus !== undefined) {
             set.automationStatus = data.automationStatus;
-            if (data.automationStatus === 'automated' && current.status !== 'automated') set.automatedAt = now;
+            if (data.automationStatus === 'automated' && current.status !== 'automated') {
+              set.automatedAt = now;
+              set.automatedVia = 'spreadsheet';
+            }
           }
           if (candidate.owner !== undefined) set.owner = data.owner ?? null;
           if (candidate.tags !== undefined) set.tags = data.tags;
@@ -184,6 +187,7 @@ export function commitImport(db: Db, sheet: ParsedSheet, req: ImportCommitReques
               jiraKey: data.jiraKey ?? null,
               source: 'spreadsheet',
               automatedAt: data.automationStatus === 'automated' ? now : null,
+              automatedVia: data.automationStatus === 'automated' ? 'spreadsheet' : null,
               createdAt: now,
               updatedAt: now,
             })

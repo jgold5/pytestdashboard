@@ -24,6 +24,7 @@ import {
 import {
   AutomationStatus,
   LIMITS,
+  PipelineStage,
   Priority,
   ResultStatus,
   TestCaseQuery,
@@ -44,7 +45,17 @@ import { PageHeader } from '../components/ui/misc';
 import { Select } from '../components/ui/select';
 import { SkeletonRows } from '../components/ui/skeleton';
 import { linkButton } from '../components/ui/link-button';
-import { AUTOMATION_META, FlakyMeter, InPrBadge, RESULT_META, ResultBadge, TRIAGE_META, TriageBadge } from '../components/status';
+import {
+  AUTOMATION_META,
+  FlakyMeter,
+  InPrBadge,
+  PIPELINE_META,
+  PipelineStageBadge,
+  RESULT_META,
+  ResultBadge,
+  TRIAGE_META,
+  TriageBadge,
+} from '../components/status';
 import { AUTOMATION_OPTIONS, NewTestCaseDialog, PRIORITY_OPTIONS } from '../components/TestCaseForm';
 import { BulkNoteDialog, TRIAGE_OPTIONS } from '../components/NoteForm';
 import { BugBadge } from '../components/bugs';
@@ -53,7 +64,10 @@ import * as S from '@radix-ui/react-select';
 
 type Sort = TestCaseQuery['sort'];
 
-const FILTER_KEYS = ['search', 'suite', 'automationStatus', 'priority', 'lastStatus', 'triage', 'owner', 'flakyOnly', 'inOpenPr', 'source'] as const;
+/** Stages worth a badge on the compact (phone) rows. */
+const IN_FLIGHT = new Set<PipelineStage>(['pr_draft', 'in_review', 'ready_to_merge', 'merged_awaiting_run']);
+
+const FILTER_KEYS = ['search', 'suite', 'automationStatus', 'pipelineStage', 'priority', 'lastStatus', 'triage', 'owner', 'flakyOnly', 'inOpenPr', 'source'] as const;
 const SOURCES = ['manual', 'spreadsheet', 'allure', 'jira'] as const;
 const SOURCE_LABEL: Record<(typeof SOURCES)[number], string> = {
   manual: 'Manual',
@@ -197,6 +211,17 @@ export default function TestCasesPage() {
           noneLabel="Any status"
         />
         <Select
+          ariaLabel="Pipeline stage"
+          value={query.pipelineStage ?? null}
+          onValueChange={(v) => update({ pipelineStage: v })}
+          options={PipelineStage.options.map((st) => {
+            const M = PIPELINE_META[st];
+            return { value: st, label: M.label, text: `Stage: ${M.label}`, icon: <M.icon className="size-3.5" style={{ color: M.color }} aria-hidden /> };
+          })}
+          allowNone
+          noneLabel="Any stage"
+        />
+        <Select
           ariaLabel="Last result"
           value={query.lastStatus ?? null}
           onValueChange={(v) => update({ lastStatus: v })}
@@ -326,6 +351,7 @@ export default function TestCasesPage() {
                   <SortTh label="Suite" s="suite" query={query} onSort={sortBy} className="hidden w-28 md:table-cell" />
                   <SortTh label="Pri" s="priority" query={query} onSort={sortBy} className="w-14" />
                   <SortTh label="Automation" s="automationStatus" query={query} onSort={sortBy} className="w-36" />
+                  <th className="hidden w-40 px-2 py-2 font-medium lg:table-cell">Stage</th>
                   <SortTh label="Last result" s="lastRun" query={query} onSort={sortBy} className="w-32" />
                   <th className="hidden w-36 px-2 py-2 font-medium 2xl:table-cell">Triage</th>
                   <SortTh label="Flaky" s="flakiness" query={query} onSort={sortBy} className="hidden w-20 lg:table-cell" />
@@ -413,6 +439,7 @@ function MobileRow({ t, selected, onSelect }: { t: TestCase; selected: boolean; 
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
           <InlineStatus t={t} />
+          {IN_FLIGHT.has(t.pipelineStage) ? <PipelineStageBadge stage={t.pipelineStage} /> : null}
           {t.lastResult ? <ResultBadge status={t.lastResult.status} /> : null}
           {t.triage ? <TriageBadge triage={t.triage} /> : null}
           <InPrBadge prs={t.pullRequests} />
@@ -508,6 +535,9 @@ function Row({ t, selected, onSelect, onOpen }: { t: TestCase; selected: boolean
       <td className="px-2 py-1.5 text-xs text-fg-2">{t.priority ?? <span className="text-fg-3">—</span>}</td>
       <td className="px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
         <InlineStatus t={t} />
+      </td>
+      <td className="hidden px-2 py-1.5 lg:table-cell">
+        <PipelineStageBadge stage={t.pipelineStage} />
       </td>
       <td className="px-2 py-1.5">
         {t.lastResult ? (

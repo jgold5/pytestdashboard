@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { isApiPath } from '../src/app.js';
 import { loadConfig, ConfigError } from '../src/config.js';
 import { normalizeAutomationStatus, normalizePriority, splitTags } from '../src/domain/normalize.js';
-import { normalizeFailureMessage } from '../src/domain/signature.js';
+import { failureSignature, normalizeFailureMessage, suggestTriage } from '../src/domain/signature.js';
 import { AllureBundle, parseProperties } from '../src/import/allure/parse.js';
 import { canonHeader, suggestMapping } from '../src/import/spreadsheet/headers.js';
 import { scanSheetXml } from '../src/import/spreadsheet/parse.js';
@@ -257,6 +257,22 @@ describe('F-04: no super-linear regexes on untrusted input (100 KB lines < 50 ms
     return performance.now() - t0;
   };
   const hostile = ['a' + ' '.repeat(100_000) + 'b', ' '.repeat(100_000), '='.repeat(100_000), '"' + '\\a'.repeat(50_000), '/a'.repeat(50_000) + '!', '0x'.repeat(50_000)];
+  // Camel/Oracle-aware signature + triage patterns (dotted class names, ids, codes, JMS gaps)
+  const hostileSignatures = [
+    'a.'.repeat(50_000),
+    'org.' + 'a.'.repeat(50_000) + 'B',
+    'a.' + 'A'.repeat(100_000),
+    'ID-' + 'a-'.repeat(50_000),
+    'ID:' + 'a:'.repeat(50_000),
+    'ORA-00001 '.repeat(10_000),
+    'SQLSTATE '.repeat(11_000),
+    'HTTP '.repeat(20_000),
+    'jms '.repeat(25_000),
+    'jms' + ' x'.repeat(50_000) + ' connect',
+    '2026-11-04T'.repeat(9_000),
+    "'".repeat(100_000),
+    ('x'.repeat(1_999) + '\n').repeat(50),
+  ];
 
   it('parseProperties', () => {
     for (const line of hostile) expect(time(() => parseProperties(line))).toBeLessThan(50);
@@ -269,8 +285,15 @@ describe('F-04: no super-linear regexes on untrusted input (100 KB lines < 50 ms
       expect(time(() => normalizePriority(s))).toBeLessThan(50);
       expect(time(() => splitTags(s))).toBeLessThan(50);
       expect(time(() => normalizeFailureMessage(s))).toBeLessThan(50);
+      expect(time(() => suggestTriage(s))).toBeLessThan(50);
       expect(time(() => suggestMapping([s, canonHeader(s)]))).toBeLessThan(50);
       expect(time(() => sanitizeError(new Error(`authorization: ${s}`), []))).toBeLessThan(50);
+    }
+    for (const s of hostileSignatures) {
+      expect(s.length).toBeGreaterThanOrEqual(90_000);
+      expect(time(() => normalizeFailureMessage(s)), s.slice(0, 20)).toBeLessThan(50);
+      expect(time(() => failureSignature(s)), s.slice(0, 20)).toBeLessThan(50);
+      expect(time(() => suggestTriage(s)), s.slice(0, 20)).toBeLessThan(50);
     }
   });
 });

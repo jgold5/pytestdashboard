@@ -6,6 +6,7 @@ import { addDays, isoDate } from '../util/time.js';
 import { computeCoverage } from './coverage.js';
 import { coveredByOpenBug } from './bugs.js';
 import { computePrPipeline } from './pullRequests.js';
+import { computePipelineCounts } from './pipeline.js';
 import { serializeRun } from './runs.js';
 
 const failing = inArray(testCases.lastStatus, ['failed', 'broken']);
@@ -146,5 +147,6 @@ export function getSummary(db: Db): Summary {
     topFlaky,
     byOwner,
     prPipeline: computePrPipeline(db),
+    pipeline: computePipelineCounts(db),
   };
 }

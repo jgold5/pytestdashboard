@@ -592,6 +592,7 @@ function upsertTestCases(
             externalUrl,
             automationStatus: status,
             automatedAt: status === 'automated' ? now : null,
+            automatedVia: status === 'automated' ? 'jira' : null,
             source: 'jira',
             createdAt: now,
             updatedAt: now,
@@ -624,7 +625,10 @@ function upsertTestCases(
       if (priority !== null && existing.priority !== priority) set.priority = priority;
       if (desired !== null && desired !== existing.automationStatus) {
         set.automationStatus = desired;
-        if (desired === 'automated') set.automatedAt = now;
+        if (desired === 'automated') {
+          set.automatedAt = now;
+          set.automatedVia = 'jira';
+        }
       }
       if (Object.keys(set).length > 0) {
         set.updatedAt = now;
