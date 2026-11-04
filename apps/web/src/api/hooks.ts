@@ -9,6 +9,10 @@ import type { z } from 'zod';
 import type {
   AutomationStatus,
   FailureGroup,
+  HistoryMatrix,
+  HistoryMatrixQuery,
+  RunComparison,
+  RunUpdate,
   ImportCommitRequest,
   ImportCommitResponse,
   ImportPreviewResponse,
@@ -47,6 +51,7 @@ export type TestCaseQueryInput = In<typeof TestCaseQuery>;
 export type RunQueryInput = In<typeof RunQuery>;
 export type RunResultsQueryInput = In<typeof RunResultsQuery>;
 export type PullRequestQueryInput = In<typeof PullRequestQuery>;
+export type HistoryMatrixQueryInput = In<typeof HistoryMatrixQuery>;
 
 export const qk = {
   session: ['session'] as const,
@@ -59,6 +64,8 @@ export const qk = {
   runResults: (id: number, q?: RunResultsQueryInput) =>
     q ? (['runResults', id, q] as const) : (['runResults', id] as const),
   runFailures: (id: number) => ['runFailures', id] as const,
+  compare: (head: number, base?: number) => ['compare', head, base ?? null] as const,
+  matrix: (q: HistoryMatrixQueryInput) => ['matrix', q] as const,
   integrations: ['integrations'] as const,
   pullRequests: (q?: PullRequestQueryInput) => (q ? (['pullRequests', q] as const) : (['pullRequests'] as const)),
   report: (periodDays: number) => ['report', periodDays] as const,
@@ -79,6 +86,8 @@ function invalidateRuns(qc: QueryClient) {
   void qc.invalidateQueries({ queryKey: ['run'] });
   void qc.invalidateQueries({ queryKey: ['runResults'] });
   void qc.invalidateQueries({ queryKey: ['runFailures'] });
+  void qc.invalidateQueries({ queryKey: ['compare'] });
+  void qc.invalidateQueries({ queryKey: ['matrix'] });
 }
 
 // ---------------------------------------------------------------------------
@@ -306,6 +315,39 @@ export function useDeleteRun() {
   });
 }
 
+export function useUpdateRun(id: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (patch: RunUpdate) => api.patch<Run>(`/api/runs/${id}`, patch),
+    onSuccess: (run) => {
+      qc.setQueryData(qk.run(id), run);
+      invalidateRuns(qc);
+      void qc.invalidateQueries({ queryKey: qk.meta });
+      void qc.invalidateQueries({ queryKey: qk.summary });
+    },
+  });
+}
+
+/** Diff two runs. Omit base to compare against head's previous run. */
+export function useCompare(head: number | null, base?: number | null) {
+  return useQuery({
+    queryKey: qk.compare(head ?? 0, base ?? undefined),
+    queryFn: ({ signal }) =>
+      api.get<RunComparison>('/api/runs/compare', { head, base: base ?? undefined }, signal),
+    enabled: !!head,
+    placeholderData: keepPreviousData,
+  });
+}
+
+export function useHistoryMatrix(q: HistoryMatrixQueryInput, opts: { enabled?: boolean } = {}) {
+  return useQuery({
+    queryKey: qk.matrix(q),
+    queryFn: ({ signal }) => api.get<HistoryMatrix>('/api/history/matrix', q, signal),
+    placeholderData: keepPreviousData,
+    enabled: opts.enabled ?? true,
+  });
+}
+
 /** Call after a successful allure upload. */
 export function invalidateAfterRunImport(qc: QueryClient) {
   invalidateRuns(qc);
@@ -373,6 +415,7 @@ export function useSyncIntegration() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (name: IntegrationName) => api.post<IntegrationStatus>(`/api/integrations/${name}/sync`),
+    meta: { silent: true }, // the page handles 409 "already running" itself
     onSuccess: (status) => {
       qc.setQueryData<IntegrationStatus[]>(qk.integrations, (old) =>
         old ? old.map((i) => (i.name === status.name ? status : i)) : [status],

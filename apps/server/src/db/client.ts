@@ -1,11 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
+import type { BaseSQLiteDatabase } from 'drizzle-orm/sqlite-core';
 import * as schema from './schema.js';
 import { MIGRATIONS } from './migrations.js';
 
-export type Db = BetterSQLite3Database<typeof schema>;
+/** A database or an open transaction — domain functions accept either. */
+export type Db = BaseSQLiteDatabase<'sync', Database.RunResult, typeof schema>;
 
 export interface DbHandle {
   db: Db;

@@ -1,10 +1,20 @@
 import { and, asc, desc, eq, inArray, or, sql, type SQL } from 'drizzle-orm';
-import type { FailureGroup, ResultStatus, Run, RunQuery, RunResultsQuery, TestResult, TriageCategory } from '@ptd/shared';
+import type {
+  FailureGroup,
+  ResultStatus,
+  Run,
+  RunQuery,
+  RunResultsQuery,
+  RunUpdate,
+  TestResult,
+  TriageCategory,
+} from '@ptd/shared';
 import type { Db } from '../db/client.js';
 import { runs, testCases, testResults, type RunRow } from '../db/schema.js';
 import { notFound } from '../errors.js';
 import { containsPattern } from '../util/sql.js';
 import { refreshCaseStats } from './caseStats.js';
+import { findNextRun, linkRun } from './history.js';
 
 export function passRate(c: { passed: number; skipped: number; total: number }): number | null {
   const executed = c.total - c.skipped;
@@ -23,6 +33,15 @@ export function serializeRun(r: RunRow): Run {
   return {
     id: r.id,
     name: r.name,
+    runGroup: r.runGroup,
+    previousRunId: r.previousRunId,
+    changes: {
+      newFailures: r.newFailures,
+      stillFailing: r.stillFailing,
+      fixed: r.fixed,
+      newTests: r.newTests,
+      missing: r.missing,
+    },
     branch: r.branch,
     commit: r.commit,
     buildUrl: r.buildUrl,
@@ -37,7 +56,17 @@ export function serializeRun(r: RunRow): Run {
 }
 
 export function listRuns(db: Db, q: RunQuery): { items: Run[]; total: number } {
-  const where = q.branch !== undefined ? eq(runs.branch, q.branch) : undefined;
+  const conds: SQL[] = [];
+  if (q.branch !== undefined) conds.push(eq(runs.branch, q.branch));
+  if (q.runGroup !== undefined) conds.push(eq(runs.runGroup, q.runGroup));
+  if (q.search) {
+    const p = containsPattern(q.search);
+    const s = or(sql`${runs.name} LIKE ${p} ESCAPE '\\'`, sql`${runs.commit} LIKE ${p} ESCAPE '\\'`);
+    if (s) conds.push(s);
+  }
+  if (q.from) conds.push(sql`substr(${runs.sortAt}, 1, 10) >= ${q.from}`);
+  if (q.to) conds.push(sql`substr(${runs.sortAt}, 1, 10) <= ${q.to}`);
+  const where = conds.length ? and(...conds) : undefined;
   const total = db.select({ n: sql<number>`count(*)` }).from(runs).where(where).get()?.n ?? 0;
   const rows = db
     .select()
@@ -57,7 +86,8 @@ export function getRunRow(db: Db, id: number): RunRow {
 }
 
 export function deleteRun(db: Db, id: number): void {
-  getRunRow(db, id);
+  const run = getRunRow(db, id);
+  const next = findNextRun(db, run);
   const caseIds = db
     .selectDistinct({ id: testResults.testCaseId })
     .from(testResults)
@@ -65,7 +95,32 @@ export function deleteRun(db: Db, id: number): void {
     .all()
     .map((r) => r.id);
   db.delete(runs).where(eq(runs.id, id)).run(); // cascades results; notes.run_id → null
+  if (next !== null) linkRun(db, next);
   refreshCaseStats(db, caseIds);
+}
+
+/** PATCH /api/runs/:id — changing runGroup/branch re-links baselines on both lines. */
+export function updateRun(db: Db, id: number, patch: RunUpdate): Run {
+  const before = getRunRow(db, id);
+  const set: Partial<typeof runs.$inferInsert> = {};
+  if (patch.name !== undefined) set.name = patch.name;
+  if (patch.runGroup !== undefined) set.runGroup = patch.runGroup;
+  if (patch.branch !== undefined) set.branch = patch.branch;
+  if (Object.keys(set).length === 0) return serializeRun(before);
+  const relink =
+    (patch.runGroup !== undefined && patch.runGroup !== before.runGroup) ||
+    (patch.branch !== undefined && patch.branch !== before.branch);
+  const oldNext = relink ? findNextRun(db, before) : null;
+  db.update(runs).set(set).where(eq(runs.id, id)).run();
+  if (relink) {
+    if (oldNext !== null) linkRun(db, oldNext);
+    linkRun(db, id);
+    const after = getRunRow(db, id);
+    const newNext = findNextRun(db, after);
+    if (newNext !== null) linkRun(db, newNext);
+    refreshCaseStats(db, db.selectDistinct({ id: testResults.testCaseId }).from(testResults).where(eq(testResults.runId, id)).all().map((r) => r.id));
+  }
+  return serializeRun(getRunRow(db, id));
 }
 
 /** Recompute stored status counts from the run's results. */
@@ -95,6 +150,7 @@ export function listRunResults(db: Db, runId: number, q: RunResultsQuery): { ite
   getRunRow(db, runId);
   const conds: SQL[] = [eq(testResults.runId, runId)];
   if (q.status) conds.push(eq(testResults.status, q.status));
+  if (q.change) conds.push(eq(testResults.change, q.change));
   if (q.search) {
     const p = containsPattern(q.search);
     const s = or(
@@ -137,6 +193,7 @@ export function listRunResults(db: Db, runId: number, q: RunResultsQuery): { ite
       message: r.message,
       trace: r.trace,
       failureSignature: r.failureSignature,
+      change: r.change,
       retries: r.retries,
       parameters: r.parameters,
       labels: r.labels,
@@ -155,6 +212,7 @@ export function runFailureGroups(db: Db, runId: number): FailureGroup[] {
       key: testCases.key,
       title: testCases.title,
       triage: testCases.triage,
+      change: testResults.change,
     })
     .from(testResults)
     .innerJoin(testCases, eq(testCases.id, testResults.testCaseId))
@@ -166,6 +224,7 @@ export function runFailureGroups(db: Db, runId: number): FailureGroup[] {
     signature: string;
     sampleMessage: string;
     count: number;
+    newFailures: number;
     failed: number;
     broken: number;
     cases: Map<number, { id: number; key: string; title: string }>;
@@ -180,6 +239,7 @@ export function runFailureGroups(db: Db, runId: number): FailureGroup[] {
         signature: sig,
         sampleMessage: (r.message ?? '').split(/\r?\n/)[0]?.slice(0, 500) ?? '',
         count: 0,
+        newFailures: 0,
         failed: 0,
         broken: 0,
         cases: new Map(),
@@ -188,6 +248,7 @@ export function runFailureGroups(db: Db, runId: number): FailureGroup[] {
       groups.set(sig, g);
     }
     g.count++;
+    if (r.change === 'new_failure') g.newFailures++;
     if (r.status === 'broken') g.broken++;
     else g.failed++;
     if (!g.cases.has(r.caseId)) {
@@ -195,6 +256,10 @@ export function runFailureGroups(db: Db, runId: number): FailureGroup[] {
       if (r.triage) g.triage.set(r.triage, (g.triage.get(r.triage) ?? 0) + 1);
     }
   }
+  const firstSeen = firstSeenBySignature(
+    db,
+    [...groups.keys()].filter((k) => k !== 'unknown'),
+  );
   return [...groups.values()]
     .map((g) => {
       let triage: TriageCategory | null = null;
@@ -204,10 +269,34 @@ export function runFailureGroups(db: Db, runId: number): FailureGroup[] {
         signature: g.signature,
         sampleMessage: g.sampleMessage,
         count: g.count,
+        newFailures: g.newFailures,
+        firstSeen: firstSeen.get(g.signature) ?? null,
         status: g.broken > g.failed ? ('broken' as const) : ('failed' as const),
         testCases: [...g.cases.values()],
         triage,
       };
     })
-    .sort((a, b) => b.count - a.count || a.signature.localeCompare(b.signature));
+    .sort(
+      (a, b) =>
+        Number(b.newFailures > 0) - Number(a.newFailures > 0) ||
+        b.count - a.count ||
+        a.signature.localeCompare(b.signature),
+    );
+}
+
+/** First run (any branch/group) in which each signature appeared. */
+function firstSeenBySignature(db: Db, signatures: string[]): Map<string, NonNullable<FailureGroup['firstSeen']>> {
+  const out = new Map<string, NonNullable<FailureGroup['firstSeen']>>();
+  if (signatures.length === 0) return out;
+  const rows = db
+    .select({ sig: testResults.failureSignature, runId: runs.id, runName: runs.name, at: runs.sortAt })
+    .from(testResults)
+    .innerJoin(runs, eq(runs.id, testResults.runId))
+    .where(inArray(testResults.failureSignature, signatures))
+    .orderBy(asc(runs.sortAt), asc(runs.id))
+    .all();
+  for (const r of rows) {
+    if (r.sig && !out.has(r.sig)) out.set(r.sig, { runId: r.runId, runName: r.runName, at: r.at });
+  }
+  return out;
 }

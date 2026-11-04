@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, ne, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, ne, or, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import type {
   LastResult,
   PullRequestRef,
@@ -26,6 +26,7 @@ import { nowIso } from '../util/time.js';
 import { FLAKY_THRESHOLD } from './flakiness.js';
 import { serializeNote } from './notes.js';
 import { recomputeRunCounts } from './runs.js';
+import { caseHistory } from './caseHistory.js';
 
 // ---------------------------------------------------------------------------
 // Serialization
@@ -129,30 +130,14 @@ export function getCase(db: Db, id: number): TestCase {
 
 export function getCaseDetail(db: Db, id: number): TestCaseDetail {
   const tc = getCase(db, id);
-  const history = db
-    .select({
-      id: testResults.id,
-      runId: testResults.runId,
-      status: testResults.status,
-      durationMs: testResults.durationMs,
-      startedAt: testResults.startedAt,
-      message: testResults.message,
-      failureSignature: testResults.failureSignature,
-      runName: runs.name,
-    })
-    .from(testResults)
-    .innerJoin(runs, eq(runs.id, testResults.runId))
-    .where(eq(testResults.testCaseId, id))
-    .orderBy(desc(runs.sortAt), desc(runs.id), desc(testResults.id))
-    .limit(50)
-    .all();
   const noteRows = db
     .select()
     .from(notes)
     .where(eq(notes.testCaseId, id))
     .orderBy(desc(notes.createdAt), desc(notes.id))
     .all();
-  return { ...tc, history, notes: noteRows.map(serializeNote) };
+  const { history, stats } = caseHistory(db, id);
+  return { ...tc, history, stats, notes: noteRows.map(serializeNote) };
 }
 
 // ---------------------------------------------------------------------------
@@ -167,7 +152,7 @@ export function buildCaseWhere(f: CaseFilters): SQL | undefined {
   const conds: SQL[] = [];
   if (f.search) {
     const p = containsPattern(f.search);
-    const like = (col: SQL | typeof testCases.key) => sql`${col} LIKE ${p} ESCAPE '\\'`;
+    const like = (col: SQLWrapper) => sql`${col} LIKE ${p} ESCAPE '\\'`;
     const anyOf = or(
       like(testCases.key),
       like(testCases.title),
@@ -193,7 +178,7 @@ export function buildCaseWhere(f: CaseFilters): SQL | undefined {
 
 function orderBy(sort: TestCaseQuery['sort'], order: TestCaseQuery['order']): SQL[] {
   const dir = order === 'desc' ? desc : asc;
-  const nullsLast = (col: SQL | typeof testCases.suite) => sql`${col} IS NULL`;
+  const nullsLast = (col: SQLWrapper) => sql`${col} IS NULL`;
   switch (sort) {
     case 'key':
       return [dir(testCases.key)];

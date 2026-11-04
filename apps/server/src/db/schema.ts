@@ -5,7 +5,7 @@
  */
 import { sql } from 'drizzle-orm';
 import { index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
-import type { AutomationStatus, Priority, ResultStatus, TriageCategory } from '@ptd/shared';
+import type { AutomationStatus, Priority, ResultChange, ResultStatus, TriageCategory } from '@ptd/shared';
 
 export type CaseSource = 'manual' | 'spreadsheet' | 'allure' | 'jira';
 export type PrState = 'open' | 'draft' | 'merged' | 'closed';
@@ -64,6 +64,8 @@ export const runs = sqliteTable(
   {
     id: integer('id').primaryKey({ autoIncrement: true }),
     name: text('name').notNull(),
+    /** Independent test set (folder A vs B, smoke vs regression). Baselines never cross groups. */
+    runGroup: text('run_group').notNull().default('default'),
     branch: text('branch'),
     commit: text('commit_sha'),
     buildUrl: text('build_url'),
@@ -80,8 +82,19 @@ export const runs = sqliteTable(
     skipped: integer('skipped').notNull().default(0),
     unknown: integer('unknown').notNull().default(0),
     total: integer('total').notNull().default(0),
+    /** Baseline: latest earlier run with same runGroup and branch (maintained by domain/history.ts). */
+    previousRunId: integer('previous_run_id'),
+    newFailures: integer('new_failures').notNull().default(0),
+    stillFailing: integer('still_failing').notNull().default(0),
+    fixed: integer('fixed').notNull().default(0),
+    newTests: integer('new_tests').notNull().default(0),
+    missing: integer('missing').notNull().default(0),
   },
-  (t) => [index('runs_sort_idx').on(t.sortAt), index('runs_branch_idx').on(t.branch)],
+  (t) => [
+    index('runs_sort_idx').on(t.sortAt),
+    index('runs_branch_started_idx').on(t.branch, t.startedAt),
+    index('runs_group_branch_sort_idx').on(t.runGroup, t.branch, t.sortAt),
+  ],
 );
 
 export type NameValue = { name: string; value: string };
@@ -105,12 +118,15 @@ export const testResults = sqliteTable(
     message: text('message'),
     trace: text('trace'),
     failureSignature: text('failure_signature'),
+    /** vs the same case in the run's previousRunId (ResultChange). */
+    change: text('change').$type<ResultChange>().notNull().default('other'),
     retries: integer('retries').notNull().default(0),
     parameters: text('parameters', { mode: 'json' }).$type<NameValue[]>().notNull().default(sql`'[]'`),
     labels: text('labels', { mode: 'json' }).$type<NameValue[]>().notNull().default(sql`'[]'`),
   },
   (t) => [
     index('test_results_run_status_idx').on(t.runId, t.status),
+    index('test_results_sig_idx').on(t.failureSignature),
     index('test_results_case_idx').on(t.testCaseId),
     index('test_results_run_sig_idx').on(t.runId, t.failureSignature),
     index('test_results_case_run_idx').on(t.testCaseId, t.runId),

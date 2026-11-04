@@ -2,7 +2,7 @@
  * Versioned, forward-only SQL migrations (tracked via PRAGMA user_version).
  * Kept in TS so the tsup bundle is self-contained. Version 1 was generated with
  * `drizzle-kit generate --dialect sqlite --schema src/db/schema.ts` and pasted
- * here; append new entries for future schema changes (never edit old ones).
+ * here; append new entries for future schema changes (never edit released ones).
  */
 export const MIGRATIONS: readonly string[] = [
   /* v1 — initial schema */ `
@@ -62,6 +62,7 @@ CREATE INDEX "pull_requests_state_idx" ON "pull_requests" ("state");
 CREATE TABLE "runs" (
 	"id" integer PRIMARY KEY AUTOINCREMENT NOT NULL,
 	"name" text NOT NULL,
+	"run_group" text DEFAULT 'default' NOT NULL,
 	"branch" text,
 	"commit_sha" text,
 	"build_url" text,
@@ -76,10 +77,17 @@ CREATE TABLE "runs" (
 	"broken" integer DEFAULT 0 NOT NULL,
 	"skipped" integer DEFAULT 0 NOT NULL,
 	"unknown" integer DEFAULT 0 NOT NULL,
-	"total" integer DEFAULT 0 NOT NULL
+	"total" integer DEFAULT 0 NOT NULL,
+	"previous_run_id" integer,
+	"new_failures" integer DEFAULT 0 NOT NULL,
+	"still_failing" integer DEFAULT 0 NOT NULL,
+	"fixed" integer DEFAULT 0 NOT NULL,
+	"new_tests" integer DEFAULT 0 NOT NULL,
+	"missing" integer DEFAULT 0 NOT NULL
 );
 CREATE INDEX "runs_sort_idx" ON "runs" ("sort_at");
-CREATE INDEX "runs_branch_idx" ON "runs" ("branch");
+CREATE INDEX "runs_branch_started_idx" ON "runs" ("branch","started_at");
+CREATE INDEX "runs_group_branch_sort_idx" ON "runs" ("run_group","branch","sort_at");
 CREATE TABLE "settings" (
 	"key" text PRIMARY KEY NOT NULL,
 	"value" text,
@@ -129,6 +137,9 @@ CREATE INDEX "test_cases_owner_idx" ON "test_cases" ("owner");
 CREATE INDEX "test_cases_last_status_idx" ON "test_cases" ("last_status");
 CREATE INDEX "test_cases_source_idx" ON "test_cases" ("source");
 CREATE INDEX "test_cases_updated_idx" ON "test_cases" ("updated_at");
+CREATE INDEX "test_cases_last_run_at_idx" ON "test_cases" ("last_run_at");
+CREATE INDEX "test_cases_flakiness_idx" ON "test_cases" ("flakiness");
+CREATE INDEX "test_cases_created_idx" ON "test_cases" ("created_at");
 CREATE TABLE "test_results" (
 	"id" integer PRIMARY KEY AUTOINCREMENT NOT NULL,
 	"run_id" integer NOT NULL,
@@ -142,6 +153,7 @@ CREATE TABLE "test_results" (
 	"message" text,
 	"trace" text,
 	"failure_signature" text,
+	"change" text DEFAULT 'other' NOT NULL,
 	"retries" integer DEFAULT 0 NOT NULL,
 	"parameters" text DEFAULT '[]' NOT NULL,
 	"labels" text DEFAULT '[]' NOT NULL,
@@ -149,11 +161,9 @@ CREATE TABLE "test_results" (
 	FOREIGN KEY ("test_case_id") REFERENCES "test_cases"("id") ON UPDATE no action ON DELETE cascade
 );
 CREATE INDEX "test_results_run_status_idx" ON "test_results" ("run_id","status");
+CREATE INDEX "test_results_sig_idx" ON "test_results" ("failure_signature");
 CREATE INDEX "test_results_case_idx" ON "test_results" ("test_case_id");
 CREATE INDEX "test_results_run_sig_idx" ON "test_results" ("run_id","failure_signature");
-CREATE INDEX "test_cases_last_run_at_idx" ON "test_cases" ("last_run_at");
-CREATE INDEX "test_cases_flakiness_idx" ON "test_cases" ("flakiness");
-CREATE INDEX "test_cases_created_idx" ON "test_cases" ("created_at");
-CREATE INDEX "test_results_case_run_idx" ON "test_results" ("test_case_id", "run_id");
+CREATE INDEX "test_results_case_run_idx" ON "test_results" ("test_case_id","run_id");
 `,
 ];

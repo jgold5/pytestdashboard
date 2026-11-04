@@ -19,23 +19,27 @@ export function refreshCaseStats(db: Db, caseIds?: Iterable<number>): void {
 
 function refreshOne(db: Db, id: number): void {
   const recent = db
-    .select({ status: testResults.status, runId: testResults.runId, sortAt: runs.sortAt })
+    .select({ status: testResults.status, runId: testResults.runId, sortAt: runs.sortAt, runGroup: runs.runGroup })
     .from(testResults)
     .innerJoin(runs, eq(runs.id, testResults.runId))
     .where(eq(testResults.testCaseId, id))
     .orderBy(desc(runs.sortAt), desc(runs.id), severity, desc(testResults.id))
-    .limit(40)
+    .limit(300)
     .all();
   const last = recent[0];
 
-  // one status per run (worst), newest first, for flakiness
-  const perRun: ResultStatus[] = [];
+  // one status per run (worst — rows are ordered by severity within a run), newest first, per run group
+  const perGroup = new Map<string, ResultStatus[]>();
   let prevRun: number | null = null;
   for (const r of recent) {
     if (r.runId === prevRun) continue;
     prevRun = r.runId;
-    perRun.push(r.status);
+    const list = perGroup.get(r.runGroup) ?? [];
+    list.push(r.status);
+    perGroup.set(r.runGroup, list);
   }
+  let flakiness = 0;
+  for (const statuses of perGroup.values()) flakiness = Math.max(flakiness, computeFlakiness(statuses));
 
   const triageNote = db
     .select({ triage: notes.triage, createdAt: notes.createdAt })
@@ -51,7 +55,7 @@ function refreshOne(db: Db, id: number): void {
       lastStatus: last?.status ?? null,
       lastRunId: last?.runId ?? null,
       lastRunAt: last?.sortAt ?? null,
-      flakiness: computeFlakiness(perRun),
+      flakiness,
       triage: (triageNote?.triage as TriageCategory | null | undefined) ?? null,
       triageAt: triageNote?.createdAt ?? null,
       noteCount,

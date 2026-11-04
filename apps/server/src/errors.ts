@@ -79,6 +79,9 @@ export function toApiError(err: unknown): { status: number; body: ApiError } {
   if (typeof fe.code === 'string' && LIMIT_CODES.has(fe.code)) {
     return { status: 413, body: { error: 'payload_too_large', message: SAFE_FASTIFY_MESSAGES[fe.code] ?? 'Too large' } };
   }
+  if (fe.code === 'FST_INVALID_MULTIPART_CONTENT_TYPE') {
+    return { status: 415, body: { error: 'unsupported_media_type', message: 'Expected multipart/form-data' } };
+  }
   const status = typeof fe.statusCode === 'number' && fe.statusCode >= 400 && fe.statusCode < 600 ? fe.statusCode : 500;
   if (status < 500) {
     const message =
