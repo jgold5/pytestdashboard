@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { GitBranch, GitPullRequest, Plug, TriangleAlert } from 'lucide-react';
 import type { PullRequest } from '@ptd/shared';
@@ -9,6 +10,7 @@ import { ExternalLink, PageHeader } from '../components/ui/misc';
 import { SkeletonRows } from '../components/ui/skeleton';
 import { linkButton } from '../components/ui/link-button';
 import { Tooltip } from '../components/ui/tooltip';
+import { Select } from '../components/ui/select';
 import { ChecksBadge, PrStateBadge, ReviewBadge, ThreadsCount } from '../components/status';
 
 const FILTERS = [
@@ -29,44 +31,109 @@ function isOpen(p: PullRequest) {
 
 export default function PullRequestsPage() {
   const [params, setParams] = useSearchParams();
-  const filterKey = (FILTERS.find((f) => f.key === params.get('filter'))?.key ?? 'open') as FilterKey;
+  const filterKey = (FILTERS.find((f) => f.key === params.get('filter'))?.key ??
+    'open') as FilterKey;
   const filter = FILTERS.find((f) => f.key === filterKey)!;
-  const prs = usePullRequests(filter.q);
+  const repo = params.get('repo') || undefined;
+  const author = params.get('author') || undefined;
+  const prs = usePullRequests({ ...filter.q, repo, author });
+  // Options come from the unfiltered list so every repo/author stays selectable.
+  const all = usePullRequests({});
+  const repos = useMemo(() => [...new Set((all.data ?? []).map((p) => p.repo))].sort(), [all.data]);
+  const authors = useMemo(
+    () =>
+      [...new Set((all.data ?? []).map((p) => p.author).filter((a): a is string => !!a))].sort(
+        (a, b) => a.localeCompare(b),
+      ),
+    [all.data],
+  );
+  const setParam = (key: 'repo' | 'author', v: string | null) =>
+    setParams(
+      (p) => {
+        const n = new URLSearchParams(p);
+        if (v) n.set(key, v);
+        else n.delete(key);
+        return n;
+      },
+      { replace: true },
+    );
   // "All open" excludes merged/closed client-side (the API returns recent merged PRs too).
   const items = (prs.data ?? []).filter((p) => (filterKey === 'open' ? isOpen(p) : true));
   // Default sort: needs attention first, then most recently updated.
-  const sorted = [...items].sort((a, b) => Number(b.needsAttention) - Number(a.needsAttention) || b.updatedAt.localeCompare(a.updatedAt));
+  const sorted = [...items].sort(
+    (a, b) =>
+      Number(b.needsAttention) - Number(a.needsAttention) || b.updatedAt.localeCompare(a.updatedAt),
+  );
 
   return (
     <>
-      <PageHeader title="Pull requests" description="Automation PRs linked to test cases — what’s waiting on review, and what needs the author’s attention." />
-      <div role="tablist" aria-label="Filter pull requests" className="mb-3 flex flex-wrap gap-1.5">
-        {FILTERS.map((f) => {
-          const active = f.key === filterKey;
-          return (
-            <button
-              key={f.key}
-              type="button"
-              role="tab"
-              aria-selected={active}
-              onClick={() =>
-                setParams((p) => {
-                  const n = new URLSearchParams(p);
-                  if (f.key === 'open') n.delete('filter');
-                  else n.set('filter', f.key);
-                  return n;
-                }, { replace: true })
-              }
-              className={cn(
-                'inline-flex h-7 items-center gap-1.5 rounded-full border px-3 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
-                active ? 'border-accent/50 bg-accent-soft font-medium text-fg' : 'border-border bg-surface text-fg-2 hover:bg-surface-2 hover:text-fg',
-              )}
-            >
-              {f.key === 'attention' ? <TriangleAlert className="size-3.5 text-st-failed" aria-hidden /> : null}
-              {f.label}
-            </button>
-          );
-        })}
+      <PageHeader
+        title="Pull requests"
+        description="Automation PRs linked to test cases — what’s waiting on review, and what needs the author’s attention."
+      />
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <div role="tablist" aria-label="Filter pull requests" className="flex flex-wrap gap-1.5">
+          {FILTERS.map((f) => {
+            const active = f.key === filterKey;
+            return (
+              <button
+                key={f.key}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() =>
+                  setParams(
+                    (p) => {
+                      const n = new URLSearchParams(p);
+                      if (f.key === 'open') n.delete('filter');
+                      else n.set('filter', f.key);
+                      return n;
+                    },
+                    { replace: true },
+                  )
+                }
+                className={cn(
+                  'inline-flex h-7 items-center gap-1.5 rounded-full border px-3 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
+                  active
+                    ? 'border-accent/50 bg-accent-soft font-medium text-fg'
+                    : 'border-border bg-surface text-fg-2 hover:bg-surface-2 hover:text-fg',
+                )}
+              >
+                {f.key === 'attention' ? (
+                  <TriangleAlert className="size-3.5 text-st-failed" aria-hidden />
+                ) : null}
+                {f.label}
+              </button>
+            );
+          })}
+        </div>
+        <div className="ml-auto flex flex-wrap gap-1.5">
+          <Select
+            size="sm"
+            ariaLabel="Repository"
+            value={repo ?? null}
+            onValueChange={(v) => setParam('repo', v)}
+            options={(repo && !repos.includes(repo) ? [...repos, repo] : repos).map((r) => ({
+              value: r,
+              label: r,
+            }))}
+            allowNone
+            noneLabel="All repos"
+            className="w-44"
+          />
+          <Select
+            size="sm"
+            ariaLabel="Author"
+            value={author ?? null}
+            onValueChange={(v) => setParam('author', v)}
+            options={(author && !authors.includes(author) ? [...authors, author] : authors).map(
+              (a) => ({ value: a, label: a }),
+            )}
+            allowNone
+            noneLabel="All authors"
+            className="w-40"
+          />
+        </div>
       </div>
 
       <Card className={cn('overflow-hidden', prs.isPlaceholderData && 'opacity-70')}>
@@ -75,7 +142,7 @@ export default function PullRequestsPage() {
         ) : prs.isPending ? (
           <SkeletonRows rows={6} />
         ) : sorted.length === 0 ? (
-          filterKey === 'open' ? (
+          filterKey === 'open' && !repo && !author ? (
             <EmptyState
               icon={<GitPullRequest />}
               title="No open automation PRs"
@@ -85,10 +152,14 @@ export default function PullRequestsPage() {
                 </Link>
               }
             >
-              PRs appear here once the GitHub integration is configured and a PR mentions a test case key or adds its test.
+              PRs appear here once the GitHub integration is configured and a PR mentions a test
+              case key or adds its test.
             </EmptyState>
           ) : (
-            <EmptyState icon={<GitPullRequest />} title={`No PRs: ${filter.label.toLowerCase()}`} />
+            <EmptyState
+              icon={<GitPullRequest />}
+              title={`No PRs: ${filter.label.toLowerCase()}${repo ? ` in ${repo}` : ''}${author ? ` by ${author}` : ''}`}
+            />
           )
         ) : (
           <>
@@ -101,7 +172,9 @@ export default function PullRequestsPage() {
                     <th className="px-2 py-2 font-medium">State</th>
                     <th className="px-2 py-2 font-medium">Review</th>
                     <th className="px-2 py-2 font-medium">Reviewers</th>
-                    <th className="px-2 py-2 font-medium" title="Unresolved review threads">Threads</th>
+                    <th className="px-2 py-2 font-medium" title="Unresolved review threads">
+                      Threads
+                    </th>
                     <th className="px-2 py-2 font-medium">Checks</th>
                     <th className="px-2 py-2 font-medium">Linked cases</th>
                     <th className="px-2 py-2 pr-4 text-right font-medium">Updated</th>
@@ -109,21 +182,44 @@ export default function PullRequestsPage() {
                 </thead>
                 <tbody>
                   {sorted.map((p) => (
-                    <tr key={p.id} className={cn('border-b border-border align-top last:border-0 hover:bg-surface-2/50', p.needsAttention && 'bg-[color-mix(in_oklab,var(--st-failed)_4%,transparent)]')}>
+                    <tr
+                      key={p.id}
+                      className={cn(
+                        'border-b border-border align-top last:border-0 hover:bg-surface-2/50',
+                        p.needsAttention &&
+                          'bg-[color-mix(in_oklab,var(--st-failed)_4%,transparent)]',
+                      )}
+                    >
                       <td className="max-w-[360px] px-4 py-2.5">
                         <PrTitle p={p} />
                       </td>
                       <td className="px-2 py-2.5">
                         <PrStateBadge state={p.state} />
                       </td>
-                      <td className="px-2 py-2.5">{isOpen(p) ? <ReviewBadge state={p.reviewState} /> : <span className="text-fg-3">—</span>}</td>
+                      <td className="px-2 py-2.5">
+                        {isOpen(p) ? (
+                          <ReviewBadge state={p.reviewState} />
+                        ) : (
+                          <span className="text-fg-3">—</span>
+                        )}
+                      </td>
                       <td className="max-w-36 px-2 py-2.5 text-xs text-fg-2">
-                        {p.requestedReviewers.length ? <span className="line-clamp-2">{p.requestedReviewers.join(', ')}</span> : <span className="text-fg-3">—</span>}
+                        {p.requestedReviewers.length ? (
+                          <span className="line-clamp-2">{p.requestedReviewers.join(', ')}</span>
+                        ) : (
+                          <span className="text-fg-3">—</span>
+                        )}
                       </td>
                       <td className="px-2 py-2.5">
                         <ThreadsCount count={p.unresolvedThreads} />
                       </td>
-                      <td className="px-2 py-2.5">{isOpen(p) ? <ChecksBadge checks={p.checks} /> : <span className="text-fg-3">—</span>}</td>
+                      <td className="px-2 py-2.5">
+                        {isOpen(p) ? (
+                          <ChecksBadge checks={p.checks} />
+                        ) : (
+                          <span className="text-fg-3">—</span>
+                        )}
+                      </td>
                       <td className="max-w-56 px-2 py-2.5">
                         <CaseChips p={p} />
                       </td>
@@ -140,7 +236,13 @@ export default function PullRequestsPage() {
             {/* Mobile / tablet cards */}
             <ul className="divide-y divide-border lg:hidden">
               {sorted.map((p) => (
-                <li key={p.id} className={cn('space-y-2 px-4 py-3', p.needsAttention && 'bg-[color-mix(in_oklab,var(--st-failed)_4%,transparent)]')}>
+                <li
+                  key={p.id}
+                  className={cn(
+                    'space-y-2 px-4 py-3',
+                    p.needsAttention && 'bg-[color-mix(in_oklab,var(--st-failed)_4%,transparent)]',
+                  )}
+                >
                   <PrTitle p={p} />
                   <div className="flex flex-wrap items-center gap-1.5">
                     <PrStateBadge state={p.state} />
@@ -151,9 +253,15 @@ export default function PullRequestsPage() {
                       </>
                     ) : null}
                     <ThreadsCount count={p.unresolvedThreads} />
-                    <span className="ml-auto text-[11px] text-fg-3">{fmtRelative(p.updatedAt)}</span>
+                    <span className="ml-auto text-[11px] text-fg-3">
+                      {fmtRelative(p.updatedAt)}
+                    </span>
                   </div>
-                  {p.requestedReviewers.length ? <div className="text-xs text-fg-2">Waiting on {p.requestedReviewers.join(', ')}</div> : null}
+                  {p.requestedReviewers.length ? (
+                    <div className="text-xs text-fg-2">
+                      Waiting on {p.requestedReviewers.join(', ')}
+                    </div>
+                  ) : null}
                   <CaseChips p={p} />
                 </li>
               ))}
@@ -171,10 +279,18 @@ function PrTitle({ p }: { p: PullRequest }) {
       <div className="flex items-start gap-1.5">
         {p.needsAttention ? (
           <Tooltip content="Needs attention: changes requested, unresolved threads or failing checks">
-            <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-st-failed" aria-label="Needs attention" />
+            <TriangleAlert
+              className="mt-0.5 size-3.5 shrink-0 text-st-failed"
+              aria-label="Needs attention"
+            />
           </Tooltip>
         ) : null}
-        <ExternalLink href={p.url} showIcon={false} className="font-medium text-fg" fallback={<span className="font-medium text-fg">{p.title}</span>}>
+        <ExternalLink
+          href={p.url}
+          showIcon={false}
+          className="font-medium text-fg"
+          fallback={<span className="font-medium text-fg">{p.title}</span>}
+        >
           <span className="line-clamp-2">{p.title}</span>
         </ExternalLink>
       </div>
@@ -200,12 +316,17 @@ function CaseChips({ p }: { p: PullRequest }) {
     <div className="flex flex-wrap gap-1">
       {shown.map((t) => (
         <Tooltip key={t.id} content={t.title}>
-          <Link to={`/tests/${t.id}`} className="inline-flex max-w-40 items-center truncate rounded-md border border-border bg-surface-2 px-1.5 py-px font-mono text-[11px] text-fg-2 hover:border-border-strong hover:text-fg">
+          <Link
+            to={`/tests/${t.id}`}
+            className="inline-flex max-w-40 items-center truncate rounded-md border border-border bg-surface-2 px-1.5 py-px font-mono text-[11px] text-fg-2 hover:border-border-strong hover:text-fg"
+          >
             {t.key}
           </Link>
         </Tooltip>
       ))}
-      {p.testCases.length > shown.length ? <span className="text-[11px] text-fg-3">+{p.testCases.length - shown.length}</span> : null}
+      {p.testCases.length > shown.length ? (
+        <span className="text-[11px] text-fg-3">+{p.testCases.length - shown.length}</span>
+      ) : null}
     </div>
   );
 }

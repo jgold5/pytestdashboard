@@ -249,10 +249,10 @@ function PreviousBanner({ r }: { r: Run }) {
   }
   const bad = ch.newFailures > 0;
   const items: { n: number; label: string; key: ResultChange | 'missing' }[] = [
-    { n: ch.newFailures, label: 'new failures', key: 'new_failure' },
+    { n: ch.newFailures, label: ch.newFailures === 1 ? 'new failure' : 'new failures', key: 'new_failure' },
     { n: ch.fixed, label: 'fixed', key: 'fixed' },
     { n: ch.stillFailing, label: 'still failing', key: 'still_failing' },
-    { n: ch.newTests, label: 'new tests', key: 'new_test' },
+    { n: ch.newTests, label: ch.newTests === 1 ? 'new test' : 'new tests', key: 'new_test' },
     { n: ch.missing, label: 'missing', key: 'missing' },
   ];
   return (

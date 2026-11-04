@@ -179,27 +179,40 @@ export function listRunResults(db: Db, runId: number, q: RunResultsQuery): { ite
     .limit(q.pageSize)
     .offset((q.page - 1) * q.pageSize)
     .all();
+  return { total, items: rows.map(({ r, key }) => serializeResult(r, key)) };
+}
+
+function serializeResult(r: typeof testResults.$inferSelect, key: string): TestResult {
   return {
-    total,
-    items: rows.map(({ r, key }) => ({
-      id: r.id,
-      runId: r.runId,
-      testCaseId: r.testCaseId,
-      testCaseKey: key,
-      name: r.name,
-      fullName: r.fullName,
-      status: r.status,
-      durationMs: r.durationMs,
-      startedAt: r.startedAt,
-      message: r.message,
-      trace: r.trace,
-      failureSignature: r.failureSignature,
-      change: r.change,
-      retries: r.retries,
-      parameters: r.parameters,
-      labels: r.labels,
-    })),
+    id: r.id,
+    runId: r.runId,
+    testCaseId: r.testCaseId,
+    testCaseKey: key,
+    name: r.name,
+    fullName: r.fullName,
+    status: r.status,
+    durationMs: r.durationMs,
+    startedAt: r.startedAt,
+    message: r.message,
+    trace: r.trace,
+    failureSignature: r.failureSignature,
+    change: r.change,
+    retries: r.retries,
+    parameters: r.parameters,
+    labels: r.labels,
   };
+}
+
+/** One result (incl. message + trace) by id — used for on-demand trace loading. */
+export function getResult(db: Db, id: number): TestResult {
+  const row = db
+    .select({ r: testResults, key: testCases.key })
+    .from(testResults)
+    .innerJoin(testCases, eq(testCases.id, testResults.testCaseId))
+    .where(eq(testResults.id, id))
+    .get();
+  if (!row) throw notFound('Result');
+  return serializeResult(row.r, row.key);
 }
 
 export function runFailureGroups(db: Db, runId: number): FailureGroup[] {

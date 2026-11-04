@@ -128,7 +128,19 @@ use through `JIRA_AUTOMATION_FIELD` instead.
 ```env
 XRAY_CLIENT_ID=...
 XRAY_CLIENT_SECRET=...
+# Only if your Xray Cloud data lives in a regional instance (data residency):
+# XRAY_BASE_URL=https://eu.xray.cloud.getxray.app
 ```
+
+`XRAY_BASE_URL` defaults to the global endpoint `https://xray.cloud.getxray.app`.
+If your Jira site uses Xray data residency, use your region's host instead
+(for example `https://eu.xray.cloud.getxray.app` or
+`https://us.xray.cloud.getxray.app`; Xray's documentation lists the current
+regions). The dashboard appends `/api/v2` itself. For safety the value must be
+`https://` and the host must be `xray.cloud.getxray.app` or a subdomain of it,
+with no path, port or credentials; anything else stops the server at startup
+with a clear error. This means your Xray credentials can only ever be sent to
+Xray.
 
 How the automation status is decided, in order: the custom field, if set and
 recognized; then the Xray test type; otherwise the status stays unchanged.
@@ -210,7 +222,7 @@ The Integrations page shows the last error. Common ones:
 | `HTTP 400` on `/search` | Your `JIRA_JQL` is invalid. Test it in Jira's advanced search. |
 | `rate limited … try again later` | GitHub or Jira asked the dashboard to wait more than 60 seconds. The next sync will work. |
 | `timed out` / `network error` | The server can't reach Jira or GitHub. Check the firewall or proxy settings of the host running the dashboard. |
-| `Xray … authenticate → HTTP 401` | Wrong Xray Client ID or Secret. Remove both to sync without Xray. |
+| `Xray … authenticate → HTTP 401` | Wrong Xray Client ID or Secret, or the key belongs to a different Xray region. Check `XRAY_BASE_URL`, or remove both credentials to sync without Xray. |
 
 Error messages never contain your tokens. They are removed before anything is
 stored or shown.

@@ -292,7 +292,7 @@ function RunRow({
         </div>
       </div>
       <div className="flex min-w-0 basis-full items-center gap-4 pl-8 md:basis-auto md:pl-0">
-        <RunChangeChips changes={r.changes} className="md:w-56 md:justify-end" />
+        <RunChangeChips changes={r.changes} baseline={r.previousRunId !== null} className="md:w-56 md:justify-end" />
         <StatusCounts c={r.counts} />
         <PassRateBar r={r} className="ml-auto md:ml-0" />
       </div>

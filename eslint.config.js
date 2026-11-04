@@ -31,11 +31,14 @@ export default tseslint.config(
       'no-restricted-imports': ['error', { paths: [{ name: 'rehype-raw', message: 'Raw HTML in markdown is forbidden.' }] }],
     },
   },
-  // Node scripts / configs
+  // Node: server, shared, e2e, scripts / configs
   {
-    files: ['**/*.{js,cjs,mjs}', '**/vite.config.ts', '**/vitest.config.ts', '**/tsup.config.ts', '**/drizzle.config.ts'],
+    files: ['**/*.{js,cjs,mjs}', 'apps/server/**/*.ts', 'packages/shared/**/*.ts', 'e2e/**/*.ts', '**/vite.config.ts', '**/vitest.config.ts', '**/tsup.config.ts', '**/drizzle.config.ts'],
     languageOptions: {
-      globals: { process: 'readonly', console: 'readonly', __dirname: 'readonly', module: 'readonly', require: 'readonly', URL: 'readonly' },
+      globals: {
+        process: 'readonly', console: 'readonly', __dirname: 'readonly', module: 'readonly', require: 'readonly', URL: 'readonly',
+        Buffer: 'readonly', setTimeout: 'readonly', clearTimeout: 'readonly', setInterval: 'readonly', clearInterval: 'readonly', fetch: 'readonly', structuredClone: 'readonly',
+      },
     },
   },
   {

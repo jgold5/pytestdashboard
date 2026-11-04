@@ -69,4 +69,27 @@ describe('GET /api/report', () => {
     expect(res.body).not.toContain('secret title');
     expect((await t.app.inject({ url: '/api/report?periodDays=12', headers: auth })).statusCode).toBe(400);
   });
+
+  it('newly automated excludes cases that arrived already automated (bootstrap import)', async () => {
+    const auth = { authorization: `Bearer ${authEnv().DASHBOARD_TOKEN}` };
+    // bootstrap: 3 cases created already automated + 2 backlog cases
+    for (let i = 0; i < 5; i++) {
+      await t.app.inject({
+        method: 'POST',
+        url: '/api/test-cases',
+        headers: auth,
+        payload: { key: `B${i}`, title: `t${i}`, automationStatus: i < 3 ? 'automated' : 'not_automated' },
+      });
+    }
+    let r = (await t.app.inject({ url: '/api/report?periodDays=30', headers: auth })).json<Report>();
+    expect(r.highlights).toMatchObject({ newlyAutomated: 0, casesAdded: 5 });
+
+    // a backlog case gets automated later → counts
+    const list = (await t.app.inject({ url: '/api/test-cases?search=B3', headers: auth })).json<{ items: Array<{ id: number }> }>();
+    await new Promise((res) => setTimeout(res, 5)); // automatedAt must be strictly after createdAt (ms resolution)
+    const patch = await t.app.inject({ method: 'PATCH', url: `/api/test-cases/${list.items[0]!.id}`, headers: auth, payload: { automationStatus: 'automated' } });
+    expect(patch.statusCode).toBe(200);
+    r = (await t.app.inject({ url: '/api/report?periodDays=30', headers: auth })).json<Report>();
+    expect(r.highlights.newlyAutomated).toBe(1);
+  });
 });

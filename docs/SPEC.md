@@ -50,6 +50,7 @@ Single deployable: `pnpm build && pnpm start` → one Node process on `PORT` (de
 | DELETE | `/api/runs/:id` | – | 204 |
 | GET | `/api/runs/:id/results` | `RunResultsQuery` | `TestResultList` |
 | GET | `/api/runs/:id/failures` | – | `FailureGroup[]` (new failures first, then largest) |
+| GET | `/api/results/:id` | – | `TestResult` incl. message + trace (editor only; used for on-demand trace loading) |
 | GET | `/api/runs/compare` | `RunCompareQuery` | `RunComparison` |
 | GET | `/api/history/matrix` | `HistoryMatrixQuery` | `HistoryMatrix` |
 | GET | `/api/notes` | `NoteQuery` | `Note[]` |
@@ -88,7 +89,7 @@ Errors: always `ApiError` shape `{error, message, details?}` with proper status 
   4. Otherwise auto-create a case: `key = fullName ?? name`, `title = name`, `suite` from labels (`feature` → `suite` → `parentSuite` → module part of fullName), `allureFullName = fullName`, `automationStatus = 'automated'`, tags from `tag` labels.
 - If a matched case has status `not_automated`/`in_progress`, promote it to `automated` (count in `promotedTestCases`).
 - `failureSignature`: for failed/broken only; sha1 (first 12 hex) of the first line of the message, normalized (lowercase; strip numbers, hex ≥ 6, uuids, quoted strings, file paths, memory addresses; collapse whitespace).
-- Run `name` default: executor `buildName` → `"Import <ISO timestamp>"`.
+- Run `name` default: executor `buildName` → `"Import <YYYY-MM-DD HH:mm> UTC"` (import time).
 - Whole import in one DB transaction.
 
 ### Spreadsheet import
@@ -121,7 +122,7 @@ A case's `triage` = triage of its newest note with non-null triage. "Untriaged f
 ### Integrations (GitHub + Jira/Xray)
 Credentials come **only** from env vars. The UI can trigger a sync and see status, but can never read, set or change credentials or target URLs (no SSRF surface). Outbound requests go only to the configured base URLs, with timeouts (15s), retry with backoff on 429/5xx (respect `Retry-After` / `X-RateLimit-Reset`), pagination caps, and response-size caps. Errors are sanitized before being stored/returned (never include tokens or Authorization headers). Syncs run in-process, one at a time per integration (mutex); optional interval via env; also triggerable via `POST /api/integrations/:name/sync` (works with Bearer token, so CI can call it).
 
-**Jira / Xray** (`src/integrations/jira.ts`): env `JIRA_BASE_URL` (https only), `JIRA_EMAIL`, `JIRA_API_TOKEN` (Cloud basic auth) — or `JIRA_PAT` for Server/DC bearer; `JIRA_JQL` (default `issuetype = Test ORDER BY key`), `JIRA_AUTOMATION_FIELD` (optional custom field id, e.g. `customfield_10123`, whose value maps to AutomationStatus via the same status-value normalizer as spreadsheet import), `XRAY_CLIENT_ID` + `XRAY_CLIENT_SECRET` (optional, Xray Cloud GraphQL at `https://xray.cloud.getxray.app/api/v2`) to read each test's **test type** (Manual / Cucumber / Generic). `JIRA_SYNC_INTERVAL_MINUTES` (optional).
+**Jira / Xray** (`src/integrations/jira.ts`): env `JIRA_BASE_URL` (https only), `JIRA_EMAIL`, `JIRA_API_TOKEN` (Cloud basic auth) — or `JIRA_PAT` for Server/DC bearer; `JIRA_JQL` (default `issuetype = Test ORDER BY key`), `JIRA_AUTOMATION_FIELD` (optional custom field id, e.g. `customfield_10123`, whose value maps to AutomationStatus via the same status-value normalizer as spreadsheet import), `XRAY_CLIENT_ID` + `XRAY_CLIENT_SECRET` (optional, Xray Cloud GraphQL at `${XRAY_BASE_URL}/api/v2`; `XRAY_BASE_URL` defaults to `https://xray.cloud.getxray.app`, must be https with host `xray.cloud.getxray.app` or `*.xray.cloud.getxray.app` for regional instances) to read each test's **test type** (Manual / Cucumber / Generic). `JIRA_SYNC_INTERVAL_MINUTES` (optional).
 - Fetch issues via `/rest/api/3/search/jql` (Cloud; fall back to `/rest/api/2/search` for Server) with `fields=summary,labels,components,priority,assignee,status,<automation field>`, paginated, cap 10,000.
 - Upsert test cases matched by `jiraKey` (then by `key`): `key = jiraKey = issue.key`, `title = summary`, `suite = first component ?? null`, `tags = labels`, `owner = assignee.displayName`, `priority` normalized, `externalUrl = <base>/browse/<key>`, `source='jira'` on create.
 - Automation status precedence: automation custom field value → Xray test type (Cucumber/Generic ⇒ automated) → unchanged (never downgrade `automated` that came from real allure results).

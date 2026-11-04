@@ -51,10 +51,18 @@ export function linkCandidates(r: ParsedResult): string[] {
   return c;
 }
 
+/**
+ * Suite for an auto-created case: explicit `feature` label as-is; otherwise the
+ * allure-pytest `suite`/`parentSuite` labels or the module part of fullName —
+ * which are module paths (`test_orders`, `tests.api.test_orders`), so they are
+ * humanised (`Orders`) instead of showing up as code identifiers.
+ */
 export function suiteFromResult(r: ParsedResult): string | null {
-  for (const name of ['feature', 'suite', 'parentSuite']) {
-    const v = r.labels.find((l) => l.name === name)?.value;
-    if (v) return v.slice(0, LIMITS.shortTextMax);
+  const feature = r.labels.find((l) => l.name === 'feature')?.value?.trim();
+  if (feature) return feature.slice(0, LIMITS.shortTextMax);
+  for (const name of ['suite', 'parentSuite']) {
+    const v = r.labels.find((l) => l.name === name)?.value?.trim();
+    if (v) return humanizeModule(v).slice(0, LIMITS.shortTextMax);
   }
   if (r.fullName) {
     const cut = r.fullName.search(/#|::/);
@@ -62,9 +70,25 @@ export function suiteFromResult(r: ParsedResult): string | null {
     const segs = mod.split(/[./]/).filter(Boolean);
     while (segs.length > 1 && /^[A-Z]/.test(segs[segs.length - 1] ?? '')) segs.pop();
     const out = segs.join('.');
-    return out ? out.slice(0, LIMITS.shortTextMax) : null;
+    return out ? humanizeModule(out).slice(0, LIMITS.shortTextMax) : null;
   }
   return null;
+}
+
+/**
+ * `tests.api.test_orders` / `tests/api/test_orders.py` / `test_orders` → `Orders`;
+ * `order_flow_test` → `Order flow`. Values that don't look like a module path
+ * (contain spaces, capitals, etc.) are returned unchanged.
+ */
+export function humanizeModule(v: string): string {
+  const s = v.trim().slice(0, 500);
+  if (!/^[a-z0-9_./\\-]+$/.test(s)) return s;
+  const segs = s.replace(/\.py$/, '').split(/[./\\]/).filter(Boolean);
+  // prefer the last segment that is a test module; else the last segment
+  const last = [...segs].reverse().find((x) => /^test_|_test$/.test(x)) ?? segs[segs.length - 1] ?? s;
+  const words = last.replace(/^tests?_/, '').replace(/_tests?$/, '').replace(/[_-]+/g, ' ').trim();
+  if (!words) return s;
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 type CaseLite = Pick<TestCaseRow, 'id' | 'key' | 'allureId' | 'allureFullName' | 'jiraKey' | 'automationStatus'>;
@@ -136,7 +160,8 @@ export function importAllureRun(
   const maxStop = stops.length ? Math.max(...stops) : null;
   const startedAt = msToIso(minStart);
   const stoppedAt = msToIso(maxStop);
-  const name = fields.name ?? bundle.executor?.buildName ?? `Import ${importedAt}`;
+  // Readable default (not a raw ISO string with millis): "Import 2026-11-04 15:23 UTC".
+  const name = fields.name ?? bundle.executor?.buildName ?? `Import ${importedAt.slice(0, 10)} ${importedAt.slice(11, 16)} UTC`;
   const buildUrl = resolveBuildUrl(fields, bundle);
 
   return db.transaction((tx) => {

@@ -394,6 +394,37 @@ export function jiraKeyFromUrl(url: string | null | undefined): string | null {
 }
 
 /**
+ * Plain-text bug title from a markdown note: first non-empty line with markdown
+ * syntax removed (headings, emphasis, code, links/images, quotes, list markers),
+ * whitespace collapsed, max 200 chars. Linear-time (no nested quantifiers).
+ */
+export function bugTitleFromNote(body: string): string {
+  const lines = body.slice(0, 20_000).split(/\r?\n/);
+  for (const raw of lines) {
+    let l = raw.trim();
+    if (!l || /^(```|~~~)/.test(l) || /^([-*_]\s*){3,}$/.test(l)) continue; // fences, rules
+    l = l
+      .replace(/^>+\s*/, '') // blockquote
+      .replace(/^#{1,6}\s+/, '') // heading
+      .replace(/^(?:[-*+]|\d{1,9}[.)])\s+/, '') // list marker
+      .replace(/^\[[ xX]\]\s+/, '') // task checkbox
+      .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1') // image → alt
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1') // link → text
+      .replace(/<(https?:\/\/[^>\s]+)>/g, '$1') // autolink
+      .replace(/`+([^`]*)`+/g, '$1') // inline code
+      .replace(/\*{1,3}(?=\S)([^*]*?\S)\*{1,3}/g, '$1') // *em* / **bold**
+      .replace(/(^|[^\w])_{1,3}(?=\S)([^_]*?\S)_{1,3}(?!\w)/g, '$1$2') // _em_ / __bold__ (not snake_case)
+      .replace(/~~(?=\S)([^~]*?\S)~~/g, '$1') // strikethrough
+      .replace(/\s+#+\s*$/, '') // closing heading hashes
+      .replace(/\\([\\`*_{}[\]()#+\-.!>~|])/g, '$1') // escapes
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (l) return l.length > 200 ? `${l.slice(0, 199).trimEnd()}…` : l;
+  }
+  return '';
+}
+
+/**
  * Called when a note with triage=product_bug and a Jira ticket URL is created:
  * upsert the bug by jiraKey and link the case (+ the result's signature/run).
  */
@@ -417,7 +448,7 @@ export function upsertBugFromNote(
   const now = nowIso();
   let bug = db.select().from(bugs).where(eq(bugs.jiraKey, jiraKey)).get();
   if (!bug) {
-    const title = (note.body.split(/\r?\n/).find((l) => l.trim()) ?? jiraKey).trim().slice(0, 200);
+    const title = bugTitleFromNote(note.body) || jiraKey;
     bug = db
       .insert(bugs)
       .values({

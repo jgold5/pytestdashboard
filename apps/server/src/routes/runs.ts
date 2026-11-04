@@ -10,7 +10,7 @@ import {
 import type { Deps } from '../deps.js';
 import { parseWith } from '../errors.js';
 import { compareRuns, historyMatrix } from '../domain/history.js';
-import { deleteRun, getRunRow, listRunResults, listRuns, runFailureGroups, serializeRun, updateRun } from '../domain/runs.js';
+import { deleteRun, getResult, getRunRow, listRunResults, listRuns, runFailureGroups, serializeRun, updateRun } from '../domain/runs.js';
 import { importAllureRun } from '../import/allure/importRun.js';
 import { collectAllureUpload } from '../import/allure/upload.js';
 import type { ZipLimits } from '../import/zip.js';
@@ -61,6 +61,11 @@ export function runRoutes(app: FastifyInstance, { db }: Deps, zipLimits?: ZipLim
     const q = parseWith(RunResultsQuery, req.query);
     const { items, total } = listRunResults(db, id, q);
     return { items, total, page: q.page, pageSize: q.pageSize };
+  });
+
+  app.get('/api/results/:id', async (req) => {
+    const { id } = parseWith(IdParam, req.params);
+    return getResult(db, id);
   });
 
   app.get('/api/runs/:id/failures', async (req) => {

@@ -35,11 +35,15 @@ export function RunChangeChips({
   changes,
   className,
   showZero = false,
+  baseline = true,
 }: {
   changes: { newFailures: number; fixed: number; stillFailing?: number };
   className?: string;
   showZero?: boolean;
+  /** false when the run has no previous run to compare with (first of its group/branch). */
+  baseline?: boolean;
 }) {
+  if (!baseline) return <span className={cn('text-[11px] text-fg-3', className)}>First run · no baseline</span>;
   const chips: { key: string; n: number; label: string; icon: LucideIcon; color: string }[] = [
     { key: 'new', n: changes.newFailures, label: 'new failing', icon: ArrowUp, color: 'var(--st-failed)' },
     { key: 'fixed', n: changes.fixed, label: 'fixed', icon: Check, color: 'var(--st-passed)' },

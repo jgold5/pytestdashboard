@@ -374,6 +374,8 @@ export const TestResult = z.object({
   labels: z.array(z.object({ name: z.string(), value: z.string() })),
 });
 export type TestResult = z.infer<typeof TestResult>;
+/** `GET /api/results/:id` (editor only) → `TestResult` (incl. message + trace). Params: `IdParam`. */
+export const ResultResponse = TestResult;
 
 export const RunResultsQuery = z.object({
   status: ResultStatus.optional(),
@@ -703,7 +705,7 @@ export const Summary = z.object({
     z.object({ date: z.string(), total: z.number().int(), automated: z.number().int() }),
   ),
   latestRun: Run.nullable(),
-  /** Last 30 runs, oldest first. */
+  /** Last 30 runs of each run group (up to 12 most recently active groups), oldest first. */
   runTrend: z.array(
     Run.pick({ id: true, name: true, runGroup: true, branch: true, startedAt: true, importedAt: true, counts: true, passRate: true, changes: true }),
   ),
@@ -713,6 +715,7 @@ export const Summary = z.object({
       total: z.number().int(),
       automated: z.number().int(),
       inProgress: z.number().int(),
+      notAutomatable: z.number().int(), // excluded from the rate denominator
       passing: z.number().int(), // last result passed
       failing: z.number().int(), // last result failed/broken
     }),
@@ -722,7 +725,12 @@ export const Summary = z.object({
   triageBreakdown: z.array(z.object({ triage: TriageCategory, count: z.number().int() })),
   topFlaky: z.array(TestCase.pick({ id: true, key: true, title: true, flakiness: true })),
   byOwner: z.array(
-    z.object({ owner: z.string(), total: z.number().int(), automated: z.number().int() }),
+    z.object({
+      owner: z.string(),
+      total: z.number().int(),
+      automated: z.number().int(),
+      notAutomatable: z.number().int(), // excluded from the rate denominator
+    }),
   ),
   /** Open automation PRs (linked to ≥1 case), by review state. */
   prPipeline: z.object({
@@ -905,6 +913,8 @@ export const Report = z.object({
       suite: z.string(),
       total: z.number().int(),
       automated: z.number().int(),
+      /** total − not automatable (the rate's denominator). */
+      automatable: z.number().int(),
       automationRate: z.number().nullable(),
       lastPassRate: z.number().nullable(),
       /** green: rate≥goal(or 0.8) & pass≥0.95; amber: pass≥0.85; red otherwise or no data → 'unknown'. */

@@ -317,6 +317,7 @@ describe('Jira sync', () => {
     automationField: AUTOMATION_FIELD,
     xrayClientId: XRAY_ID,
     xrayClientSecret: XRAY_SECRET,
+    xrayBaseUrl: 'https://xray.cloud.getxray.app',
     intervalMinutes: null,
     ...extra,
   });
@@ -592,5 +593,34 @@ describe('Jira sync', () => {
     expect(p.isConfigured()).toBe(true);
     expect(p.describeTarget()).toBe('https://acme.atlassian.net — issuetype = Test ORDER BY key');
     expect(createJiraProvider({ ...cfg.jira, apiToken: undefined }).isConfigured()).toBe(false);
+  });
+});
+
+describe('XRAY_BASE_URL config', () => {
+  const load = (v?: string) => loadConfig({ NODE_ENV: 'test', ...(v === undefined ? {} : { XRAY_BASE_URL: v }) }).jira.xrayBaseUrl;
+
+  it('defaults to the global Xray Cloud endpoint', () => {
+    expect(load()).toBe('https://xray.cloud.getxray.app');
+    expect(load('')).toBe('https://xray.cloud.getxray.app');
+  });
+
+  it('accepts regional subdomains (normalised, trailing slash ok)', () => {
+    expect(load('https://eu.xray.cloud.getxray.app')).toBe('https://eu.xray.cloud.getxray.app');
+    expect(load('https://US.xray.cloud.getxray.app/')).toBe('https://us.xray.cloud.getxray.app');
+  });
+
+  it.each([
+    'http://xray.cloud.getxray.app',
+    'https://xray.cloud.getxray.app.evil.com',
+    'https://evilxray.cloud.getxray.app',
+    'https://getxray.app',
+    'https://xray.cloud.getxray.app:8443',
+    'https://user:pw@xray.cloud.getxray.app',
+    'https://xray.cloud.getxray.app/api/v2',
+    'https://xray.cloud.getxray.app?x=1',
+    'https://169.254.169.254',
+    'not a url',
+  ])('rejects %s', (v) => {
+    expect(() => load(v)).toThrow(/XRAY_BASE_URL/);
   });
 });

@@ -584,3 +584,316 @@ All fixes are in `apps/server`, with no contract changes. Regression tests are i
 
 - `pnpm audit --prod` is still clean.
 - The Docker base image is still unpinned. The registry rate-limited the digest lookup (HTTP 429), so the Dockerfile has a `TODO(F-11)` comment with the `docker buildx imagetools inspect` command to get the digest.
+
+---
+
+## Final review (round 2)
+
+- **Date:** 2026-11-04
+- **Reviewed:** `ebfd270` plus the uncommitted working tree at review time. That tree included the new `GET /api/results/:id` and `XRAY_BASE_URL`; other QA edits were in progress at the same time.
+- **Scope:**
+  - Re-verified F-01 and F-02 by attacking the current code.
+  - Looked for regressions introduced by the fixes.
+  - New scope:
+    - `apps/server/src/integrations/**`
+    - `apps/web/src/**` and the production bundle
+    - an end-to-end test in a real browser
+- **Method:**
+  - Ran a production build (`pnpm build`).
+  - Started `node dist/index.js` with `NODE_ENV=production`, editor and viewer tokens, a temporary `DATA_DIR`, and `HOST=127.0.0.1:3917`, then seeded it.
+  - Planted payloads through every write path. Where the server would refuse a value, I wrote it straight into SQLite to simulate a hostile GitHub or Jira response.
+  - Drove Chromium with Playwright.
+  - Ran the GitHub provider against a loopback mock that plays a malicious PR.
+  - The exploit scripts are in the reviewer's scratch directory (`secreview2/`), not in the repo.
+- **Product code:** I did not change any product code.
+
+### Summary
+
+| ID | Severity | Title | Status |
+|----|----------|-------|--------|
+| R2-01 | **Medium** | ReDoS in the PR diff marker regex: anyone who can open a PR can block the server's event loop (400 KB line → 15.3 s stall, quadratic) | Confirmed (end to end against a mock) |
+| R2-02 | **Medium** | The F-02 xlsx pre-scan can be bypassed by moving the sheet out of `xl/worksheets/`, and parser workers have no concurrency cap: 9 × 4.9 KB uploads → **5.8 GB RSS** | Confirmed (production server) |
+| R2-03 | Low | A malicious PR can link itself to every test case. This inflates the management KPI "in open PR" and puts PR badges on unrelated cases | Confirmed |
+| R2-04 | Low | GitHub pagination never ends on empty pages that carry a `rel="next"` link: about 1,900 requests/s until the 15-minute sync budget runs out | Confirmed (requires the configured GitHub host) |
+| R2-05 | Info | The login `next=` check is incomplete. Only react-router stops it from becoming an open redirect | Confirmed (not exploitable) |
+| R2-06 | Info | CI uploads need the full editor token. There is no ingest-only credential | Design |
+
+There are no Critical or High findings. F-01 and F-02 are fixed (details under "Verified sound").
+
+---
+
+### R2-01: Medium. ReDoS in `MARKER_G` on attacker-controlled PR diffs
+
+**Affected code:**
+
+- `apps/server/src/integrations/prLinks.ts:41`: the pattern, used at `:190-193`.
+- `github.ts:315-338`: patches are retained.
+- `github.ts:434`: linking runs synchronously on the main thread.
+
+```ts
+const MARKER_G = /@(?:allure\.(?:id|testcase|link)|pytest\.mark\.(?:xray|jira))\s*\(([^)]*)\)/g;
+```
+
+**Description**
+
+- On a line that holds many marker openings and no `)`, every match attempt scans to the end of the line with `[^)]*` and then fails. The cost is O(n²).
+- PR diffs are written by whoever opens the PR. On public repos that includes fork PRs from anyone on the internet, because `GET /pulls?state=open` lists them.
+- `linkPullRequest` runs synchronously on the Fastify main thread, so the whole dashboard stops responding: API, UI and health check. This happens on every sync, manual or interval, for as long as the PR is open.
+- The 15-minute sync timeout cannot interrupt synchronous regex work.
+
+There is a second, related problem. Patches for every test file of every PR (up to 600 PRs × 300 files, with responses up to 10 MB per page) are kept in `filesByPr` until all PRs have been fetched, instead of being linked and dropped one PR at a time.
+
+**Proof**
+
+Direct timing (`redos.mjs`). `JIRA_KEY_G`, `DEF_TEST_G` and the quote regex in `markerTokens` stayed linear (0–1 ms at 80 KB).
+
+| Payload `'@allure.id('.repeat(…)` | Time |
+|---|---|
+| 10 KB | 8 ms |
+| 20 KB | 38 ms |
+| 40 KB | 130 ms |
+| 80 KB | 523 ms |
+
+End to end (`gh_e2e.mts`): the real `createGithubProvider` against a loopback mock. PR #7 adds `tests/test_evil.py` with one 400 KB `+@allure.id(@allure.id(…` line.
+
+```
+mode=redos lineKB=100  total=1100ms
+mode=redos lineKB=400  total=15418ms  maxEventLoopStall=15300ms
+```
+
+At this growth rate a 1 MB line would take about 100 s; this is extrapolated, not measured. I could not confirm GitHub's exact per-file `patch` size limit offline. Large single-line diffs are returned in practice, but very large files have their `patch` omitted. Even within that limit, an attacker can repeat the payload across up to 300 files per PR and across several PRs, because the stalls add up.
+
+**Fix**
+
+- Replace the regex with a bounded scan. For each marker prefix found with `indexOf`, look for `)` only within the next 512 characters. Alternatively, use `\(([^)]{0,512})\)`.
+- Skip added lines longer than about 4 KB.
+- Cap the total patch bytes inspected per PR (about 256 KB) and per sync.
+- Link each PR as soon as its files are fetched, then drop its patches.
+- Add a regression test asserting that a 1 MB hostile line takes under 50 ms.
+
+---
+
+### R2-02: Medium. F-02 hardening: scanner bypass and unbounded parallel workers
+
+**Affected code:**
+
+- `apps/server/src/import/spreadsheet/parse.ts:85`: only entries matching `^xl/worksheets/[^/]+\.xml$` are scanned.
+- `parse.ts:159-185`: one new `Worker` per request with no concurrency limit.
+- `parse.ts:31-32`: 512 MB heap and a 30 s timeout per worker.
+
+**Description**
+
+- read-excel-file finds sheets through `xl/_rels/workbook.xml.rels`. A workbook whose relationship says `Target="evil/sheet1.xml"` stores the sheet at `xl/evil/sheet1.xml`. `scanSheetXml` never sees that sheet, so the row-gap bomb from F-02 reaches read-excel-file.
+- The library also unzips with a different implementation (`unzipper-esm`) from the yauzl pre-scan, which leaves room for zip parser differentials. I did not test this.
+- The worker isolation from F-02 works, so the server does not crash. However, each request starts its own worker that grows to its heap cap and lives for up to 30 s, and the import rate limit (10 per minute per IP) still allows 10 of them at once.
+- The endpoint requires editor access, which limits who can do this.
+
+**Proof**
+
+Production server. The files are built by `mkx.py` from `test/fixtures/tracker.xlsx`, are about 4.9 KB each, and add `<row r="60000000">`.
+
+```
+plain.xlsx (sheet in xl/worksheets/)  → 413 too_many_rows            0.02 s   (scanner works)
+moved.xlsx (sheet in xl/evil/)        → 413 spreadsheet_too_large    6.2 s    (scanner bypassed; worker OOM)
+9 × moved.xlsx in parallel (conc.sh)  → 422 ×9 after 30.0 s; server peak RSS 5,776 MB; /api/health still OK
+```
+
+In a container with a 2–4 GB memory limit, this gets the process OOM-killed, which is the same outcome as F-02 but needs editor access.
+
+**Fix**
+
+- Scan every `*.xml` entry in the archive, or resolve the relationship targets exactly as read-excel-file does and scan those.
+- Reject archives with duplicate entry names.
+- Ideally, hand the worker the entries yauzl already extracted instead of letting a second unzipper re-parse the file.
+- Add a process-wide semaphore of 1–2 concurrent parser workers. Return 503 or queue when it is full.
+- Lower `workerHeapMb` to 256.
+
+---
+
+### R2-03: Low. A malicious PR can claim any test case and skew the "in open PR" KPI
+
+**Affected code:**
+
+- `apps/server/src/integrations/prLinks.ts:183-198`
+- `domain/coverage.ts:25-37`
+
+**Description**
+
+- Any open PR whose title, body (up to 65 KB) or diff mentions a case key is linked to that case. There is no cap on links per PR.
+- One PR body that lists every key, or a diff that adds `def test_<name>(` for every case, therefore links the PR to every case.
+- `computeCoverage().inOpenPr` appears in the Overview and the coverage figures, so it can be inflated to 100%. Every case also shows an "in PR" badge.
+- No other data is changed. Links are replaced on each sync, and PR rows are scoped by repo. The attacker's PR also cannot overwrite other repos or cases.
+
+**Proof:** `gh_e2e.mts 1 link`. Starting from 200 `not_automated` cases, one PR whose body lists `PAY-1 … PAY-200` produced `linked: 200` and `inOpenPr: 200`.
+
+**Fix**
+
+- Cap links per PR (for example 25). Above the cap, store none and flag the PR.
+- Optionally, count `key_in_body` and `test_name_in_diff` links only for PR authors in an allowlist, or only for PRs from the same repo (not forks).
+- Document that this KPI is derived from what PR authors write.
+
+---
+
+### R2-04: Low. GitHub list pagination has no page cap
+
+**Affected code:** `apps/server/src/integrations/github.ts:256-269` and `:321-333`
+
+**Description**
+
+- Both loops stop only on `count >= cap`, and `count` grows only when a page contains items.
+- An endpoint that returns `[]` with a `rel="next"` link, including a link pointing back to itself, loops until the sync budget runs out.
+- Only the configured `GITHUB_API_URL` can do this (a misbehaving GHES instance or a proxy), not PR authors. The Jira loops are already capped by page count and by remembering which `nextPageToken` values they have seen.
+
+**Proof:** `gh_loop.mts` made 5,825 requests in 3 s before the test aborted it.
+
+**Fix:**
+
+- Cap pages at `ceil(cap / per_page) + 1`.
+- Stop on an empty page.
+- Stop when a `next` URL has already been seen.
+
+---
+
+### R2-05: Info. Login `next=` validation relies on react-router
+
+**Affected code:** `apps/web/src/pages/Login.tsx:11-15`
+
+**Description**
+
+`safeNext` accepts `/\t/evil.example/`, `/\n/…` and `/\r/…`. The WHATWG URL parser strips tabs and newlines, which turns these into `//evil.example/`.
+
+**Proof (browser, `redir3.cjs`)**
+
+- react-router 8 throws `External navigation is not allowed`, so the user stays on `/login`. No request is sent to `evil.example` and no open redirect happens.
+- These values were all safely confined or sent to `/`: `//`, `/\`, `https:`, `javascript:`, `/%2F%2F`, `/.//`, `/../`, `/%5C/`, Unicode slashes, and NUL, VT, FF and NBSP characters.
+
+**Fix**
+
+Resolve the value with `new URL(raw, location.origin)`. Require `u.origin === location.origin`, then navigate to `u.pathname + u.search + u.hash`.
+
+### R2-06: Info. CI holds the editor token
+
+The CI snippet on the Import page uses `DASHBOARD_TOKEN`. CI jobs that run untrusted PR code with access to that secret would leak full editor rights.
+
+**Recommendation:**
+
+- Document that the secret must only be exposed to trusted-branch pipelines.
+- Consider a third token scoped to `POST /api/runs/import` only.
+
+---
+
+### Verified sound (round 2)
+
+**F-01 (auth bypass): fixed**
+
+Tested with raw sockets against the production server (`f01.mjs`). Every one of these returned 401 or 404 for an anonymous client:
+
+- `/%61pi/…`, `/ap%69/…`, `/api/%74est-cases`
+- absolute-form targets, both plain and encoded
+- `/API`, `//api`, `/api//`, `/api/./`, `/x/../api`
+- `/api%2f…`, `;x`, `%00`, `\`
+- dot-segments through public routes (`/api/health/../test-cases`, `/api/auth/../…`)
+
+The viewer gets 403 on `/%61pi/summary`, on the new `/api/results/1` route, and on `PUT /%61pi/settings`. `/%2561pi/…` gets the SPA shell, with no data.
+
+Route tagging works for routes added after the fix. Every route under `/api` defaults to `editor`, and only these four are relaxed: `/api/health`, `/api/auth/*`, `GET /api/report` and `GET /api/settings`. Tagging also covers the auto-generated HEAD routes. The security and http test suites pass (41 tests).
+
+**F-02 (xlsx OOM): fixed for crash-safety**
+
+The original bomb gets 413 in 20 ms. Bypass files only kill the worker, and the server keeps answering. The residual risk is described in R2-02.
+
+**Host allowlist and PUBLIC_URL**
+
+- `PUBLIC_URL` replaces `Host` as the server's own origin.
+- When auth is disabled, the server binds to loopback.
+- Unusual Host values such as `a@localhost` parse to an allowed hostname, but a browser cannot send them, so they do not help DNS rebinding.
+- Login CSRF (`POST /api/auth/login` with a foreign Origin) gets 403.
+- A cookie request with `Origin: null` and no Referer gets 403.
+
+**Outbound HTTP client (`http.ts`)**
+
+- Requests are pinned to the configured origin. Absolute and `//` URLs, `Link: next` values and redirects that leave it are refused (`gh_e2e.mts ssrf` aborts with "refused request to a host other than the configured base URL"). The `Authorization` header is therefore never sent to another host.
+- Redirects are capped at 3.
+- URLs with embedded credentials are rejected.
+- The base URL must be https; http is allowed only for loopback.
+- The per-attempt 15 s `AbortSignal` also covers reading the body.
+- Bodies are capped at 10 MB after decompression, streamed, and checked against `content-length` first.
+- Retry waits are capped at 60 s.
+- Error messages contain only the path and a short `message` excerpt, sanitized for known secrets, the Basic auth base64, the Xray JWT and token shapes.
+- The new `XRAY_BASE_URL` is restricted to `https://*.xray.cloud.getxray.app`, with no port, path or credentials.
+
+**Data stored from GitHub and Jira**
+
+- The PR `url` is accepted only when it is http(s); a `javascript:` `html_url` fell back to the canonical `https://github.com/{repo}/pull/{n}` (observed).
+- The URLs of Jira cases and bugs are built from the configured base URL plus a key checked with `isJiraKey`.
+- The bug keys put into JQL `key in (…)` come from `isJiraKey`-checked values, so JQL injection is not possible.
+- Titles are capped and rendered as text.
+- Repo/PR links are replaced atomically per repo.
+- GitHub `GraphQL` and Jira `errorMessages` are stored only as sanitized text.
+
+**Web app: XSS (real browser)**
+
+I planted HTML/JS payloads in every free-text field that reaches the UI:
+
+- test case title, suite, owner, tags and allure full name
+- note author and Markdown body (raw `<a>`, `<iframe>`, `javascript:` and `data:` links, reference links, and an external image)
+- bug title and assignee
+- team name
+- run name, branch, commit and run group
+- allure test name, message, trace, labels, parameters and `environment.properties`
+- spreadsheet header and cell values (shown in the preview)
+- PR title, author, branch and reviewers
+- integration `last_error`
+
+Through SQLite I also planted `javascript:` values in the PR url, bug url, case `externalUrl` and run `buildUrl`, which the server would otherwise refuse.
+
+Results:
+
+- On all 12 routes, including the Report page with print media, the payloads appeared only as text. Nothing executed, no `img`, `iframe` or `script` element was injected, and no `javascript:`, `data:` or `vbscript:` URL appeared in any `href`, `src`, `action` or `formaction` attribute.
+- Neither page showed a `dialog`, made a request to an external host, or reported a CSP violation.
+- The server rejects `javascript:`, `JaVaScRiPt:`, leading-space, `data:`, `https:alert(1)`, `http:\\` and `//` URLs on every write path.
+- The source contains no `dangerouslySetInnerHTML`, `innerHTML`, `eval` or `new Function`.
+- Markdown uses `skipHtml`, `urlTransform` and `safeHttpUrl`, and does not render images.
+
+**CSP compatibility**
+
+- `index.html` contains no inline script. The theme bootstrap is the external `/theme-init.js`.
+- The bundle contains no `eval`.
+- No CSP violation was reported in the console on any page. `style-src 'unsafe-inline'` is still needed for React `style` attributes. This is acceptable because `script-src 'self'` is strict.
+
+**Bundle secrets**
+
+- There are no source maps.
+- The only environment-variable names in `dist` are the documentation strings on the Import and Integrations pages. No values are present, and there are no token-shaped strings, `import.meta.env` or `process.env`.
+
+**Viewer role**
+
+- The UI redirects viewers to `/report`.
+- `fetch` calls made by a logged-in viewer from the page all got 403: summary, test cases, export.csv, notes, results, integrations, pull requests, `/%61pi`, and `PUT`/`POST`/`PATCH`/`DELETE` writes, including sync.
+- Only `GET /api/report` and `GET /api/settings` returned 200.
+- The report payload contains only aggregates and names: team, run groups and suites.
+
+**Session cookie and localStorage**
+
+- The session cookie is `HttpOnly; Secure; SameSite=Strict`.
+- `localStorage` holds only the theme, the note author name and the last run group. It holds no tokens.
+
+**Clickjacking**
+
+A cross-origin `<iframe>` loading `/report` is blocked: `chrome-error://`, because of `X-Frame-Options: DENY` and `frame-ancestors 'none'`.
+
+**Regexes reachable from PRs other than R2-01**
+
+`JIRA_KEY_G` (title, body and branch), `DEF_TEST_G`, the quote regex in `markerTokens`, and the glob regexes (from configuration only) are all linear.
+
+**Not covered**
+
+- GitHub's actual per-file `patch` size limits (see R2-01).
+- Zip local-header and central-directory differentials between yauzl and `unzipper-esm` (R2-02).
+- Deployment over plain HTTP on a non-localhost host. This is F-09: the `Secure` cookie and `upgrade-insecure-requests` assume TLS. Chromium exempts `127.0.0.1`, which is why the end-to-end test works over HTTP.
+
+### Release recommendation
+
+**Ship for the internal deployment**, provided R2-01 is fixed before the GitHub integration is enabled on any repository where people outside the QA team can open PRs. That includes any public repo, because fork PRs are listed.
+
+R2-01 is a small, self-contained change, and it is the only finding that someone without dashboard credentials can trigger. Fix R2-02 (scan every XML entry and add a worker semaphore) in the next patch. Until then, the residual risk is limited to editors, and the process does not crash outright unless the container's memory limit is below about 6 GB. R2-03 to R2-06 can wait for a follow-up.

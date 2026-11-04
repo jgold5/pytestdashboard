@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Bug, BugList, BugStats, FailureGroup, Summary, TestCase, TestCaseList } from '@ptd/shared';
-import { jiraKeyFromUrl } from '../src/domain/bugs.js';
-import { createTestApp, type TestApp } from './helpers/app.js';
+import { bugTitleFromNote, jiraKeyFromUrl } from '../src/domain/bugs.js';
+import { authEnv, createTestApp, EDITOR_TOKEN, VIEWER_TOKEN, type TestApp } from './helpers/app.js';
 import { daysAgo, importResults, type ResultSpec } from './helpers/allure.js';
 
 const r = (name: string, status: ResultSpec['status'], start: number, message = 'AssertionError: payment declined'): ResultSpec => ({
@@ -135,5 +135,52 @@ describe('bugs', () => {
     const b = await createBug({ title: 'x' });
     expect((await t.app.inject({ method: 'DELETE', url: `/api/bugs/${b.id}` })).statusCode).toBe(204);
     expect((await t.app.inject({ url: `/api/bugs/${b.id}` })).statusCode).toBe(404);
+  });
+
+  it('bug title from a markdown note is plain text', () => {
+    expect(bugTitleFromNote('## **Checkout** fails with `500` on [staging](https://x.example)\nmore')).toBe('Checkout fails with 500 on staging');
+    expect(bugTitleFromNote('\n\n> - _Card_ ~~declined~~ ![img](a.png) <https://jira.example/browse/A-1>')).toBe('Card declined img https://jira.example/browse/A-1');
+    expect(bugTitleFromNote('```\ncode first\n```')).toBe('code first');
+    expect(bugTitleFromNote('1. snake_case_name stays')).toBe('snake_case_name stays');
+    const long = bugTitleFromNote('# ' + 'a'.repeat(500));
+    expect(long.length).toBeLessThanOrEqual(200);
+    expect(bugTitleFromNote('   \n---\n')).toBe('');
+  });
+
+  it('auto-created bug title strips markdown', async () => {
+    await importResults(t, [r('a', 'failed', daysAgo(1))]);
+    const a = await caseByName('#a');
+    const res = await t.app.inject({
+      method: 'POST',
+      url: '/api/notes',
+      payload: { testCaseId: a.id, author: 'qa', body: '### **Refund** API returns `500`\nsee [logs](https://x.example)', triage: 'product_bug', ticketUrl: 'https://acme.atlassian.net/browse/PAY-7' },
+    });
+    expect(res.statusCode).toBe(201);
+    const list = (await t.app.inject({ url: '/api/bugs?bucket=all' })).json<BugList>();
+    expect(list.items[0]?.title).toBe('Refund API returns 500');
+  });
+
+  it('GET /api/results/:id returns one result with trace (404 for unknown)', async () => {
+    const run = await importResults(t, [r('a', 'failed', daysAgo(1))]);
+    const results = (await t.app.inject({ url: `/api/runs/${run.run.id}/results` })).json<{ items: Array<{ id: number }> }>();
+    const id = results.items[0]!.id;
+    const res = await t.app.inject({ url: `/api/results/${id}` });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ id, runId: run.run.id, status: 'failed', testCaseKey: 'tests.api.test_pay#a' });
+    expect((await t.app.inject({ url: '/api/results/999999' })).statusCode).toBe(404);
+    expect((await t.app.inject({ url: '/api/results/abc' })).statusCode).toBe(400);
+  });
+});
+
+describe('GET /api/results/:id access', () => {
+  it('is editor only', async () => {
+    const t = await createTestApp(authEnv({ VIEWER_TOKEN }));
+    try {
+      expect((await t.app.inject({ url: '/api/results/1' })).statusCode).toBe(401);
+      expect((await t.app.inject({ url: '/api/results/1', headers: { authorization: `Bearer ${VIEWER_TOKEN}` } })).statusCode).toBe(403);
+      expect((await t.app.inject({ url: '/api/results/1', headers: { authorization: `Bearer ${EDITOR_TOKEN}` } })).statusCode).toBe(404);
+    } finally {
+      await t.close();
+    }
   });
 });

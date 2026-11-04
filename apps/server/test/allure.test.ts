@@ -3,7 +3,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { RunImportResponse, TestCase, TestCaseList, TestResultList } from '@ptd/shared';
 import { AllureBundle, parseProperties } from '../src/import/allure/parse.js';
-import { dedupeRetries, linkCandidates } from '../src/import/allure/importRun.js';
+import { dedupeRetries, humanizeModule, linkCandidates, suiteFromResult } from '../src/import/allure/importRun.js';
 import { deriveRunGroup } from '../src/import/allure/runGroup.js';
 import { failureSignature, normalizeFailureMessage } from '../src/domain/signature.js';
 import { createTestApp, multipart, type TestApp } from './helpers/app.js';
@@ -162,5 +162,19 @@ describe('POST /api/runs/import', () => {
     const res = await t.app.inject({ method: 'POST', url: '/api/runs/import', payload: mp.payload, headers: mp.headers });
     expect(res.statusCode).toBe(400);
     expect(res.json()).toMatchObject({ error: 'validation_error' });
+  });
+});
+
+describe('suite names for auto-created cases', () => {
+  const res = (labels: Array<{ name: string; value: string }>, fullName: string | null = null) =>
+    ({ labels, fullName }) as unknown as Parameters<typeof suiteFromResult>[0];
+  it('humanises module-path suites, keeps explicit features', () => {
+    expect(suiteFromResult(res([{ name: 'feature', value: 'Checkout' }, { name: 'suite', value: 'test_orders' }]))).toBe('Checkout');
+    expect(suiteFromResult(res([{ name: 'suite', value: 'test_orders' }, { name: 'parentSuite', value: 'tests.api' }]))).toBe('Orders');
+    expect(suiteFromResult(res([{ name: 'parentSuite', value: 'tests.api' }]))).toBe('Api');
+    expect(suiteFromResult(res([], 'tests.api.test_user_profile.TestProfile#test_x'))).toBe('User profile');
+    expect(suiteFromResult(res([], 'tests/ui/checkout_flow_test.py::test_x'))).toBe('Checkout flow');
+    expect(suiteFromResult(res([{ name: 'suite', value: 'Payments API' }]))).toBe('Payments API');
+    expect(humanizeModule('test_')).toBe('test_');
   });
 });

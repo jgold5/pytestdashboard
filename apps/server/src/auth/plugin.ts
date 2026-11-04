@@ -114,7 +114,7 @@ export function registerAuth(app: FastifyInstance, config: AppConfig): void {
     if (req.routeOptions.url === undefined) return;
     const access: Access = req.routeOptions.config.access ?? 'editor';
 
-    let role: Role | null = null;
+    let role: Role | null;
     let method: 'bearer' | 'cookie' | 'none' = 'none';
     const authz = req.headers.authorization;
     if (!authRequired) {

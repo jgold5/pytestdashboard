@@ -316,7 +316,7 @@ function RunTrendCard({ s }: { s: Summary }) {
     <Card>
       <CardHeader
         title="Results per run"
-        description="Last 30 runs by status — click a bar to open the run"
+        description={`Last ${data.length} ${data.length === 1 ? 'run' : 'runs'} of this group by status — click a bar to open the run`}
         actions={
           groups.length > 1 ? (
             <select
@@ -327,7 +327,7 @@ function RunTrendCard({ s }: { s: Summary }) {
             >
               {groups.map((g) => (
                 <option key={g.name} value={g.name}>
-                  {g.name} ({g.runs})
+                  {g.name}
                 </option>
               ))}
             </select>
@@ -365,14 +365,16 @@ function SuiteCard({ s, className }: { s: Summary; className?: string }) {
             <thead className="sticky top-0 z-10 bg-surface text-left text-[11px] font-medium tracking-wide text-fg-3 uppercase">
               <tr className="border-b border-border">
                 <th className="px-4 py-2 font-medium">Suite</th>
-                <th className="w-[40%] px-2 py-2 font-medium">Coverage</th>
+                <th className="w-[34%] px-2 py-2 font-medium">Coverage</th>
                 <th className="px-2 py-2 text-right font-medium">Cases</th>
                 <th className="hidden px-4 py-2 text-right font-medium sm:table-cell">Pass / Fail</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((r) => {
-                const rate = r.total ? r.automated / r.total : 0;
+                // Same definition as the headline rate: not-automatable cases are excluded.
+                const automatable = r.total - r.notAutomatable;
+                const rate = automatable > 0 ? r.automated / automatable : null;
                 return (
                   <tr key={r.suite} className="border-b border-border last:border-0 hover:bg-surface-2/60">
                     <td className="max-w-0 px-4 py-2">
@@ -391,7 +393,7 @@ function SuiteCard({ s, className }: { s: Summary; className?: string }) {
                           parts={[
                             { label: 'Automated', value: r.automated, color: 'var(--au-automated)' },
                             { label: 'In progress', value: r.inProgress, color: 'var(--au-progress)' },
-                            { label: 'Other', value: Math.max(0, r.total - r.automated - r.inProgress), color: 'var(--au-not)' },
+                            { label: 'Not automated', value: Math.max(0, automatable - r.automated - r.inProgress), color: 'var(--au-not)' },
                           ]}
                         />
                         <span className="w-10 shrink-0 text-right text-xs text-fg-2 tabular">{fmtPct(rate)}</span>
@@ -572,7 +574,7 @@ function OwnerCard({ s }: { s: Summary }) {
                   <div className="mb-1 flex items-center justify-between text-xs">
                     <span className="truncate text-fg-2 group-hover:text-fg">{r.owner}</span>
                     <span className="text-fg-3 tabular">
-                      <span className="text-fg">{r.automated}</span> / {r.total} · {fmtPct(r.total ? r.automated / r.total : null)}
+                      <span className="text-fg">{r.automated}</span> / {r.total - r.notAutomatable} · {fmtPct(r.total - r.notAutomatable > 0 ? r.automated / (r.total - r.notAutomatable) : null)}
                     </span>
                   </div>
                   <SegmentedBar
@@ -580,7 +582,7 @@ function OwnerCard({ s }: { s: Summary }) {
                     height={4}
                     parts={[
                       { label: 'Automated', value: r.automated, color: 'var(--au-automated)' },
-                      { label: 'Not yet', value: r.total - r.automated, color: 'var(--au-not)' },
+                      { label: 'Not yet', value: Math.max(0, r.total - r.notAutomatable - r.automated), color: 'var(--au-not)' },
                     ]}
                   />
                 </Link>

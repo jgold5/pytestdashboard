@@ -156,19 +156,10 @@ export function getReport(db: Db, periodDays: number, today: Date = new Date()):
 
   // --- suites ----------------------------------------------------------------
   const goalRate = settings.goal?.targetRate ?? 0.8;
-  const notAutomatableBySuite = new Map(
-    db
-      .select({ suite: sql<string>`coalesce(${testCases.suite}, '(none)')`, n: sql<number>`count(*)` })
-      .from(testCases)
-      .where(eq(testCases.automationStatus, 'not_automatable'))
-      .groupBy(sql`coalesce(${testCases.suite}, '(none)')`)
-      .all()
-      .map((r) => [r.suite, r.n]),
-  );
   const healthRank = { red: 0, amber: 1, unknown: 2, green: 3 } as const;
   const suites = bySuite(db)
     .map((s) => {
-      const rate = automationRate(s.total, s.automated, notAutomatableBySuite.get(s.suite) ?? 0);
+      const rate = automationRate(s.total, s.automated, s.notAutomatable);
       const executed = s.passing + s.failing;
       const lastPassRate = executed > 0 ? s.passing / executed : null;
       let health: 'green' | 'amber' | 'red' | 'unknown';
@@ -176,7 +167,7 @@ export function getReport(db: Db, periodDays: number, today: Date = new Date()):
       else if ((rate ?? 0) >= goalRate && lastPassRate >= 0.95) health = 'green';
       else if (lastPassRate >= 0.85) health = 'amber';
       else health = 'red';
-      return { suite: s.suite, total: s.total, automated: s.automated, automationRate: rate, lastPassRate, health };
+      return { suite: s.suite, total: s.total, automated: s.automated, automatable: s.total - s.notAutomatable, automationRate: rate, lastPassRate, health };
     })
     .sort(
       (a, b) =>
@@ -186,6 +177,7 @@ export function getReport(db: Db, periodDays: number, today: Date = new Date()):
     );
 
   // --- highlights / risks ------------------------------------------------------
+  const firstImportAt = db.select({ v: sql<string | null>`min(${runs.importedAt})` }).from(runs).get()?.v ?? null;
   const count = (q: { get(): { n: number } | undefined }) => q.get()?.n ?? 0;
   const linked = sql`EXISTS (SELECT 1 FROM ${testCasePullRequests} WHERE ${testCasePullRequests.pullRequestId} = ${pullRequests.id})`;
   const prPipeline = computePrPipeline(db);
@@ -217,7 +209,19 @@ export function getReport(db: Db, periodDays: number, today: Date = new Date()):
         db
           .select({ n: sql<number>`count(*)` })
           .from(testCases)
-          .where(and(eq(testCases.automationStatus, 'automated'), gte(testCases.automatedAt, startIso))),
+          .where(
+            and(
+              eq(testCases.automationStatus, 'automated'),
+              gte(testCases.automatedAt, startIso),
+              // Only real progress: a tracked case that *became* automated, or a new test
+              // discovered by a later allure import. Cases that arrived already automated
+              // (spreadsheet/Jira bootstrap, manual create, the very first allure import)
+              // are counted in casesAdded instead.
+              firstImportAt === null
+                ? sql`${testCases.automatedAt} > ${testCases.createdAt}`
+                : sql`(${testCases.automatedAt} > ${testCases.createdAt} OR (${testCases.source} = 'allure' AND ${testCases.createdAt} > ${firstImportAt}))`,
+            ),
+          ),
       ),
       casesAdded: count(db.select({ n: sql<number>`count(*)` }).from(testCases).where(gte(testCases.createdAt, startIso))),
       prsMerged: count(

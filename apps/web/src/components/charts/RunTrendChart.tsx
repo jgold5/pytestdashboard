@@ -20,6 +20,9 @@ export function RunTrendChart({ data, height = 220 }: { data: RunPoint[]; height
   const c = useCssVars(['st-passed', 'st-failed', 'st-broken', 'st-skipped', 'fg-3', 'grid', 'axis', 'surface', 'surface-2'] as const);
   const color = { passed: c['st-passed'], failed: c['st-failed'], broken: c['st-broken'], skipped: c['st-skipped'] };
   const rows = data.map((r) => ({ ...r, ...r.counts, when: r.startedAt ?? r.importedAt }));
+  // Tick formatter's 2nd arg is the *tick* index (ticks are thinned by minTickGap),
+  // not the data index — look the date up by run id.
+  const whenById = new Map(rows.map((r) => [r.id, r.when]));
   return (
     <div>
       <div className="mb-2">
@@ -31,7 +34,7 @@ export function RunTrendChart({ data, height = 220 }: { data: RunPoint[]; height
             <CartesianGrid vertical={false} stroke={c.grid} />
             <XAxis
               dataKey="id"
-              tickFormatter={(_v, i) => fmtDate(rows[i]?.when, 'MMM d')}
+              tickFormatter={(v: number) => fmtDate(whenById.get(v), 'MMM d')}
               tick={{ fontSize: 11, fill: c['fg-3'] }}
               tickLine={false}
               axisLine={{ stroke: c.axis }}

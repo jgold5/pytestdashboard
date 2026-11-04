@@ -149,8 +149,11 @@ export async function buildApp(opts: BuildOptions): Promise<BuiltApp> {
   if (serveSpa) {
     await app.register(fastifyStatic, {
       root: config.webDist,
-      wildcard: false,
-      index: false,
+      // One GET /* route that resolves files at request time, so assets added after
+      // startup (a redeploy that swaps the dist folder in place) are served too.
+      // Misses fall through to the not-found handler below (SPA fallback / JSON 404).
+      wildcard: true,
+      index: ['index.html'], // `/` → index.html (no-cache, see below)
       setHeaders: (res, filePath) => {
         if (filePath.includes(`${path.sep}assets${path.sep}`)) {
           res.header('cache-control', 'public, max-age=31536000, immutable');

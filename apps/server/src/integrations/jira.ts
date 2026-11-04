@@ -26,7 +26,8 @@ import { nowIso } from '../util/time.js';
 import { HttpClient, HttpError, type HttpClientOptions } from './http.js';
 import type { IntegrationProvider, SyncContext, SyncStats } from './registry.js';
 
-export const XRAY_CLOUD_BASE_URL = 'https://xray.cloud.getxray.app/api/v2';
+/** Xray Cloud GraphQL/REST API path, appended to `XRAY_BASE_URL` (config.xrayBaseUrl). */
+export const XRAY_API_PATH = '/api/v2';
 
 export const JIRA_LIMITS = {
   maxIssues: 10_000,
@@ -36,7 +37,7 @@ export const JIRA_LIMITS = {
 } as const;
 
 export interface JiraProviderOptions {
-  /** Test hook: Xray base URL (default Xray Cloud global endpoint). */
+  /** Test hook: full Xray API base URL (default `${config.xrayBaseUrl}/api/v2`). */
   xrayBaseUrl?: string;
   /** Test hooks: override HTTP client settings (backoff, sleep, timeouts). */
   http?: Partial<Omit<HttpClientOptions, 'baseUrl' | 'label' | 'headers' | 'signal'>>;
@@ -339,7 +340,7 @@ async function fetchXrayTypes(
 ): Promise<Map<string, { name: string | null; kind: string | null }>> {
   const xray = new HttpClient({
     label: 'Xray',
-    baseUrl: opts.xrayBaseUrl ?? XRAY_CLOUD_BASE_URL,
+    baseUrl: opts.xrayBaseUrl ?? `${config.xrayBaseUrl}${XRAY_API_PATH}`,
     secrets: [config.xrayClientSecret!, config.xrayClientId!],
     signal: ctx.signal,
     ...opts.http,

@@ -23,7 +23,7 @@ import {
   useCreateNote,
   useDeleteNote,
   useDeleteTestCase,
-  useRunResults,
+  useResult,
   useSetAutomationStatus,
   useTestCase,
   useUpdateNote,
@@ -414,9 +414,9 @@ function LatestFailure({ t }: { t: TestCaseDetail }) {
   const latest = t.history[0];
   const lastFail = latest && (latest.status === 'failed' || latest.status === 'broken') ? latest : null;
   const [showTrace, setShowTrace] = useState(false);
-  // The trace isn't part of TestCaseDetail.history; fetch the run's result for this case on demand.
-  const results = useRunResults(lastFail?.runId ?? 0, { search: t.key, pageSize: 20 }, { enabled: showTrace && !!lastFail });
-  const trace = results.data?.items.find((r) => r.id === lastFail?.id)?.trace;
+  // The trace isn't part of TestCaseDetail.history; fetch the result on demand.
+  const result = useResult(lastFail?.id ?? 0, { enabled: showTrace && !!lastFail });
+  const trace = result.data?.trace;
   if (!lastFail) return null;
   return (
     <Card className="border-[color-mix(in_oklab,var(--st-failed)_28%,var(--border))]">
@@ -446,7 +446,7 @@ function LatestFailure({ t }: { t: TestCaseDetail }) {
           Stack trace
         </button>
         {showTrace ? (
-          results.isPending ? (
+          result.isPending ? (
             <Skeleton className="mt-2 h-24" />
           ) : (
             <pre className="mt-2 max-h-96 overflow-auto rounded-md border border-border bg-surface-2/60 p-3 font-mono text-[11px] leading-relaxed whitespace-pre text-fg-2">

@@ -8,10 +8,11 @@ import { useTheme } from './lib/theme';
 import { TooltipProvider } from './components/ui/tooltip';
 import { ReportLayout, WorkspaceLayout } from './components/Layout';
 import { Skeleton } from './components/ui/skeleton';
-import { OverviewPage } from './pages/Overview';
 import { LoginPage } from './pages/Login';
 import { NotFoundPage } from './pages/NotFound';
 
+// Every page is its own chunk (Recharts etc. load only with the pages that chart).
+const OverviewPage = lazy(() => import('./pages/Overview').then((m) => ({ default: m.OverviewPage })));
 const TestCasesPage = lazy(() => import('./pages/TestCases'));
 const TestCaseDetailPage = lazy(() => import('./pages/TestCaseDetail'));
 const RunsPage = lazy(() => import('./pages/Runs'));
@@ -145,7 +146,7 @@ export function App() {
                 </Gate>
               }
             >
-              <Route index element={<OverviewPage />} />
+              <Route index element={<Suspense fallback={<PageFallback />}><OverviewPage /></Suspense>} />
               <Route path="tests" element={<Suspense fallback={<PageFallback />}><TestCasesPage /></Suspense>} />
               <Route path="tests/:id" element={<Suspense fallback={<PageFallback />}><TestCaseDetailPage /></Suspense>} />
               <Route path="pulls" element={<Suspense fallback={<PageFallback />}><PullRequestsPage /></Suspense>} />

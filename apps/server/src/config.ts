@@ -76,6 +76,12 @@ const EnvSchema = z.object({
   JIRA_AUTOMATION_FIELD: optionalStr,
   XRAY_CLIENT_ID: optionalStr,
   XRAY_CLIENT_SECRET: optionalStr,
+  /** Xray Cloud region endpoint, e.g. https://eu.xray.cloud.getxray.app (default: global). */
+  XRAY_BASE_URL: z
+    .string()
+    .trim()
+    .optional()
+    .transform((v) => (v ? v : 'https://xray.cloud.getxray.app')),
   JIRA_SYNC_INTERVAL_MINUTES: optionalInt,
 });
 
@@ -96,6 +102,8 @@ export interface JiraConfig {
   automationField: string | undefined;
   xrayClientId: string | undefined;
   xrayClientSecret: string | undefined;
+  /** Xray Cloud origin (no path), e.g. https://xray.cloud.getxray.app or a regional host. */
+  xrayBaseUrl: string;
   intervalMinutes: number | null;
 }
 
@@ -177,6 +185,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (e.JIRA_BASE_URL !== undefined && !isHttpsUrl(e.JIRA_BASE_URL)) {
     problems.push('JIRA_BASE_URL must be an https:// URL');
   }
+  const xrayBaseUrl = parseXrayBaseUrl(e.XRAY_BASE_URL);
+  if (xrayBaseUrl === null) {
+    problems.push('XRAY_BASE_URL must be https://xray.cloud.getxray.app or https://<region>.xray.cloud.getxray.app');
+  }
   if (!isHttpUrl(e.GITHUB_API_URL)) problems.push('GITHUB_API_URL must be an http(s) URL');
   if (e.JIRA_AUTOMATION_FIELD !== undefined && !JIRA_KEY_FIELD.test(e.JIRA_AUTOMATION_FIELD)) {
     problems.push('JIRA_AUTOMATION_FIELD must look like customfield_12345');
@@ -239,9 +251,32 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       automationField: e.JIRA_AUTOMATION_FIELD,
       xrayClientId: e.XRAY_CLIENT_ID,
       xrayClientSecret: e.XRAY_CLIENT_SECRET,
+      xrayBaseUrl: xrayBaseUrl!,
       intervalMinutes: e.JIRA_SYNC_INTERVAL_MINUTES ?? null,
     },
   };
+}
+
+const XRAY_HOST = 'xray.cloud.getxray.app';
+
+/**
+ * Xray Cloud base URL: https only, host must be xray.cloud.getxray.app or a
+ * subdomain of it (regional endpoints such as eu.xray.cloud.getxray.app); no
+ * credentials, port, path, query or fragment. Returns the origin or null.
+ */
+export function parseXrayBaseUrl(v: string): string | null {
+  let u: URL;
+  try {
+    u = new URL(v);
+  } catch {
+    return null;
+  }
+  const host = u.hostname.toLowerCase();
+  if (u.protocol !== 'https:') return null;
+  if (host !== XRAY_HOST && !(host.endsWith(`.${XRAY_HOST}`) && /^[a-z0-9-]+(\.[a-z0-9-]+)*$/.test(host))) return null;
+  if (u.username || u.password || u.port || u.search || u.hash) return null;
+  if (u.pathname !== '/' && u.pathname !== '') return null;
+  return `https://${host}`;
 }
 
 function isHttpsUrl(v: string): boolean {

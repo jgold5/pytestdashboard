@@ -577,7 +577,7 @@ function SuitesSection({ r }: { r: Report }) {
                 </div>
               </div>
               <div className="mt-2 text-[11px] text-fg-3">
-                {fmtNumber(s.automated)} / {fmtNumber(s.total)} cases
+                {fmtNumber(s.automated)} / {fmtNumber(s.automatable)} automatable
               </div>
             </div>
           );

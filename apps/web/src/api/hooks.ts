@@ -48,6 +48,7 @@ import type {
   TestCaseList,
   TestCaseQuery,
   TestCaseUpdate,
+  TestResult,
   TestResultList,
 } from '@ptd/shared';
 import { api } from './client';
@@ -72,6 +73,7 @@ export const qk = {
   runResults: (id: number, q?: RunResultsQueryInput) =>
     q ? (['runResults', id, q] as const) : (['runResults', id] as const),
   runFailures: (id: number) => ['runFailures', id] as const,
+  result: (id: number) => ['result', id] as const,
   compare: (head: number, base?: number) => ['compare', head, base ?? null] as const,
   matrix: (q: HistoryMatrixQueryInput) => ['matrix', q] as const,
   bugs: (q?: BugQueryInput) => (q ? (['bugs', q] as const) : (['bugs'] as const)),
@@ -302,6 +304,16 @@ export function useRunResults(id: number, q: RunResultsQueryInput, opts: { enabl
     queryFn: ({ signal }) => api.get<TestResultList>(`/api/runs/${id}/results`, q, signal),
     placeholderData: keepPreviousData,
     enabled: id > 0 && (opts.enabled ?? true),
+  });
+}
+
+/** A single result with its full message + trace (`GET /api/results/:id`). */
+export function useResult(id: number, opts: { enabled?: boolean } = {}) {
+  return useQuery({
+    queryKey: qk.result(id),
+    queryFn: ({ signal }) => api.get<TestResult>(`/api/results/${id}`, undefined, signal),
+    enabled: id > 0 && (opts.enabled ?? true),
+    staleTime: 5 * 60_000,
   });
 }
 
