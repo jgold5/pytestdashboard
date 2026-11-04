@@ -5,7 +5,7 @@ import { makeZip } from './helpers/zip.js';
 
 const result = (name: string) => JSON.stringify({ name, fullName: `tests.z#${name}`, status: 'passed', historyId: name });
 
-const SMALL: ZipLimits = { maxEntries: 50, maxEntryBytes: 64 * 1024, maxTotalBytes: 512 * 1024, maxRatio: 100, ratioMinBytes: 16 * 1024 };
+const SMALL: ZipLimits = { maxEntries: 50, maxEntryBytes: 64 * 1024, maxTotalBytes: 512 * 1024, maxRatio: 100, ratioMinBytes: 16 * 1024, maxAggregateRatio: 50 };
 
 async function upload(t: TestApp, zip: Buffer) {
   const mp = multipart({}, [{ filename: 'results.zip', content: zip, contentType: 'application/zip' }]);

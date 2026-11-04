@@ -29,6 +29,7 @@ const XLSX_ZIP_LIMITS: ZipLimits = {
   maxTotalBytes: 600 * 1024 * 1024,
   maxRatio: 400,
   ratioMinBytes: 1024 * 1024,
+  maxAggregateRatio: 400,
 };
 
 export interface SheetRow {

@@ -5,6 +5,7 @@
  * are verified while streaming by yauzl's validateEntrySizes), compression-ratio
  * bomb detection, and an allow-list predicate so only wanted entries are read.
  */
+import { stat } from 'node:fs/promises';
 import yauzl, { type Entry, type ZipFile } from 'yauzl';
 import { AppError } from '../errors.js';
 
@@ -15,14 +16,18 @@ export interface ZipLimits {
   /** uncompressed / compressed above this ⇒ bomb (only checked for entries ≥ ratioMinBytes). */
   maxRatio: number;
   ratioMinBytes: number;
+  /** Declared uncompressed bytes of *read* entries / archive size (whole-archive bomb check). */
+  maxAggregateRatio: number;
 }
 
+/** Defaults for allure-results zips (entries we read are JSON/properties ≤ 5 MB). */
 export const DEFAULT_ZIP_LIMITS: ZipLimits = {
   maxEntries: 50_000,
-  maxEntryBytes: 50 * 1024 * 1024,
-  maxTotalBytes: 1024 * 1024 * 1024,
+  maxEntryBytes: 5 * 1024 * 1024,
+  maxTotalBytes: 512 * 1024 * 1024,
   maxRatio: 250,
   ratioMinBytes: 1024 * 1024,
+  maxAggregateRatio: 100,
 };
 
 export class ZipSafetyError extends AppError {
@@ -99,6 +104,10 @@ export async function readZip(
   onEntry: (entryName: string, data: Buffer) => void | Promise<void>,
   limits: ZipLimits = DEFAULT_ZIP_LIMITS,
 ): Promise<ZipReadResult> {
+  const archiveBytes = 'buffer' in source ? source.buffer.length : (await stat(source.path)).size;
+  // whole-archive budget for the bytes we will actually inflate
+  const readBudget = Math.max(8 * limits.ratioMinBytes, archiveBytes * limits.maxAggregateRatio);
+  let readDeclared = 0;
   const zip = await openZip(source);
   if (zip.entryCount > limits.maxEntries) {
     zip.close();
@@ -139,6 +148,10 @@ export async function readZip(
         }
         if (entry.uncompressedSize > limits.maxEntryBytes) {
           throw new ZipSafetyError('Zip entry exceeds size limit', 413);
+        }
+        readDeclared += entry.uncompressedSize;
+        if (readDeclared > readBudget) {
+          throw new ZipSafetyError('Zip expands too much overall (possible zip bomb)', 413);
         }
         if (
           entry.uncompressedSize >= limits.ratioMinBytes &&
