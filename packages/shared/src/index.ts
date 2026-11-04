@@ -1,0 +1,611 @@
+/**
+ * @ptd/shared — the single source of truth for the API contract.
+ *
+ * Both the server (request validation, response typing) and the web app
+ * (fetch typing, form validation) import from here. Change the contract here
+ * first, then update both sides.
+ *
+ * All API routes are prefixed with /api. JSON everywhere except file uploads
+ * (multipart/form-data) and CSV export. Timestamps are ISO-8601 strings (UTC).
+ */
+import { z } from 'zod';
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+/** Where a test case is on the automation journey. */
+export const AutomationStatus = z.enum([
+  'automated', // has automation that runs
+  'in_progress', // someone is writing it
+  'not_automated', // backlog: should be automated, not started
+  'not_automatable', // manual by design; excluded from the coverage denominator
+]);
+export type AutomationStatus = z.infer<typeof AutomationStatus>;
+
+/** Allure result statuses. */
+export const ResultStatus = z.enum(['passed', 'failed', 'broken', 'skipped', 'unknown']);
+export type ResultStatus = z.infer<typeof ResultStatus>;
+
+export const Priority = z.enum(['P0', 'P1', 'P2', 'P3']);
+export type Priority = z.infer<typeof Priority>;
+
+/** Why something is failing — set on notes, drives the triage view. */
+export const TriageCategory = z.enum([
+  'needs_investigation',
+  'product_bug',
+  'test_bug',
+  'environment',
+  'flaky',
+  'known_issue',
+]);
+export type TriageCategory = z.infer<typeof TriageCategory>;
+
+// ---------------------------------------------------------------------------
+// Shared primitives / limits (enforced server-side; mirrored in UI forms)
+// ---------------------------------------------------------------------------
+
+export const LIMITS = {
+  keyMax: 512,
+  titleMax: 1000,
+  shortTextMax: 200,
+  noteBodyMax: 20_000,
+  tagsMax: 50,
+  urlMax: 2048,
+  pageSizeMax: 200,
+  /** Max upload size for allure zips / spreadsheet files (bytes). */
+  uploadMaxBytes: 200 * 1024 * 1024,
+  /** Max number of files in one multipart allure upload. */
+  uploadMaxFiles: 20_000,
+  /** Stored error message / trace are truncated to these lengths. */
+  messageMax: 8_000,
+  traceMax: 64_000,
+} as const;
+
+const trimmed = (max: number) => z.string().trim().max(max);
+const nullableShort = trimmed(LIMITS.shortTextMax).nullable();
+
+/** http(s) URLs only — blocks javascript:, data:, etc. */
+export const SafeUrl = z
+  .string()
+  .trim()
+  .max(LIMITS.urlMax)
+  .refine((v) => /^https?:\/\//i.test(v), 'URL must start with http:// or https://');
+
+export const IdParam = z.object({ id: z.coerce.number().int().positive() });
+
+export const Paginated = <T extends z.ZodTypeAny>(item: T) =>
+  z.object({
+    items: z.array(item),
+    total: z.number().int(),
+    page: z.number().int(),
+    pageSize: z.number().int(),
+  });
+
+export const ApiError = z.object({
+  error: z.string(), // machine-readable code e.g. "not_found", "validation_error"
+  message: z.string(), // human-readable, safe to show in UI (never a stack trace)
+  details: z.unknown().optional(),
+});
+export type ApiError = z.infer<typeof ApiError>;
+
+// ---------------------------------------------------------------------------
+// Test cases (the inventory: "we have n tests, y are automated")
+// ---------------------------------------------------------------------------
+
+export const LastResult = z.object({
+  status: ResultStatus,
+  runId: z.number().int(),
+  runName: z.string(),
+  at: z.string(), // run start (or import time)
+});
+export type LastResult = z.infer<typeof LastResult>;
+
+export const PullRequestRef = z.object({
+  repo: z.string(), // "owner/name"
+  number: z.number().int(),
+  title: z.string(),
+  url: z.string(),
+  state: z.enum(['open', 'draft', 'merged', 'closed']),
+  author: z.string().nullable(),
+  updatedAt: z.string(),
+  /** How the link was made — shown as a tooltip. */
+  linkedBy: z.enum(['key_in_title', 'key_in_body', 'key_in_branch', 'marker_in_diff', 'test_name_in_diff']),
+});
+export type PullRequestRef = z.infer<typeof PullRequestRef>;
+
+export const TestCase = z.object({
+  id: z.number().int(),
+  /** Stable human/business key, unique. e.g. "TC-123", Xray/Jira key, or allure fullName. */
+  key: z.string(),
+  title: z.string(),
+  suite: z.string().nullable(), // feature area / module
+  priority: Priority.nullable(),
+  automationStatus: AutomationStatus,
+  owner: z.string().nullable(),
+  tags: z.array(z.string()),
+  externalUrl: z.string().nullable(), // link to Jira/Xray/TestRail
+  /** Allure fullName used to link imported results to this case. */
+  allureFullName: z.string().nullable(),
+  /** Allure testCaseId / AS_ID label used to link results (takes precedence over fullName). */
+  allureId: z.string().nullable(),
+  /** Jira / Xray Test issue key, e.g. "QA-123". Unique when set. */
+  jiraKey: z.string().nullable(),
+  /** Where this case came from / is mastered. */
+  source: z.enum(['manual', 'spreadsheet', 'allure', 'jira']),
+  /** Open (or recently merged) PRs linked to this case by the GitHub sync. */
+  pullRequests: z.array(PullRequestRef),
+  /** True if any linked PR is open (incl. draft). UI shows an "In PR" badge. */
+  inOpenPr: z.boolean(),
+  lastResult: LastResult.nullable(),
+  /** Latest triage category from the newest note that set one (null if none). */
+  triage: TriageCategory.nullable(),
+  noteCount: z.number().int(),
+  /** 0..1 — share of status flips across the last 10 results (0 = stable). */
+  flakiness: z.number(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type TestCase = z.infer<typeof TestCase>;
+
+/** Fields without defaults — used for PATCH so omitted fields are never reset. */
+const TestCaseFields = z.object({
+  key: trimmed(LIMITS.keyMax).min(1),
+  title: trimmed(LIMITS.titleMax).min(1),
+  suite: nullableShort.optional(),
+  priority: Priority.nullable().optional(),
+  automationStatus: AutomationStatus,
+  owner: nullableShort.optional(),
+  tags: z.array(trimmed(LIMITS.shortTextMax).min(1)).max(LIMITS.tagsMax),
+  externalUrl: SafeUrl.nullable().optional(),
+  allureFullName: trimmed(LIMITS.keyMax).nullable().optional(),
+  allureId: trimmed(LIMITS.shortTextMax).nullable().optional(),
+  jiraKey: trimmed(LIMITS.shortTextMax)
+    .regex(/^[A-Z][A-Z0-9_]+-\d+$/, 'Must look like a Jira key, e.g. QA-123')
+    .nullable()
+    .optional(),
+});
+
+export const TestCaseCreate = TestCaseFields.extend({
+  automationStatus: AutomationStatus.default('not_automated'),
+  tags: TestCaseFields.shape.tags.default([]),
+});
+export type TestCaseCreate = z.infer<typeof TestCaseCreate>;
+
+export const TestCaseUpdate = TestCaseFields.partial();
+export type TestCaseUpdate = z.infer<typeof TestCaseUpdate>;
+
+export const TestCaseBulkUpdate = z.object({
+  ids: z.array(z.number().int().positive()).min(1).max(1000),
+  patch: TestCaseFields.pick({ automationStatus: true, owner: true, suite: true, priority: true })
+    .partial()
+    .refine((p) => Object.keys(p).length > 0, 'patch must not be empty'),
+});
+export type TestCaseBulkUpdate = z.infer<typeof TestCaseBulkUpdate>;
+
+export const TestCaseSort = z.enum([
+  'key',
+  'title',
+  'suite',
+  'priority',
+  'automationStatus',
+  'lastRun',
+  'flakiness',
+  'updatedAt',
+]);
+
+/** GET /api/test-cases query string */
+export const TestCaseQuery = z.object({
+  search: z.string().trim().max(200).optional(), // matches key/title/suite/owner/tags
+  suite: z.string().max(LIMITS.shortTextMax).optional(),
+  automationStatus: AutomationStatus.optional(),
+  priority: Priority.optional(),
+  lastStatus: ResultStatus.optional(),
+  triage: TriageCategory.optional(),
+  owner: z.string().max(LIMITS.shortTextMax).optional(),
+  flakyOnly: z.stringbool().optional(),
+  inOpenPr: z.stringbool().optional(),
+  source: z.enum(['manual', 'spreadsheet', 'allure', 'jira']).optional(),
+  sort: TestCaseSort.default('key'),
+  order: z.enum(['asc', 'desc']).default('asc'),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(LIMITS.pageSizeMax).default(50),
+});
+export type TestCaseQuery = z.infer<typeof TestCaseQuery>;
+
+export const TestCaseList = Paginated(TestCase);
+export type TestCaseList = z.infer<typeof TestCaseList>;
+
+// ---------------------------------------------------------------------------
+// Runs & results (imported from allure-results)
+// ---------------------------------------------------------------------------
+
+export const StatusCounts = z.object({
+  passed: z.number().int(),
+  failed: z.number().int(),
+  broken: z.number().int(),
+  skipped: z.number().int(),
+  unknown: z.number().int(),
+  total: z.number().int(),
+});
+export type StatusCounts = z.infer<typeof StatusCounts>;
+
+export const Run = z.object({
+  id: z.number().int(),
+  name: z.string(),
+  branch: z.string().nullable(),
+  commit: z.string().nullable(),
+  buildUrl: z.string().nullable(),
+  /** From environment.properties */
+  environment: z.record(z.string(), z.string()),
+  /** Earliest result start / latest stop, from the results themselves. */
+  startedAt: z.string().nullable(),
+  stoppedAt: z.string().nullable(),
+  durationMs: z.number().int().nullable(),
+  importedAt: z.string(),
+  counts: StatusCounts,
+  /** passed / (total - skipped), 0..1; null if nothing executed. */
+  passRate: z.number().nullable(),
+});
+export type Run = z.infer<typeof Run>;
+
+export const RunList = Paginated(Run);
+export type RunList = z.infer<typeof RunList>;
+
+export const RunQuery = z.object({
+  branch: z.string().max(LIMITS.shortTextMax).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(LIMITS.pageSizeMax).default(25),
+});
+export type RunQuery = z.infer<typeof RunQuery>;
+
+export const TestResult = z.object({
+  id: z.number().int(),
+  runId: z.number().int(),
+  testCaseId: z.number().int(),
+  testCaseKey: z.string(),
+  name: z.string(),
+  fullName: z.string().nullable(),
+  status: ResultStatus,
+  durationMs: z.number().int().nullable(),
+  startedAt: z.string().nullable(),
+  message: z.string().nullable(), // truncated to LIMITS.messageMax
+  trace: z.string().nullable(), // truncated to LIMITS.traceMax
+  /** Normalized hash of message — groups similar failures. Null if not failed/broken. */
+  failureSignature: z.string().nullable(),
+  /** Allure retries (multiple results with same historyId in one run). */
+  retries: z.number().int(),
+  parameters: z.array(z.object({ name: z.string(), value: z.string() })),
+  labels: z.array(z.object({ name: z.string(), value: z.string() })),
+});
+export type TestResult = z.infer<typeof TestResult>;
+
+export const RunResultsQuery = z.object({
+  status: ResultStatus.optional(),
+  search: z.string().trim().max(200).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(LIMITS.pageSizeMax).default(100),
+});
+export type RunResultsQuery = z.infer<typeof RunResultsQuery>;
+
+export const TestResultList = Paginated(TestResult);
+export type TestResultList = z.infer<typeof TestResultList>;
+
+/** Failures in a run grouped by normalized error signature. */
+export const FailureGroup = z.object({
+  signature: z.string(),
+  /** Representative (first) message, truncated. */
+  sampleMessage: z.string(),
+  count: z.number().int(),
+  status: z.enum(['failed', 'broken']),
+  testCases: z.array(z.object({ id: z.number().int(), key: z.string(), title: z.string() })),
+  /** Most common triage category among the affected cases, if any. */
+  triage: TriageCategory.nullable(),
+});
+export type FailureGroup = z.infer<typeof FailureGroup>;
+
+/**
+ * POST /api/runs/import — multipart/form-data.
+ * Fields (all optional, sent before files): name, branch, commit, buildUrl.
+ * Files: EITHER one `.zip` of an allure-results directory, OR many individual
+ * files from the folder (`*-result.json`, `*-container.json`,
+ * `environment.properties`, `executor.json`, `categories.json`). Anything else
+ * is ignored. Attachments are never stored.
+ */
+export const RunImportFields = z.object({
+  name: trimmed(LIMITS.shortTextMax).min(1).optional(),
+  branch: nullableShort.optional(),
+  commit: nullableShort.optional(),
+  buildUrl: SafeUrl.nullable().optional(),
+});
+export type RunImportFields = z.infer<typeof RunImportFields>;
+
+export const RunImportResponse = z.object({
+  run: Run,
+  /** Test cases auto-created because no existing case matched a result. */
+  createdTestCases: z.number().int(),
+  /** Existing cases whose automationStatus was flipped to 'automated' because results arrived. */
+  promotedTestCases: z.number().int(),
+  skippedFiles: z.number().int(),
+  warnings: z.array(z.string()),
+});
+export type RunImportResponse = z.infer<typeof RunImportResponse>;
+
+// ---------------------------------------------------------------------------
+// Notes (why is this failing? triage + discussion)
+// ---------------------------------------------------------------------------
+
+export const Note = z.object({
+  id: z.number().int(),
+  testCaseId: z.number().int(),
+  /** Optional: the specific result this note is about. */
+  resultId: z.number().int().nullable(),
+  runId: z.number().int().nullable(),
+  author: z.string(),
+  /** Plain text / markdown. UI must render safely (no raw HTML). */
+  body: z.string(),
+  triage: TriageCategory.nullable(),
+  ticketUrl: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type Note = z.infer<typeof Note>;
+
+export const NoteCreate = z.object({
+  testCaseId: z.number().int().positive(),
+  resultId: z.number().int().positive().nullable().optional(),
+  author: trimmed(LIMITS.shortTextMax).min(1),
+  body: trimmed(LIMITS.noteBodyMax).min(1),
+  triage: TriageCategory.nullable().optional(),
+  ticketUrl: SafeUrl.nullable().optional(),
+});
+export type NoteCreate = z.infer<typeof NoteCreate>;
+
+export const NoteUpdate = NoteCreate.pick({ body: true, triage: true, ticketUrl: true }).partial();
+export type NoteUpdate = z.infer<typeof NoteUpdate>;
+
+export const NoteQuery = z.object({
+  testCaseId: z.coerce.number().int().positive().optional(),
+  runId: z.coerce.number().int().positive().optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+});
+export type NoteQuery = z.infer<typeof NoteQuery>;
+
+/**
+ * POST /api/notes/bulk — add the same note to many cases at once
+ * (e.g. "all 14 of these fail because staging DB is down").
+ */
+export const NoteBulkCreate = NoteCreate.omit({ testCaseId: true, resultId: true }).extend({
+  testCaseIds: z.array(z.number().int().positive()).min(1).max(1000),
+  runId: z.number().int().positive().nullable().optional(),
+});
+export type NoteBulkCreate = z.infer<typeof NoteBulkCreate>;
+
+export const TestCaseDetail = TestCase.extend({
+  /** Newest first, last 50 results across runs. */
+  history: z.array(
+    TestResult.pick({
+      id: true,
+      runId: true,
+      status: true,
+      durationMs: true,
+      startedAt: true,
+      message: true,
+      failureSignature: true,
+    }).extend({ runName: z.string() }),
+  ),
+  notes: z.array(Note), // newest first
+});
+export type TestCaseDetail = z.infer<typeof TestCaseDetail>;
+
+// ---------------------------------------------------------------------------
+// Spreadsheet (Excel/CSV) inventory import — two-step: preview, then commit.
+// ---------------------------------------------------------------------------
+
+/** Fields a spreadsheet column can be mapped to. */
+export const ImportField = z.enum([
+  'key',
+  'title',
+  'suite',
+  'priority',
+  'automationStatus',
+  'owner',
+  'tags',
+  'externalUrl',
+  'allureFullName',
+  'allureId',
+  'jiraKey',
+]);
+export type ImportField = z.infer<typeof ImportField>;
+
+/**
+ * POST /api/test-cases/import/preview — multipart, one file (.xlsx or .csv).
+ * The server parses it, stores the parsed rows server-side under an opaque
+ * uploadId (short TTL, e.g. 1h), and returns sheets + headers + sample rows +
+ * a suggested column mapping (fuzzy-matched header names).
+ */
+export const ImportPreviewResponse = z.object({
+  uploadId: z.string(),
+  fileName: z.string(),
+  sheets: z.array(
+    z.object({
+      name: z.string(),
+      headers: z.array(z.string()),
+      rowCount: z.number().int(),
+      sampleRows: z.array(z.array(z.string())), // first ~20 rows, cell values as text
+      /** header -> suggested field (only headers we could guess). */
+      suggestedMapping: z.record(z.string(), ImportField),
+    }),
+  ),
+});
+export type ImportPreviewResponse = z.infer<typeof ImportPreviewResponse>;
+
+/**
+ * Free-text values in a spreadsheet's status column ("Yes", "Automated", "Done",
+ * "WIP", "Manual", "N/A"...) get mapped to AutomationStatus. The server suggests
+ * a default mapping; the user can override per distinct value.
+ */
+export const ImportCommitRequest = z.object({
+  uploadId: z.string().min(1).max(100),
+  sheet: z.string().max(LIMITS.shortTextMax),
+  /** header -> field. `key` and `title` must be mapped (key may fall back to title). */
+  mapping: z.record(z.string().max(LIMITS.shortTextMax), ImportField),
+  /** Distinct raw status cell value -> AutomationStatus. */
+  statusValueMap: z.record(z.string().max(LIMITS.shortTextMax), AutomationStatus).default({}),
+  /** What to do when a row's key already exists. */
+  onConflict: z.enum(['update', 'skip']).default('update'),
+  /** If true, validate and report what would happen without writing. */
+  dryRun: z.boolean().default(false),
+});
+export type ImportCommitRequest = z.infer<typeof ImportCommitRequest>;
+
+export const ImportCommitResponse = z.object({
+  created: z.number().int(),
+  updated: z.number().int(),
+  skipped: z.number().int(),
+  errors: z.array(z.object({ row: z.number().int(), message: z.string() })), // capped at 100
+  dryRun: z.boolean(),
+});
+export type ImportCommitResponse = z.infer<typeof ImportCommitResponse>;
+
+/** POST /api/test-cases/import/status-values — distinct values in the mapped status column. */
+export const ImportStatusValuesRequest = z.object({
+  uploadId: z.string().min(1).max(100),
+  sheet: z.string().max(LIMITS.shortTextMax),
+  column: z.string().max(LIMITS.shortTextMax),
+});
+export const ImportStatusValuesResponse = z.object({
+  values: z.array(
+    z.object({ raw: z.string(), count: z.number().int(), suggested: AutomationStatus }),
+  ),
+});
+export type ImportStatusValuesResponse = z.infer<typeof ImportStatusValuesResponse>;
+
+// ---------------------------------------------------------------------------
+// Dashboard summary
+// ---------------------------------------------------------------------------
+
+export const CoverageTotals = z.object({
+  total: z.number().int(),
+  automated: z.number().int(),
+  inProgress: z.number().int(),
+  notAutomated: z.number().int(),
+  notAutomatable: z.number().int(),
+  /** Cases not yet automated that have an open PR linked (subset of inProgress+notAutomated). */
+  inOpenPr: z.number().int(),
+  /** automated / (total - notAutomatable), 0..1; null if denominator is 0. */
+  automationRate: z.number().nullable(),
+});
+export type CoverageTotals = z.infer<typeof CoverageTotals>;
+
+/** GET /api/summary */
+export const Summary = z.object({
+  coverage: CoverageTotals,
+  /** Daily snapshots, oldest first (up to 180 days). */
+  coverageTrend: z.array(
+    z.object({ date: z.string(), total: z.number().int(), automated: z.number().int() }),
+  ),
+  latestRun: Run.nullable(),
+  /** Last 30 runs, oldest first. */
+  runTrend: z.array(
+    Run.pick({ id: true, name: true, startedAt: true, importedAt: true, counts: true, passRate: true }),
+  ),
+  bySuite: z.array(
+    z.object({
+      suite: z.string(), // "(none)" for null suite
+      total: z.number().int(),
+      automated: z.number().int(),
+      inProgress: z.number().int(),
+      passing: z.number().int(), // last result passed
+      failing: z.number().int(), // last result failed/broken
+    }),
+  ),
+  /** Cases whose last result is failed/broken and have no triage yet. */
+  untriagedFailures: z.number().int(),
+  triageBreakdown: z.array(z.object({ triage: TriageCategory, count: z.number().int() })),
+  topFlaky: z.array(TestCase.pick({ id: true, key: true, title: true, flakiness: true })),
+  byOwner: z.array(
+    z.object({ owner: z.string(), total: z.number().int(), automated: z.number().int() }),
+  ),
+});
+export type Summary = z.infer<typeof Summary>;
+
+// ---------------------------------------------------------------------------
+// Auth
+// ---------------------------------------------------------------------------
+
+/** POST /api/auth/login — exchange the shared access token for an httpOnly session cookie. */
+export const LoginRequest = z.object({ token: z.string().min(1).max(512) });
+export type LoginRequest = z.infer<typeof LoginRequest>;
+
+/** GET /api/auth/session */
+export const SessionInfo = z.object({
+  authenticated: z.boolean(),
+  /** false when the server runs with auth disabled (dev only). */
+  authRequired: z.boolean(),
+});
+export type SessionInfo = z.infer<typeof SessionInfo>;
+
+// ---------------------------------------------------------------------------
+// Integrations (GitHub PRs, Jira/Xray). Credentials live ONLY in server env
+// vars — never sent to or accepted from the browser.
+// ---------------------------------------------------------------------------
+
+export const IntegrationName = z.enum(['github', 'jira']);
+export type IntegrationName = z.infer<typeof IntegrationName>;
+
+export const IntegrationStatus = z.object({
+  name: IntegrationName,
+  /** Env vars present. If false, UI shows setup instructions (env var names only). */
+  configured: z.boolean(),
+  /** Non-secret description, e.g. "acme/api, acme/web" or "https://acme.atlassian.net — project QA". */
+  target: z.string().nullable(),
+  state: z.enum(['idle', 'running', 'error']),
+  lastSyncAt: z.string().nullable(),
+  lastSuccessAt: z.string().nullable(),
+  /** Sanitized error (no tokens / headers). */
+  lastError: z.string().nullable(),
+  lastStats: z
+    .object({
+      fetched: z.number().int(), // PRs or issues fetched
+      created: z.number().int(), // test cases created (jira only)
+      updated: z.number().int(), // test cases updated
+      linked: z.number().int(), // PR↔case links (github only)
+    })
+    .nullable(),
+  /** Minutes between automatic syncs; null = manual only. */
+  intervalMinutes: z.number().int().nullable(),
+});
+export type IntegrationStatus = z.infer<typeof IntegrationStatus>;
+
+/** GET /api/integrations → IntegrationStatus[]; POST /api/integrations/:name/sync → 202 IntegrationStatus */
+export const IntegrationNameParam = z.object({ name: IntegrationName });
+
+// ---------------------------------------------------------------------------
+// Misc
+// ---------------------------------------------------------------------------
+
+/** GET /api/meta — distinct values for filter dropdowns. */
+export const Meta = z.object({
+  suites: z.array(z.string()),
+  owners: z.array(z.string()),
+  tags: z.array(z.string()),
+  branches: z.array(z.string()),
+});
+export type Meta = z.infer<typeof Meta>;
+
+export const AUTOMATION_STATUS_LABELS: Record<AutomationStatus, string> = {
+  automated: 'Automated',
+  in_progress: 'In progress',
+  not_automated: 'Not automated',
+  not_automatable: 'Not automatable',
+};
+
+export const TRIAGE_LABELS: Record<TriageCategory, string> = {
+  needs_investigation: 'Needs investigation',
+  product_bug: 'Product bug',
+  test_bug: 'Test bug',
+  environment: 'Environment',
+  flaky: 'Flaky',
+  known_issue: 'Known issue',
+};
