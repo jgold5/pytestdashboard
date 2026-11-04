@@ -8,7 +8,7 @@ import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
 import { LIMITS } from '@ptd/shared';
-import { registerAuth } from './auth/plugin.js';
+import { registerAuth, registerRouteAccess } from './auth/plugin.js';
 import type { AppConfig } from './config.js';
 import { openDatabase, type DbHandle } from './db/client.js';
 import type { Deps } from './deps.js';
@@ -69,8 +69,15 @@ export async function buildApp(opts: BuildOptions): Promise<BuiltApp> {
   const app = Fastify({
     logger: opts.logger ?? loggerOptions(config),
     bodyLimit: 1024 * 1024,
-    trustProxy: config.trustProxy,
+    // hop count → trust only the N closest proxies; list → only those IPs/CIDRs
+    trustProxy:
+      typeof config.trustProxy === 'number'
+        ? (_addr: string, hop: number) => hop < (config.trustProxy as number)
+        : config.trustProxy,
   });
+
+  // Must precede every route registration (F-01: access is decided per matched route).
+  registerRouteAccess(app);
 
   const dbHandle = openDatabase(config.dataDir);
   const runner = new IntegrationRunner(dbHandle.db, opts.providers ?? createProviders(config), app.log, config.secrets);
@@ -97,6 +104,7 @@ export async function buildApp(opts: BuildOptions): Promise<BuiltApp> {
     },
     hsts: config.isProduction ? { maxAge: 31_536_000, includeSubDomains: true } : false,
     crossOriginEmbedderPolicy: false,
+    frameguard: { action: 'deny' },
     referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
   });
 
@@ -156,7 +164,7 @@ export async function buildApp(opts: BuildOptions): Promise<BuiltApp> {
   }
 
   app.setNotFoundHandler((req, reply) => {
-    if (serveSpa && (req.method === 'GET' || req.method === 'HEAD') && !req.url.startsWith('/api')) {
+    if (serveSpa && (req.method === 'GET' || req.method === 'HEAD') && !isApiPath(req.url)) {
       return reply.header('cache-control', 'no-cache').sendFile('index.html');
     }
     return reply.status(404).send({ error: 'not_found', message: 'Route not found' });
@@ -168,4 +176,20 @@ export async function buildApp(opts: BuildOptions): Promise<BuiltApp> {
   });
 
   return { app, dbHandle, runner };
+}
+
+/** Decoded, normalised check so `/%61pi`, `//api`, `/API` etc. never get the SPA. */
+export function isApiPath(rawUrl: string): boolean {
+  let pathname: string;
+  try {
+    pathname = new URL(rawUrl, 'http://localhost').pathname;
+  } catch {
+    return true;
+  }
+  try {
+    pathname = decodeURIComponent(pathname);
+  } catch {
+    return true;
+  }
+  return pathname.replace(/\/+/g, '/').toLowerCase().startsWith('/api');
 }

@@ -8,8 +8,8 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type {} from '@fastify/cookie';
 import type { Role } from '@ptd/shared';
-import type { AppConfig } from '../config.js';
-import { forbidden, unauthorized } from '../errors.js';
+import { hostAllowed, type AppConfig } from '../config.js';
+import { AppError, forbidden, unauthorized } from '../errors.js';
 import { SESSION_COOKIE, tokenFingerprint, tokenMatches, verifySession } from './session.js';
 
 export type Access = 'public' | 'viewer' | 'editor';
@@ -64,11 +64,34 @@ function normalizeOrigin(v: string): string | null {
   }
 }
 
+/**
+ * The server's own origin: PUBLIC_URL when configured (correct behind TLS proxies),
+ * otherwise protocol + Host — but only when Host passed the allowlist check.
+ */
+function ownOrigin(config: AppConfig, req: FastifyRequest): string | null {
+  if (config.publicOrigin) return config.publicOrigin;
+  return normalizeOrigin(`${req.protocol}://${req.host}`);
+}
+
 function originAllowed(config: AppConfig, req: FastifyRequest, origin: string): boolean {
   const presented = normalizeOrigin(origin);
   if (presented === null) return false;
-  const own = normalizeOrigin(`${req.protocol}://${req.host}`);
-  return presented === own || config.allowedOrigins.some((o) => normalizeOrigin(o) === presented);
+  return presented === ownOrigin(config, req) || config.allowedOrigins.some((o) => normalizeOrigin(o) === presented);
+}
+
+/**
+ * Tag every route at registration time. Anything whose path is under /api is
+ * protected ('editor') unless it explicitly declares otherwise; everything else
+ * (static files) is public. Must be registered BEFORE any route.
+ */
+export function registerRouteAccess(app: FastifyInstance): void {
+  app.addHook('onRoute', (route) => {
+    const config = (route.config ?? {}) as { access?: Access };
+    if (config.access === undefined) {
+      const isApi = route.url.toLowerCase().startsWith('/api');
+      route.config = { ...config, access: isApi ? 'editor' : 'public' };
+    }
+  });
 }
 
 export function registerAuth(app: FastifyInstance, config: AppConfig): void {
@@ -78,7 +101,17 @@ export function registerAuth(app: FastifyInstance, config: AppConfig): void {
 
   app.addHook('onRequest', async (req) => {
     req.auth = { role: null, method: 'none' };
-    if (!req.url.startsWith('/api/')) return;
+
+    // DNS-rebinding defence: when auth is disabled (or hosts are configured), only
+    // accept known Host headers.
+    if ((!authRequired || config.hostsExplicit) && !hostAllowed(config, req.headers.host)) {
+      throw new AppError(403, 'invalid_host', 'Unexpected Host header');
+    }
+
+    // Decide from the MATCHED route (never the raw URL — encodings / absolute-form
+    // targets would otherwise slip past). Unmatched requests only reach the 404
+    // handler, which never serves /api content.
+    if (req.routeOptions.url === undefined) return;
     const access: Access = req.routeOptions.config.access ?? 'editor';
 
     let role: Role | null = null;
@@ -86,8 +119,8 @@ export function registerAuth(app: FastifyInstance, config: AppConfig): void {
     const authz = req.headers.authorization;
     if (!authRequired) {
       role = 'editor';
-    } else if (typeof authz === 'string' && /^bearer\s+/i.test(authz)) {
-      role = roleForToken(config, authz.replace(/^bearer\s+/i, '').trim());
+    } else if (typeof authz === 'string' && /^bearer\s/i.test(authz)) {
+      role = roleForToken(config, authz.slice(7).trim());
       if (!role) throw unauthorized('Invalid token');
       method = 'bearer';
     } else {

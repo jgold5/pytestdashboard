@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
+import net from 'node:net';
 import { z } from 'zod';
 
 const optionalStr = z
@@ -22,13 +23,6 @@ const optionalInt = z
     return n;
   });
 
-const boolStr = (def: boolean) =>
-  z
-    .string()
-    .trim()
-    .optional()
-    .transform((v) => (v === undefined || v === '' ? def : /^(1|true|yes|on)$/i.test(v)));
-
 const csvList = z
   .string()
   .optional()
@@ -47,9 +41,14 @@ const EnvSchema = z.object({
   DASHBOARD_TOKEN: optionalStr,
   VIEWER_TOKEN: optionalStr,
   SESSION_SECRET: optionalStr,
-  SESSION_TTL_HOURS: z.coerce.number().int().min(1).max(24 * 365).default(168),
+  // Capped at 30 days (stateless sessions can only be revoked by rotating SESSION_SECRET / tokens).
+  SESSION_TTL_HOURS: z.coerce.number().int().min(1).max(720).default(168),
   ALLOWED_ORIGINS: csvList,
-  TRUST_PROXY: boolStr(false),
+  TRUST_PROXY: z.string().trim().optional(),
+  /** Public URL users open (e.g. https://qa.example.com): own origin for CSRF, Secure cookie, Host allowlist. */
+  PUBLIC_URL: optionalStr,
+  /** Extra accepted Host header values (comma list, host[:port]). */
+  ALLOWED_HOSTS: csvList,
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   WEB_DIST: optionalStr,
 
@@ -113,7 +112,14 @@ export interface AppConfig {
   sessionSecret: string;
   sessionTtlHours: number;
   allowedOrigins: string[];
-  trustProxy: boolean;
+  /** false, a hop count, or a list of trusted proxy IPs/CIDRs (never blanket `true`). */
+  trustProxy: false | number | string[];
+  /** Origin of PUBLIC_URL, if configured. */
+  publicOrigin: string | null;
+  /** Accepted Host header values (lowercase host[:port]); see hostAllowed(). */
+  allowedHosts: string[];
+  /** true when ALLOWED_HOSTS or PUBLIC_URL was configured explicitly. */
+  hostsExplicit: boolean;
   logLevel: string;
   webDist: string;
   /** Secrets that must never appear in logs or stored errors. */
@@ -163,6 +169,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     if (!e.DASHBOARD_TOKEN) problems.push('DASHBOARD_TOKEN is required in production');
     if (!e.SESSION_SECRET) problems.push('SESSION_SECRET is required in production');
   }
+  const trustProxy = parseTrustProxy(e.TRUST_PROXY, problems);
+  if (e.PUBLIC_URL !== undefined && !isHttpUrl(e.PUBLIC_URL)) problems.push('PUBLIC_URL must be an http(s) URL');
   for (const origin of e.ALLOWED_ORIGINS) {
     if (!isOrigin(origin)) problems.push(`ALLOWED_ORIGINS entry is not an origin: ${origin}`);
   }
@@ -199,7 +207,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     nodeEnv: e.NODE_ENV,
     isProduction,
     port: e.PORT,
-    host: e.HOST,
+    // Without a token, auth is disabled: never expose that on the network.
+    host: e.DASHBOARD_TOKEN ? e.HOST : '127.0.0.1',
     dataDir: path.resolve(e.DATA_DIR),
     dashboardToken: e.DASHBOARD_TOKEN,
     viewerToken: e.VIEWER_TOKEN,
@@ -207,7 +216,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     sessionSecret: e.SESSION_SECRET ?? randomBytes(32).toString('hex'),
     sessionTtlHours: e.SESSION_TTL_HOURS,
     allowedOrigins: [...new Set(allowedOrigins.map((o) => o.replace(/\/+$/, '')))],
-    trustProxy: e.TRUST_PROXY,
+    trustProxy,
+    publicOrigin: e.PUBLIC_URL ? new URL(e.PUBLIC_URL).origin : null,
+    allowedHosts: allowedHostList(e.ALLOWED_HOSTS, e.ALLOWED_ORIGINS, e.PUBLIC_URL),
+    hostsExplicit: e.ALLOWED_HOSTS.length > 0 || e.PUBLIC_URL !== undefined,
     logLevel: e.LOG_LEVEL,
     webDist: e.WEB_DIST ? path.resolve(e.WEB_DIST) : defaultWebDist(),
     secrets,
@@ -256,4 +268,58 @@ function isOrigin(v: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * TRUST_PROXY: empty/false → off; an integer → trust that many hops; otherwise a
+ * comma list of proxy IPs/CIDRs. Blanket `true` is rejected (it lets any client
+ * spoof X-Forwarded-For and bypass rate limits).
+ */
+function parseTrustProxy(raw: string | undefined, problems: string[]): false | number | string[] {
+  const v = (raw ?? '').trim();
+  if (v === '' || /^(false|0|no|off)$/i.test(v)) return false;
+  if (/^(true|yes|on)$/i.test(v)) {
+    problems.push('TRUST_PROXY=true is not allowed: use the number of proxy hops (e.g. 1) or a list of proxy IPs/CIDRs');
+    return false;
+  }
+  if (/^\d+$/.test(v)) return Number(v);
+  const list = v.split(',').map((x) => x.trim()).filter(Boolean);
+  for (const item of list) {
+    const [ip, bits, extra] = item.split('/');
+    const family = net.isIP(ip ?? '');
+    const okBits = bits === undefined || (/^\d+$/.test(bits) && Number(bits) <= (family === 6 ? 128 : 32));
+    if (!family || !okBits || extra !== undefined) problems.push(`TRUST_PROXY entry is not an IP or CIDR: ${item.slice(0, 60)}`);
+  }
+  return list;
+}
+
+const LOOPBACK_HOSTS = ['localhost', '127.0.0.1', '[::1]'];
+
+function allowedHostList(extra: string[], origins: string[], publicUrl: string | undefined): string[] {
+  const hosts = new Set<string>(LOOPBACK_HOSTS);
+  for (const h of extra) hosts.add(h.toLowerCase());
+  for (const o of [...origins, ...(publicUrl ? [publicUrl] : [])]) {
+    try {
+      const u = new URL(o);
+      hosts.add(u.host.toLowerCase());
+      hosts.add(u.hostname.toLowerCase());
+    } catch {
+      // validated elsewhere
+    }
+  }
+  return [...hosts];
+}
+
+/** Host header check: hostname (any port) for loopback names; exact host[:port] or hostname otherwise. */
+export function hostAllowed(config: Pick<AppConfig, 'allowedHosts'>, hostHeader: string | undefined): boolean {
+  if (!hostHeader) return false;
+  const host = hostHeader.trim().toLowerCase();
+  if (config.allowedHosts.includes(host)) return true;
+  let hostname: string;
+  try {
+    hostname = new URL(`http://${host}`).hostname;
+  } catch {
+    return false;
+  }
+  return config.allowedHosts.includes(hostname);
 }
