@@ -1,0 +1,25 @@
+Test ID,Test Case,Module,Automated?,Owner,Priority,Labels,Jira
+TC-001,Login with SSO,User management,Yes,Marco,High,"regression, api",https://jira.example.com/browse/QA-101
+TC-002,Lockout after 5 failed attempts,Checkout,Yes,Lena,Medium,"regression, api",
+TC-003,Password complexity rules,Search,WIP,Sam,Low,"regression, api",QA-103
+TC-004,Invite user by email,Platform,No,Priya,Critical,"regression, smoke",https://jira.example.com/browse/QA-104
+TC-005,Deactivate user,Authentication,Manual,Marco,2,"regression, api",
+TC-006,Bulk import users,User management,N/A,Lena,,"regression, api",QA-106
+TC-007,Checkout with saved card,Checkout,Done,Sam,P1,"regression, api",https://jira.example.com/browse/QA-107
+TC-008,Checkout with PayPal,Search,in progress,Priya,High,"regression, smoke",
+TC-009,Refund partial order,Platform,,Marco,Medium,"regression, api",QA-109
+TC-010,Apply expired coupon,Authentication,Yes,Lena,Low,"regression, api",https://jira.example.com/browse/QA-110
+TC-011,Search by SKU,User management,Yes,Sam,Critical,"regression, api",
+TC-012,Search typo tolerance,Checkout,Yes,Priya,2,"regression, smoke",QA-112
+TC-013,Faceted filters persist,Search,WIP,Marco,,"regression, api",https://jira.example.com/browse/QA-113
+TC-014,Health endpoint returns build info,Platform,No,Lena,P1,"regression, api",
+TC-015,Rate limit returns 429,Authentication,Manual,Sam,High,"regression, api",QA-115
+TC-016,Audit log on role change,User management,N/A,Priya,Medium,"regression, smoke",https://jira.example.com/browse/QA-116
+TC-017,Export orders as CSV,Checkout,Done,Marco,Low,"regression, api",
+TC-018,Session expires after idle,Search,in progress,Lena,Critical,"regression, api",QA-118
+TC-019,Two-factor enrollment,Platform,,Sam,2,"regression, api",https://jira.example.com/browse/QA-119
+TC-020,Guest checkout,Authentication,Yes,Priya,,"regression, smoke",
+TC-021,Address autocomplete,User management,Yes,Marco,P1,"regression, api",QA-121
+TC-022,Currency rounding,Checkout,Yes,Lena,High,"regression, api",https://jira.example.com/browse/QA-122
+TC-023,Search empty state,Search,WIP,Sam,Medium,"regression, api",
+TC-024,"=HYPERLINK(""http://evil"")",Platform,No,Priya,Low,"regression, smoke",QA-124

@@ -1,0 +1,53 @@
+{
+  "uuid": "0ad05a3f-f913-5b1b-9fd0-950b1c6a086a",
+  "historyId": "642f68d2ddb755278975aed4b8bc8b0e",
+  "testCaseId": "ce00faba616954ceaf218aab314404d7",
+  "fullName": "tests.api.test_orders.TestCart#test_cart_total_includes_tax",
+  "name": "test_cart_total_includes_tax",
+  "status": "passed",
+  "stage": "finished",
+  "start": 1793700020063,
+  "stop": 1793700020751,
+  "labels": [
+    {
+      "name": "framework",
+      "value": "pytest"
+    },
+    {
+      "name": "language",
+      "value": "cpython3"
+    },
+    {
+      "name": "package",
+      "value": "tests.api.test_orders"
+    },
+    {
+      "name": "parentSuite",
+      "value": "tests.api"
+    },
+    {
+      "name": "suite",
+      "value": "test_orders"
+    },
+    {
+      "name": "host",
+      "value": "ci-runner-7"
+    },
+    {
+      "name": "thread",
+      "value": "1234-MainThread"
+    },
+    {
+      "name": "subSuite",
+      "value": "TestCart"
+    },
+    {
+      "name": "feature",
+      "value": "Checkout"
+    }
+  ],
+  "parameters": [],
+  "links": [],
+  "steps": [],
+  "attachments": []
+}

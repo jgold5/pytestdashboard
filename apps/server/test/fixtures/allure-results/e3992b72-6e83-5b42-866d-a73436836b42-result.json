@@ -1,0 +1,53 @@
+{
+  "uuid": "e3992b72-6e83-5b42-866d-a73436836b42",
+  "historyId": "9f647d0f8918520ca1801b265d592342",
+  "testCaseId": "c3c7b291dc7e5cfd9dd1ebeb3b5e120c",
+  "fullName": "tests.api.test_users#test_create_user",
+  "name": "test_create_user",
+  "status": "failed",
+  "stage": "finished",
+  "start": 1793700002453,
+  "stop": 1793700003333,
+  "labels": [
+    {
+      "name": "framework",
+      "value": "pytest"
+    },
+    {
+      "name": "language",
+      "value": "cpython3"
+    },
+    {
+      "name": "package",
+      "value": "tests.api.test_users"
+    },
+    {
+      "name": "parentSuite",
+      "value": "tests.api"
+    },
+    {
+      "name": "suite",
+      "value": "test_users"
+    },
+    {
+      "name": "host",
+      "value": "ci-runner-7"
+    },
+    {
+      "name": "thread",
+      "value": "1234-MainThread"
+    },
+    {
+      "name": "feature",
+      "value": "User management"
+    }
+  ],
+  "parameters": [],
+  "links": [],
+  "steps": [],
+  "attachments": [],
+  "statusDetails": {
+    "message": "AssertionError: expected status 201 but got 500 for user 4f3a9c1e-2b7d-4e8a-9f61-0c2d3e4f5a6b\nassert 500 == 201",
+    "trace": "tests/api/test_users.py:42: in test_create_user\n    assert resp.status_code == 201\nE   AssertionError: expected status 201 but got 500"
+  }
+}

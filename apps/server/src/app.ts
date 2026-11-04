@@ -17,6 +17,7 @@ import { UploadStore } from './import/spreadsheet/store.js';
 import type { ZipLimits } from './import/zip.js';
 import { createProviders, type IntegrationProvider } from './integrations/registry.js';
 import { IntegrationRunner } from './integrations/runner.js';
+import { bugRoutes } from './routes/bugs.js';
 import { importRoutes } from './routes/imports.js';
 import { integrationRoutes } from './routes/integrations.js';
 import { noteRoutes } from './routes/notes.js';
@@ -69,7 +70,6 @@ export async function buildApp(opts: BuildOptions): Promise<BuiltApp> {
     logger: opts.logger ?? loggerOptions(config),
     bodyLimit: 1024 * 1024,
     trustProxy: config.trustProxy,
-    disableRequestLogging: config.nodeEnv === 'test',
   });
 
   const dbHandle = openDatabase(config.dataDir);
@@ -134,6 +134,7 @@ export async function buildApp(opts: BuildOptions): Promise<BuiltApp> {
   runRoutes(app, deps, opts.zipLimits);
   noteRoutes(app, deps);
   integrationRoutes(app, deps);
+  bugRoutes(app, deps);
 
   const indexHtml = path.join(config.webDist, 'index.html');
   const serveSpa = config.isProduction && fs.existsSync(indexHtml);

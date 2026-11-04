@@ -1,0 +1,53 @@
+{
+  "uuid": "ca326949-fcc4-5186-afb4-c16d1fb3be52",
+  "historyId": "71ef6e44c2b052e2bb81aeaa429500e9",
+  "testCaseId": "78a3a8d9dd355b398b2f011f8fbfff35",
+  "fullName": "tests.api.test_auth.TestLogin#test_token_refresh",
+  "name": "test_token_refresh",
+  "status": "passed",
+  "stage": "finished",
+  "start": 1793700000645,
+  "stop": 1793700001163,
+  "labels": [
+    {
+      "name": "framework",
+      "value": "pytest"
+    },
+    {
+      "name": "language",
+      "value": "cpython3"
+    },
+    {
+      "name": "package",
+      "value": "tests.api.test_auth"
+    },
+    {
+      "name": "parentSuite",
+      "value": "tests.api"
+    },
+    {
+      "name": "suite",
+      "value": "test_auth"
+    },
+    {
+      "name": "host",
+      "value": "ci-runner-7"
+    },
+    {
+      "name": "thread",
+      "value": "1234-MainThread"
+    },
+    {
+      "name": "subSuite",
+      "value": "TestLogin"
+    },
+    {
+      "name": "feature",
+      "value": "Authentication"
+    }
+  ],
+  "parameters": [],
+  "links": [],
+  "steps": [],
+  "attachments": []
+}

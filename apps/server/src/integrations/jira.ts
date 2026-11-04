@@ -1,7 +1,11 @@
 /**
  * Jira / Xray sync — STUB. The integrations engineer implements sync() per
- * SPEC.md "Jira / Xray". Reuse domain/normalize.ts (normalizeAutomationStatus,
- * normalizePriority) and record a coverage snapshot is done by the runner.
+ * SPEC.md "Jira / Xray" and "Bugs identified".
+ * - Test cases: reuse domain/normalize.ts (normalizeAutomationStatus — null
+ *   means "unrecognized, leave unchanged" — and normalizePriority).
+ * - JIRA BUG-STATUS SYNC HOOK: for each bug with a jiraKey, map Jira fields and
+ *   call domain/bugs.ts#upsertBugFromJira (keeps links, maintains resolvedAt).
+ * - The runner records a coverage snapshot after a successful sync.
  */
 import type { JiraConfig } from '../config.js';
 import type { IntegrationProvider } from './registry.js';

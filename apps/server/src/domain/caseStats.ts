@@ -19,7 +19,13 @@ export function refreshCaseStats(db: Db, caseIds?: Iterable<number>): void {
 
 function refreshOne(db: Db, id: number): void {
   const recent = db
-    .select({ status: testResults.status, runId: testResults.runId, sortAt: runs.sortAt, runGroup: runs.runGroup })
+    .select({
+      status: testResults.status,
+      runId: testResults.runId,
+      sortAt: runs.sortAt,
+      runGroup: runs.runGroup,
+      signature: testResults.failureSignature,
+    })
     .from(testResults)
     .innerJoin(runs, eq(runs.id, testResults.runId))
     .where(eq(testResults.testCaseId, id))
@@ -55,6 +61,7 @@ function refreshOne(db: Db, id: number): void {
       lastStatus: last?.status ?? null,
       lastRunId: last?.runId ?? null,
       lastRunAt: last?.sortAt ?? null,
+      lastSignature: last?.signature ?? null,
       flakiness,
       triage: (triageNote?.triage as TriageCategory | null | undefined) ?? null,
       triageAt: triageNote?.createdAt ?? null,

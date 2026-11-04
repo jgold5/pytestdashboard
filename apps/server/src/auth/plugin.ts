@@ -56,9 +56,19 @@ function requestOrigin(req: FastifyRequest): string | null {
   return typeof origin === 'string' ? origin : null;
 }
 
+function normalizeOrigin(v: string): string | null {
+  try {
+    return new URL(v).origin;
+  } catch {
+    return null;
+  }
+}
+
 function originAllowed(config: AppConfig, req: FastifyRequest, origin: string): boolean {
-  const own = `${req.protocol}://${req.host}`;
-  return origin === own || config.allowedOrigins.includes(origin);
+  const presented = normalizeOrigin(origin);
+  if (presented === null) return false;
+  const own = normalizeOrigin(`${req.protocol}://${req.host}`);
+  return presented === own || config.allowedOrigins.some((o) => normalizeOrigin(o) === presented);
 }
 
 export function registerAuth(app: FastifyInstance, config: AppConfig): void {

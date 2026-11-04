@@ -15,6 +15,7 @@ import { notFound } from '../errors.js';
 import { containsPattern } from '../util/sql.js';
 import { refreshCaseStats } from './caseStats.js';
 import { findNextRun, linkRun } from './history.js';
+import { bugRefsForFailureGroups } from './bugs.js';
 
 export function passRate(c: { passed: number; skipped: number; total: number }): number | null {
   const executed = c.total - c.skipped;
@@ -256,6 +257,10 @@ export function runFailureGroups(db: Db, runId: number): FailureGroup[] {
       if (r.triage) g.triage.set(r.triage, (g.triage.get(r.triage) ?? 0) + 1);
     }
   }
+  const bugRefs = bugRefsForFailureGroups(
+    db,
+    [...groups.values()].map((g) => ({ signature: g.signature, caseIds: [...g.cases.keys()] })),
+  );
   const firstSeen = firstSeenBySignature(
     db,
     [...groups.keys()].filter((k) => k !== 'unknown'),
@@ -274,6 +279,7 @@ export function runFailureGroups(db: Db, runId: number): FailureGroup[] {
         status: g.broken > g.failed ? ('broken' as const) : ('failed' as const),
         testCases: [...g.cases.values()],
         triage,
+        bugs: bugRefs.get(g.signature) ?? [],
       };
     })
     .sort(

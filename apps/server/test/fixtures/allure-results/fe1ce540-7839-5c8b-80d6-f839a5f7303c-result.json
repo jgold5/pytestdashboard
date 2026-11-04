@@ -1,0 +1,61 @@
+{
+  "uuid": "fe1ce540-7839-5c8b-80d6-f839a5f7303c",
+  "historyId": "e7df2e65a79f5561bc3fce13260d0129",
+  "testCaseId": "cacc4368cd175ce6a8e5876cba2722b8",
+  "fullName": "tests.api.test_auth.TestLogin#test_login_with_valid_credentials",
+  "name": "test_login_with_valid_credentials",
+  "status": "passed",
+  "stage": "finished",
+  "start": 1793700000000,
+  "stop": 1793700000412,
+  "labels": [
+    {
+      "name": "framework",
+      "value": "pytest"
+    },
+    {
+      "name": "language",
+      "value": "cpython3"
+    },
+    {
+      "name": "package",
+      "value": "tests.api.test_auth"
+    },
+    {
+      "name": "parentSuite",
+      "value": "tests.api"
+    },
+    {
+      "name": "suite",
+      "value": "test_auth"
+    },
+    {
+      "name": "host",
+      "value": "ci-runner-7"
+    },
+    {
+      "name": "thread",
+      "value": "1234-MainThread"
+    },
+    {
+      "name": "subSuite",
+      "value": "TestLogin"
+    },
+    {
+      "name": "feature",
+      "value": "Authentication"
+    },
+    {
+      "name": "tag",
+      "value": "smoke"
+    },
+    {
+      "name": "severity",
+      "value": "critical"
+    }
+  ],
+  "parameters": [],
+  "links": [],
+  "steps": [],
+  "attachments": []
+}

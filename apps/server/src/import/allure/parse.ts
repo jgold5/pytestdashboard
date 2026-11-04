@@ -149,22 +149,23 @@ export class AllureBundle {
 
 // --- permissive schemas -------------------------------------------------------
 
+const opt = z.unknown().optional();
 const RawResult = z.looseObject({
-  uuid: z.unknown(),
-  historyId: z.unknown(),
-  testCaseId: z.unknown(),
-  fullName: z.unknown(),
-  name: z.unknown(),
-  status: z.unknown(),
-  statusDetails: z.looseObject({ message: z.unknown(), trace: z.unknown() }).nullish().catch(null),
-  start: z.unknown(),
-  stop: z.unknown(),
-  labels: z.array(z.unknown()).nullish().catch(null),
-  parameters: z.array(z.unknown()).nullish().catch(null),
-  links: z.array(z.unknown()).nullish().catch(null),
+  uuid: opt,
+  historyId: opt,
+  testCaseId: opt,
+  fullName: opt,
+  name: opt,
+  status: opt,
+  statusDetails: z.looseObject({ message: opt, trace: opt }).nullish().catch(undefined).optional(),
+  start: opt,
+  stop: opt,
+  labels: z.array(z.unknown()).nullish().catch(undefined).optional(),
+  parameters: z.array(z.unknown()).nullish().catch(undefined).optional(),
+  links: z.array(z.unknown()).nullish().catch(undefined).optional(),
 });
 
-const RawExecutor = z.looseObject({ name: z.unknown(), buildName: z.unknown(), buildUrl: z.unknown() });
+const RawExecutor = z.looseObject({ name: opt, buildName: opt, buildUrl: opt });
 
 function str(v: unknown, max: number): string | null {
   if (typeof v === 'number' && Number.isFinite(v)) v = String(v);

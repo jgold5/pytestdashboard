@@ -1,0 +1,54 @@
+{
+  "uuid": "8e6766a5-1a5c-5fad-bd3b-336eace95f9f",
+  "historyId": "11c5faa77c3a5c7eaea6865a3a4b059e",
+  "testCaseId": "d0f189ef8ab9597a94a93fe6845b4929",
+  "fullName": "tests.api.test_search#test_pagination",
+  "name": "test_pagination[1]",
+  "status": "passed",
+  "stage": "finished",
+  "start": 1793700020751,
+  "stop": 1793700021052,
+  "labels": [
+    {
+      "name": "framework",
+      "value": "pytest"
+    },
+    {
+      "name": "language",
+      "value": "cpython3"
+    },
+    {
+      "name": "package",
+      "value": "tests.api.test_search"
+    },
+    {
+      "name": "parentSuite",
+      "value": "tests.api"
+    },
+    {
+      "name": "suite",
+      "value": "test_search"
+    },
+    {
+      "name": "host",
+      "value": "ci-runner-7"
+    },
+    {
+      "name": "thread",
+      "value": "1234-MainThread"
+    },
+    {
+      "name": "feature",
+      "value": "Search"
+    }
+  ],
+  "parameters": [
+    {
+      "name": "page",
+      "value": "1"
+    }
+  ],
+  "links": [],
+  "steps": [],
+  "attachments": []
+}

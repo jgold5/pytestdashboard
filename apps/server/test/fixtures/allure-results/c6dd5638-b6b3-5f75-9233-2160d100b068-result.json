@@ -1,0 +1,57 @@
+{
+  "uuid": "c6dd5638-b6b3-5f75-9233-2160d100b068",
+  "historyId": "7a9653f390605795862454e130ce83d4",
+  "testCaseId": "0798d5dac38b5767a9ce665fbaae92bb",
+  "fullName": "tests.api.test_orders.TestCheckout#test_apply_coupon",
+  "name": "test_apply_coupon",
+  "status": "skipped",
+  "stage": "finished",
+  "start": 1793700019360,
+  "stop": 1793700019361,
+  "labels": [
+    {
+      "name": "framework",
+      "value": "pytest"
+    },
+    {
+      "name": "language",
+      "value": "cpython3"
+    },
+    {
+      "name": "package",
+      "value": "tests.api.test_orders"
+    },
+    {
+      "name": "parentSuite",
+      "value": "tests.api"
+    },
+    {
+      "name": "suite",
+      "value": "test_orders"
+    },
+    {
+      "name": "host",
+      "value": "ci-runner-7"
+    },
+    {
+      "name": "thread",
+      "value": "1234-MainThread"
+    },
+    {
+      "name": "subSuite",
+      "value": "TestCheckout"
+    },
+    {
+      "name": "feature",
+      "value": "Checkout"
+    }
+  ],
+  "parameters": [],
+  "links": [],
+  "steps": [],
+  "attachments": [],
+  "statusDetails": {
+    "message": "Skipped: coupon service disabled in staging",
+    "trace": null
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "uuid": "42241b11-ecf5-5afc-ae0d-0b840d407ace",
+  "historyId": "ad73a8962c505d2ca687cfe43e76f3e5",
+  "testCaseId": "26d97d4b6604533aacd52840446d9a22",
+  "fullName": "tests.api.test_system#test_health_endpoint",
+  "name": "test_health_endpoint",
+  "status": "passed",
+  "stage": "finished",
+  "start": 1793700021350,
+  "stop": 1793700021395,
+  "labels": [
+    {
+      "name": "framework",
+      "value": "pytest"
+    },
+    {
+      "name": "language",
+      "value": "cpython3"
+    },
+    {
+      "name": "package",
+      "value": "tests.api.test_system"
+    },
+    {
+      "name": "parentSuite",
+      "value": "tests.api"
+    },
+    {
+      "name": "suite",
+      "value": "test_system"
+    },
+    {
+      "name": "host",
+      "value": "ci-runner-7"
+    },
+    {
+      "name": "thread",
+      "value": "1234-MainThread"
+    },
+    {
+      "name": "feature",
+      "value": "Platform"
+    }
+  ],
+  "parameters": [],
+  "links": [],
+  "steps": [],
+  "attachments": []
+}

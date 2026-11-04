@@ -4,6 +4,7 @@ import type { Db } from '../db/client.js';
 import { coverageSnapshots, runs, testCases } from '../db/schema.js';
 import { addDays, isoDate } from '../util/time.js';
 import { computeCoverage } from './coverage.js';
+import { coveredByOpenBug } from './bugs.js';
 import { computePrPipeline } from './pullRequests.js';
 import { serializeRun } from './runs.js';
 
@@ -16,7 +17,13 @@ export function countUntriagedFailures(db: Db): number {
       .select({ n: sql<number>`count(*)` })
       .from(testCases)
       .leftJoin(runs, eq(runs.id, testCases.lastRunId))
-      .where(and(failing, sql`(${testCases.triage} IS NULL OR ${testCases.triageAt} < ${runs.importedAt})`))
+      .where(
+        and(
+          failing,
+          sql`(${testCases.triage} IS NULL OR ${testCases.triageAt} < ${runs.importedAt})`,
+          sql`NOT ${coveredByOpenBug()}`,
+        ),
+      )
       .get()?.n ?? 0
   );
 }

@@ -1,0 +1,57 @@
+{
+  "uuid": "1d30c3c0-62fd-504c-b9d8-b0b24b95205b",
+  "historyId": "642f68d2ddb755278975aed4b8bc8b0e",
+  "testCaseId": "ce00faba616954ceaf218aab314404d7",
+  "fullName": "tests.api.test_orders.TestCart#test_cart_total_includes_tax",
+  "name": "test_cart_total_includes_tax",
+  "status": "failed",
+  "stage": "finished",
+  "start": 1793700019361,
+  "stop": 1793700020063,
+  "labels": [
+    {
+      "name": "framework",
+      "value": "pytest"
+    },
+    {
+      "name": "language",
+      "value": "cpython3"
+    },
+    {
+      "name": "package",
+      "value": "tests.api.test_orders"
+    },
+    {
+      "name": "parentSuite",
+      "value": "tests.api"
+    },
+    {
+      "name": "suite",
+      "value": "test_orders"
+    },
+    {
+      "name": "host",
+      "value": "ci-runner-7"
+    },
+    {
+      "name": "thread",
+      "value": "1234-MainThread"
+    },
+    {
+      "name": "subSuite",
+      "value": "TestCart"
+    },
+    {
+      "name": "feature",
+      "value": "Checkout"
+    }
+  ],
+  "parameters": [],
+  "links": [],
+  "steps": [],
+  "attachments": [],
+  "statusDetails": {
+    "message": "AssertionError: assert 107.99 == 108.0",
+    "trace": "tests/api/test_orders.py:120: AssertionError"
+  }
+}

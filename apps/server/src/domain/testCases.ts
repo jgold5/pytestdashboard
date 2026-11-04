@@ -24,6 +24,7 @@ import { conflict, notFound } from '../errors.js';
 import { containsPattern } from '../util/sql.js';
 import { nowIso } from '../util/time.js';
 import { FLAKY_THRESHOLD } from './flakiness.js';
+import { openBugRefsForCases } from './bugs.js';
 import { serializeNote } from './notes.js';
 import { recomputeRunCounts } from './runs.js';
 import { caseHistory } from './caseHistory.js';
@@ -80,6 +81,7 @@ function runNames(db: Db, runIds: number[]): Map<number, string> {
 export function serializeCases(db: Db, rows: TestCaseRow[]): TestCase[] {
   const ids = rows.map((r) => r.id);
   const prs = prRefsForCases(db, ids);
+  const openBugs = openBugRefsForCases(db, ids);
   const names = runNames(
     db,
     rows.flatMap((r) => (r.lastRunId ? [r.lastRunId] : [])),
@@ -108,6 +110,7 @@ export function serializeCases(db: Db, rows: TestCaseRow[]): TestCase[] {
       inOpenPr: pullRequestsForCase.some((p) => p.state === 'open' || p.state === 'draft'),
       lastResult,
       triage: r.triage,
+      openBugs: openBugs.get(r.id) ?? [],
       noteCount: r.noteCount,
       flakiness: r.flakiness,
       createdAt: r.createdAt,

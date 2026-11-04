@@ -1,0 +1,57 @@
+{
+  "uuid": "545f90d4-b59b-5e5e-9d58-3d5c086577ed",
+  "historyId": "83a84c2840875d2ca0d6226f174cc48d",
+  "testCaseId": "e4fba5d5ec99559d91f953448c933b3c",
+  "fullName": "tests.api.test_orders.TestCheckout#test_checkout_with_card",
+  "name": "test_checkout_with_card",
+  "status": "broken",
+  "stage": "finished",
+  "start": 1793700004328,
+  "stop": 1793700019360,
+  "labels": [
+    {
+      "name": "framework",
+      "value": "pytest"
+    },
+    {
+      "name": "language",
+      "value": "cpython3"
+    },
+    {
+      "name": "package",
+      "value": "tests.api.test_orders"
+    },
+    {
+      "name": "parentSuite",
+      "value": "tests.api"
+    },
+    {
+      "name": "suite",
+      "value": "test_orders"
+    },
+    {
+      "name": "host",
+      "value": "ci-runner-7"
+    },
+    {
+      "name": "thread",
+      "value": "1234-MainThread"
+    },
+    {
+      "name": "subSuite",
+      "value": "TestCheckout"
+    },
+    {
+      "name": "feature",
+      "value": "Checkout"
+    }
+  ],
+  "parameters": [],
+  "links": [],
+  "steps": [],
+  "attachments": [],
+  "statusDetails": {
+    "message": "requests.exceptions.ConnectionError: HTTPSConnectionPool(host='payments.staging.internal', port=443): Max retries exceeded with url: /v1/charge (Caused by NewConnectionError('<urllib3.connection.HTTPSConnection object at 0x7f3b2c1d4e50>: Failed to establish a new connection: [Errno 111] Connection refused'))",
+    "trace": "Traceback (most recent call last):\n  File \"/usr/lib/python3.12/site-packages/urllib3/connection.py\", line 198, in _new_conn\nConnectionRefusedError: [Errno 111] Connection refused"
+  }
+}

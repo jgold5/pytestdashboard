@@ -6,6 +6,41 @@
  */
 export const MIGRATIONS: readonly string[] = [
   /* v1 — initial schema */ `
+CREATE TABLE "bug_signatures" (
+	"bug_id" integer NOT NULL,
+	"signature" text NOT NULL,
+	PRIMARY KEY("bug_id", "signature"),
+	FOREIGN KEY ("bug_id") REFERENCES "bugs"("id") ON UPDATE no action ON DELETE cascade
+);
+CREATE INDEX "bug_signatures_sig_idx" ON "bug_signatures" ("signature");
+CREATE TABLE "bug_test_cases" (
+	"bug_id" integer NOT NULL,
+	"test_case_id" integer NOT NULL,
+	PRIMARY KEY("bug_id", "test_case_id"),
+	FOREIGN KEY ("bug_id") REFERENCES "bugs"("id") ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY ("test_case_id") REFERENCES "test_cases"("id") ON UPDATE no action ON DELETE cascade
+);
+CREATE INDEX "bug_test_cases_case_idx" ON "bug_test_cases" ("test_case_id");
+CREATE TABLE "bugs" (
+	"id" integer PRIMARY KEY AUTOINCREMENT NOT NULL,
+	"jira_key" text,
+	"title" text NOT NULL,
+	"url" text,
+	"status" text DEFAULT 'open' NOT NULL,
+	"severity" text,
+	"found_by_automation" integer DEFAULT 0 NOT NULL,
+	"found_in_run_id" integer,
+	"source" text DEFAULT 'manual' NOT NULL,
+	"assignee" text,
+	"created_at" text NOT NULL,
+	"updated_at" text NOT NULL,
+	"resolved_at" text,
+	FOREIGN KEY ("found_in_run_id") REFERENCES "runs"("id") ON UPDATE no action ON DELETE set null
+);
+CREATE UNIQUE INDEX "bugs_jira_key_uq" ON "bugs" ("jira_key");
+CREATE INDEX "bugs_status_idx" ON "bugs" ("status");
+CREATE INDEX "bugs_created_idx" ON "bugs" ("created_at");
+CREATE INDEX "bugs_resolved_idx" ON "bugs" ("resolved_at");
 CREATE TABLE "coverage_snapshots" (
 	"date" text PRIMARY KEY NOT NULL,
 	"total" integer NOT NULL,
@@ -122,6 +157,7 @@ CREATE TABLE "test_cases" (
 	"last_status" text,
 	"last_run_id" integer,
 	"last_run_at" text,
+	"last_signature" text,
 	"flakiness" real DEFAULT 0 NOT NULL,
 	"triage" text,
 	"triage_at" text,

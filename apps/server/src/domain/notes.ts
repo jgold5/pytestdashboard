@@ -5,6 +5,7 @@ import { notes, runs, testCases, testResults, type NoteRow } from '../db/schema.
 import { badRequest, notFound } from '../errors.js';
 import { nowIso } from '../util/time.js';
 import { refreshCaseStats } from './caseStats.js';
+import { upsertBugFromNote } from './bugs.js';
 
 export function serializeNote(r: NoteRow): Note {
   return {
@@ -65,6 +66,7 @@ export function createNote(db: Db, input: NoteCreate): Note {
     })
     .returning()
     .get();
+  if (row.triage === 'product_bug') upsertBugFromNote(db, row);
   refreshCaseStats(db, [input.testCaseId]);
   return serializeNote(row);
 }
@@ -86,7 +88,8 @@ export function bulkCreateNotes(db: Db, input: NoteBulkCreate): number {
     }
   }
   const now = nowIso();
-  db.insert(notes)
+  const inserted = db
+    .insert(notes)
     .values(
       ids.map((testCaseId) => ({
         testCaseId,
@@ -100,7 +103,9 @@ export function bulkCreateNotes(db: Db, input: NoteBulkCreate): number {
         updatedAt: now,
       })),
     )
-    .run();
+    .returning()
+    .all();
+  if (input.triage === 'product_bug') for (const n of inserted) upsertBugFromNote(db, n);
   refreshCaseStats(db, ids);
   return ids.length;
 }

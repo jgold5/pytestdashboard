@@ -1,0 +1,53 @@
+{
+  "uuid": "b335bbcc-8052-597a-b4a3-fc5cf958ba77",
+  "historyId": "7679eca5113a52efaf9bd474f0433dbc",
+  "testCaseId": "3afddda5605f57f99aa6f9fa13fd43cb",
+  "fullName": "tests.api.test_users#test_delete_user",
+  "name": "test_delete_user",
+  "status": "failed",
+  "stage": "finished",
+  "start": 1793700003333,
+  "stop": 1793700003973,
+  "labels": [
+    {
+      "name": "framework",
+      "value": "pytest"
+    },
+    {
+      "name": "language",
+      "value": "cpython3"
+    },
+    {
+      "name": "package",
+      "value": "tests.api.test_users"
+    },
+    {
+      "name": "parentSuite",
+      "value": "tests.api"
+    },
+    {
+      "name": "suite",
+      "value": "test_users"
+    },
+    {
+      "name": "host",
+      "value": "ci-runner-7"
+    },
+    {
+      "name": "thread",
+      "value": "1234-MainThread"
+    },
+    {
+      "name": "feature",
+      "value": "User management"
+    }
+  ],
+  "parameters": [],
+  "links": [],
+  "steps": [],
+  "attachments": [],
+  "statusDetails": {
+    "message": "AssertionError: expected status 201 but got 500 for user 9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d\nassert 500 == 201",
+    "trace": "tests/api/test_users.py:77: in test_delete_user\nE   AssertionError: expected status 201 but got 500"
+  }
+}

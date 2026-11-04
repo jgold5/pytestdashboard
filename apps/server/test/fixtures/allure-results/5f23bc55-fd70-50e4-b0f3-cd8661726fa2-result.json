@@ -1,0 +1,49 @@
+{
+  "uuid": "5f23bc55-fd70-50e4-b0f3-cd8661726fa2",
+  "historyId": "6da32d531974579f8314c7e8d3f14080",
+  "testCaseId": "ea2e551023075638b9c20e30d6a08d86",
+  "fullName": "tests.api.test_users#test_update_profile",
+  "name": "test_update_profile",
+  "status": "passed",
+  "stage": "finished",
+  "start": 1793700003973,
+  "stop": 1793700004328,
+  "labels": [
+    {
+      "name": "framework",
+      "value": "pytest"
+    },
+    {
+      "name": "language",
+      "value": "cpython3"
+    },
+    {
+      "name": "package",
+      "value": "tests.api.test_users"
+    },
+    {
+      "name": "parentSuite",
+      "value": "tests.api"
+    },
+    {
+      "name": "suite",
+      "value": "test_users"
+    },
+    {
+      "name": "host",
+      "value": "ci-runner-7"
+    },
+    {
+      "name": "thread",
+      "value": "1234-MainThread"
+    },
+    {
+      "name": "feature",
+      "value": "User management"
+    }
+  ],
+  "parameters": [],
+  "links": [],
+  "steps": [],
+  "attachments": []
+}

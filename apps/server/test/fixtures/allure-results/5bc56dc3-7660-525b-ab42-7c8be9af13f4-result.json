@@ -1,0 +1,53 @@
+{
+  "uuid": "5bc56dc3-7660-525b-ab42-7c8be9af13f4",
+  "historyId": "32252e7901b85bc98ef2e0250579f626",
+  "testCaseId": "73b2d780947556f6a361143a23055bd8",
+  "fullName": "tests.api.test_auth.TestLogin#test_logout_clears_session",
+  "name": "test_logout_clears_session",
+  "status": "passed",
+  "stage": "finished",
+  "start": 1793700000412,
+  "stop": 1793700000645,
+  "labels": [
+    {
+      "name": "framework",
+      "value": "pytest"
+    },
+    {
+      "name": "language",
+      "value": "cpython3"
+    },
+    {
+      "name": "package",
+      "value": "tests.api.test_auth"
+    },
+    {
+      "name": "parentSuite",
+      "value": "tests.api"
+    },
+    {
+      "name": "suite",
+      "value": "test_auth"
+    },
+    {
+      "name": "host",
+      "value": "ci-runner-7"
+    },
+    {
+      "name": "thread",
+      "value": "1234-MainThread"
+    },
+    {
+      "name": "subSuite",
+      "value": "TestLogin"
+    },
+    {
+      "name": "feature",
+      "value": "Authentication"
+    }
+  ],
+  "parameters": [],
+  "links": [],
+  "steps": [],
+  "attachments": []
+}

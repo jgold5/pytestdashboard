@@ -12,6 +12,8 @@ import { FLAKY_THRESHOLD } from './flakiness.js';
 import { computePrPipeline } from './pullRequests.js';
 import { passRate } from './runs.js';
 import { getSettings } from './settings.js';
+import { bugTrend, computeVerifications, meanDaysToResolve, openBySeverity } from './bugs.js';
+import { bugs } from '../db/schema.js';
 import { bySuite, countUntriagedFailures, coverageTrend } from './summary.js';
 
 type Goal = Settings['goal'];
@@ -188,6 +190,9 @@ export function getReport(db: Db, periodDays: number, today: Date = new Date()):
   const linked = sql`EXISTS (SELECT 1 FROM ${testCasePullRequests} WHERE ${testCasePullRequests.pullRequestId} = ${pullRequests.id})`;
   const prPipeline = computePrPipeline(db);
   const failingNow = inArray(testCases.lastStatus, ['failed', 'broken']);
+  const allBugs = db.select().from(bugs).all();
+  const bugVer = computeVerifications(db, allBugs);
+  const bySev = openBySeverity(db);
 
   return {
     generatedAt: today.toISOString(),
@@ -233,6 +238,12 @@ export function getReport(db: Db, periodDays: number, today: Date = new Date()):
           .from(notes)
           .where(and(isNotNull(notes.triage), gte(notes.createdAt, startIso))),
       ),
+      bugsFoundByAutomation: allBugs.filter((b) => b.foundByAutomation && b.createdAt >= startIso).length,
+      bugsResolved: allBugs.filter((b) => b.resolvedAt !== null && b.resolvedAt >= startIso).length,
+      bugsVerifiedFixed: allBugs.filter((b) => {
+        const v = bugVer.get(b.id);
+        return v?.verification === 'verified_fixed' && (v.verifiedAt ?? '') >= startIso;
+      }).length,
     },
     risks: {
       untriagedFailures: countUntriagedFailures(db),
@@ -246,6 +257,15 @@ export function getReport(db: Db, periodDays: number, today: Date = new Date()):
           .where(and(eq(testCases.triage, 'product_bug'), failingNow)),
       ),
       prsNeedingAttention: prPipeline.needsAttention,
+      openBugs: allBugs.filter((b) => b.status === 'open' || b.status === 'in_progress').length,
+      openCriticalBugs: allBugs.filter((b) => (b.status === 'open' || b.status === 'in_progress') && b.severity === 'critical')
+        .length,
+      stillFailingAfterFix: allBugs.filter((b) => bugVer.get(b.id)?.verification === 'still_failing').length,
+    },
+    bugs: {
+      bySeverity: bySev,
+      trend: bugTrend(db, startDate, today),
+      meanDaysToResolve: meanDaysToResolve(db, today),
     },
     prPipeline,
   };

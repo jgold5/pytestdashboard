@@ -1,0 +1,1 @@
+[{"name": "Infrastructure", "messageRegex": ".*Connection.*", "matchedStatuses": ["broken"]}]

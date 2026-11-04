@@ -287,51 +287,75 @@ export function historyMatrix(db: Db, q: HistoryMatrixQuery): HistoryMatrix {
   if (runRows.length === 0) return empty;
   const runIndex = new Map(runRows.map((r, i) => [r.id, i]));
 
-  // One query for all cells; raw arrays keep it fast on large windows.
-  const caseConds: SQL[] = [inArray(testResults.runId, runRows.map((r) => r.id))];
-  if (q.suite !== undefined) caseConds.push(eq(testCases.suite, q.suite));
+  // Strategy (few queries, no N+1, index-friendly):
+  //  1. ids of cases with ≥1 failure in the window (index run_id,status) — the "unstable" set;
+  //  2. their cells (index test_case_id,run_id), scored and sorted in memory;
+  //  3. only when onlyUnstable=false: stable cases (0 flips/0 failures) follow, ordered by
+  //     key and paginated in SQL, and only the page's cells are fetched.
+  const runIds = runRows.map((r) => r.id);
+  const caseFilters: SQL[] = [];
+  if (q.suite !== undefined) caseFilters.push(eq(testCases.suite, q.suite));
   if (q.search) {
     const p = containsPattern(q.search);
     const s = or(sql`${testCases.key} LIKE ${p} ESCAPE '\\'`, sql`${testCases.title} LIKE ${p} ESCAPE '\\'`);
-    if (s) caseConds.push(s);
+    if (s) caseFilters.push(s);
   }
-  const needsCaseJoin = q.suite !== undefined || Boolean(q.search);
-  const base = db
-    .select({ caseId: testResults.testCaseId, runId: testResults.runId, status: testResults.status, id: testResults.id })
-    .from(testResults);
-  const cellRows = (
-    needsCaseJoin ? base.innerJoin(testCases, eq(testCases.id, testResults.testCaseId)) : base
-  )
-    .where(and(...caseConds))
-    .all();
-
-  interface Acc {
-    cells: Array<{ status: ResultStatus | null; resultId: number | null }>;
-  }
+  const needsCaseJoin = caseFilters.length > 0;
   const n = runRows.length;
-  const byCase = new Map<number, Acc>();
-  for (const c of cellRows) {
-    const idx = runIndex.get(c.runId);
-    if (idx === undefined) continue;
-    let acc = byCase.get(c.caseId);
-    if (!acc) {
-      acc = { cells: Array.from({ length: n }, () => ({ status: null, resultId: null })) };
-      byCase.set(c.caseId, acc);
-    }
-    const cell = acc.cells[idx];
-    if (!cell) continue;
-    if (cell.status === null || worse(c.status, cell.status) !== cell.status) {
-      cell.status = c.status;
-      cell.resultId = c.id;
-    }
-  }
 
-  const scored: Array<{ caseId: number; flips: number; failures: number; acc: Acc }> = [];
-  for (const [caseId, acc] of byCase) {
+  type Cell = { status: ResultStatus | null; resultId: number | null };
+  const fetchCells = (caseIds: number[]): Map<number, Cell[]> => {
+    const byCase = new Map<number, Cell[]>();
+    for (let i = 0; i < caseIds.length; i += 500) {
+      const rows = db
+        .select({ caseId: testResults.testCaseId, runId: testResults.runId, status: testResults.status, id: testResults.id })
+        .from(testResults)
+        .where(and(inArray(testResults.testCaseId, caseIds.slice(i, i + 500)), inArray(testResults.runId, runIds)))
+        .values() as Array<[number, number, ResultStatus, number]>;
+      for (const [caseId, runId, status, id] of rows) {
+        const idx = runIndex.get(runId);
+        if (idx === undefined) continue;
+        let cells = byCase.get(caseId);
+        if (!cells) {
+          cells = Array.from({ length: n }, () => ({ status: null, resultId: null }));
+          byCase.set(caseId, cells);
+        }
+        const cell = cells[idx];
+        if (cell && (cell.status === null || worse(status, cell.status) !== cell.status)) {
+          cell.status = status;
+          cell.resultId = id;
+        }
+      }
+    }
+    return byCase;
+  };
+  const meta = (ids: number[]) => {
+    const out = new Map<number, { key: string; title: string; suite: string | null }>();
+    for (let i = 0; i < ids.length; i += 500) {
+      for (const c of db
+        .select({ id: testCases.id, key: testCases.key, title: testCases.title, suite: testCases.suite })
+        .from(testCases)
+        .where(inArray(testCases.id, ids.slice(i, i + 500)))
+        .all()) {
+        out.set(c.id, c);
+      }
+    }
+    return out;
+  };
+
+  // 1 + 2: unstable cases
+  const failingBase = db.selectDistinct({ caseId: testResults.testCaseId }).from(testResults);
+  const failingIds = (needsCaseJoin ? failingBase.innerJoin(testCases, eq(testCases.id, testResults.testCaseId)) : failingBase)
+    .where(and(inArray(testResults.runId, runIds), inArray(testResults.status, ['failed', 'broken']), ...caseFilters))
+    .all()
+    .map((r) => r.caseId);
+  const unstableCells = fetchCells(failingIds);
+  const unstableMeta = meta(failingIds);
+  const scored = [...unstableCells].map(([caseId, cells]) => {
     let flips = 0;
     let failures = 0;
     let prev: 'P' | 'F' | null = null;
-    for (const cell of acc.cells) {
+    for (const cell of cells) {
       if (cell.status === null) continue;
       if (isFailing(cell.status)) failures++;
       const s = cell.status === 'passed' ? 'P' : isFailing(cell.status) ? 'F' : null;
@@ -339,29 +363,54 @@ export function historyMatrix(db: Db, q: HistoryMatrixQuery): HistoryMatrix {
       if (prev !== null && s !== prev) flips++;
       prev = s;
     }
-    if (q.onlyUnstable && failures === 0) continue;
-    scored.push({ caseId, flips, failures, acc });
-  }
-
-  // need keys for the tie-break sort: fetch minimal metadata for all candidates
-  const keys = new Map<number, { key: string; title: string; suite: string | null }>();
-  const ids = scored.map((s) => s.caseId);
-  for (let i = 0; i < ids.length; i += 900) {
-    for (const c of db
-      .select({ id: testCases.id, key: testCases.key, title: testCases.title, suite: testCases.suite })
-      .from(testCases)
-      .where(inArray(testCases.id, ids.slice(i, i + 900)))
-      .all()) {
-      keys.set(c.id, c);
-    }
-  }
+    return { caseId, flips, failures, cells };
+  });
   scored.sort(
     (a, b) =>
       b.flips - a.flips ||
       b.failures - a.failures ||
-      (keys.get(a.caseId)?.key ?? '').localeCompare(keys.get(b.caseId)?.key ?? ''),
+      (unstableMeta.get(a.caseId)?.key ?? '').localeCompare(unstableMeta.get(b.caseId)?.key ?? ''),
   );
-  const page = scored.slice((q.page - 1) * q.pageSize, q.page * q.pageSize);
+
+  const offset = (q.page - 1) * q.pageSize;
+  const rows: HistoryMatrix['rows'] = scored.slice(offset, offset + q.pageSize).map((s) => {
+    const m = unstableMeta.get(s.caseId);
+    return {
+      testCase: { id: s.caseId, key: m?.key ?? '', title: m?.title ?? '', suite: m?.suite ?? null },
+      cells: s.cells,
+      flips: s.flips,
+      failures: s.failures,
+    };
+  });
+  let total = scored.length;
+
+  // 3: stable cases (executed in the window, never failing there)
+  if (!q.onlyUnstable) {
+    const inWindow = sql`EXISTS (SELECT 1 FROM ${testResults} WHERE ${testResults.testCaseId} = ${testCases.id} AND ${inArray(testResults.runId, runIds)})`;
+    const noFailure = sql`NOT EXISTS (SELECT 1 FROM ${testResults} WHERE ${testResults.testCaseId} = ${testCases.id} AND ${inArray(testResults.runId, runIds)} AND ${testResults.status} IN ('failed', 'broken'))`;
+    const where = and(inWindow, noFailure, ...caseFilters);
+    total += db.select({ n: sql<number>`count(*)` }).from(testCases).where(where).get()?.n ?? 0;
+    const need = q.pageSize - rows.length;
+    if (need > 0) {
+      const stable = db
+        .select({ id: testCases.id, key: testCases.key, title: testCases.title, suite: testCases.suite })
+        .from(testCases)
+        .where(where)
+        .orderBy(asc(testCases.key))
+        .limit(need)
+        .offset(Math.max(0, offset - scored.length))
+        .all();
+      const cells = fetchCells(stable.map((c) => c.id));
+      for (const c of stable) {
+        rows.push({
+          testCase: { id: c.id, key: c.key, title: c.title, suite: c.suite },
+          cells: cells.get(c.id) ?? Array.from({ length: n }, () => ({ status: null, resultId: null })),
+          flips: 0,
+          failures: 0,
+        });
+      }
+    }
+  }
 
   return {
     runGroup,
@@ -374,16 +423,8 @@ export function historyMatrix(db: Db, q: HistoryMatrixQuery): HistoryMatrix {
       importedAt: r.importedAt,
       passRate: passRate(r),
     })),
-    rows: page.map((s) => {
-      const m = keys.get(s.caseId);
-      return {
-        testCase: { id: s.caseId, key: m?.key ?? '', title: m?.title ?? '', suite: m?.suite ?? null },
-        cells: s.acc.cells,
-        flips: s.flips,
-        failures: s.failures,
-      };
-    }),
-    total: scored.length,
+    rows,
+    total,
     page: q.page,
     pageSize: q.pageSize,
   };

@@ -5,7 +5,7 @@
  */
 import { sql } from 'drizzle-orm';
 import { index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
-import type { AutomationStatus, Priority, ResultChange, ResultStatus, TriageCategory } from '@ptd/shared';
+import type { AutomationStatus, BugSeverity, BugStatus, Priority, ResultChange, ResultStatus, TriageCategory } from '@ptd/shared';
 
 export type CaseSource = 'manual' | 'spreadsheet' | 'allure' | 'jira';
 export type PrState = 'open' | 'draft' | 'merged' | 'closed';
@@ -37,6 +37,8 @@ export const testCases = sqliteTable(
     lastStatus: text('last_status').$type<ResultStatus>(),
     lastRunId: integer('last_run_id'),
     lastRunAt: text('last_run_at'),
+    /** failureSignature of the last (worst) result, when failing. */
+    lastSignature: text('last_signature'),
     flakiness: real('flakiness').notNull().default(0),
     triage: text('triage').$type<TriageCategory>(),
     triageAt: text('triage_at'),
@@ -218,6 +220,55 @@ export const integrationState = sqliteTable('integration_state', {
   lastStats: text('last_stats', { mode: 'json' }).$type<IntegrationStats>(),
 });
 
+export const bugs = sqliteTable(
+  'bugs',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    jiraKey: text('jira_key'),
+    title: text('title').notNull(),
+    url: text('url'),
+    status: text('status').$type<BugStatus>().notNull().default('open'),
+    severity: text('severity').$type<BugSeverity>(),
+    foundByAutomation: integer('found_by_automation', { mode: 'boolean' }).notNull().default(false),
+    foundInRunId: integer('found_in_run_id').references(() => runs.id, { onDelete: 'set null' }),
+    source: text('source').$type<'manual' | 'jira'>().notNull().default('manual'),
+    assignee: text('assignee'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+    resolvedAt: text('resolved_at'),
+  },
+  (t) => [
+    uniqueIndex('bugs_jira_key_uq').on(t.jiraKey),
+    index('bugs_status_idx').on(t.status),
+    index('bugs_created_idx').on(t.createdAt),
+    index('bugs_resolved_idx').on(t.resolvedAt),
+  ],
+);
+
+export const bugTestCases = sqliteTable(
+  'bug_test_cases',
+  {
+    bugId: integer('bug_id')
+      .notNull()
+      .references(() => bugs.id, { onDelete: 'cascade' }),
+    testCaseId: integer('test_case_id')
+      .notNull()
+      .references(() => testCases.id, { onDelete: 'cascade' }),
+  },
+  (t) => [primaryKey({ columns: [t.bugId, t.testCaseId] }), index('bug_test_cases_case_idx').on(t.testCaseId)],
+);
+
+export const bugSignatures = sqliteTable(
+  'bug_signatures',
+  {
+    bugId: integer('bug_id')
+      .notNull()
+      .references(() => bugs.id, { onDelete: 'cascade' }),
+    signature: text('signature').notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.bugId, t.signature] }), index('bug_signatures_sig_idx').on(t.signature)],
+);
+
 /** Key/value app settings (teamName, goal) — values are JSON. */
 export const settings = sqliteTable('settings', {
   key: text('key').primaryKey(),
@@ -230,3 +281,4 @@ export type RunRow = typeof runs.$inferSelect;
 export type TestResultRow = typeof testResults.$inferSelect;
 export type NoteRow = typeof notes.$inferSelect;
 export type PullRequestRow = typeof pullRequests.$inferSelect;
+export type BugRow = typeof bugs.$inferSelect;
