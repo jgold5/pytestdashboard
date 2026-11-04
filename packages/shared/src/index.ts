@@ -101,6 +101,34 @@ export const LastResult = z.object({
 });
 export type LastResult = z.infer<typeof LastResult>;
 
+export const BugStatus = z.enum(['open', 'in_progress', 'resolved', 'closed', 'wont_fix']);
+export type BugStatus = z.infer<typeof BugStatus>;
+
+export const BugSeverity = z.enum(['critical', 'major', 'minor', 'trivial']);
+export type BugSeverity = z.infer<typeof BugSeverity>;
+
+/**
+ * Verification derived from linked tests' results AFTER resolvedAt:
+ * - verified_fixed: resolved/closed and every linked case's latest result (in a run started after resolvedAt) passed
+ * - still_failing: resolved/closed but ≥1 linked case's latest result after resolvedAt failed/broken
+ * - awaiting_run: resolved/closed, no linked-case results since resolvedAt yet
+ * - n/a: open / in_progress / wont_fix
+ */
+export const BugVerification = z.enum(['verified_fixed', 'still_failing', 'awaiting_run', 'n/a']);
+export type BugVerification = z.infer<typeof BugVerification>;
+
+/** Compact bug reference embedded in test cases / failure groups. Full model: `Bug`. */
+export const BugRef = z.object({
+  id: z.number().int(),
+  jiraKey: z.string().nullable(),
+  title: z.string(),
+  url: z.string().nullable(),
+  status: BugStatus,
+  severity: BugSeverity.nullable(),
+  verification: BugVerification,
+});
+export type BugRef = z.infer<typeof BugRef>;
+
 export const PullRequestRef = z.object({
   repo: z.string(), // "owner/name"
   number: z.number().int(),
@@ -154,6 +182,8 @@ export const TestCase = z.object({
   lastResult: LastResult.nullable(),
   /** Latest triage category from the newest note that set one (null if none). */
   triage: TriageCategory.nullable(),
+  /** Linked bugs that are not closed/wont_fix-and-verified (open, in_progress, resolved-unverified, still_failing). */
+  openBugs: z.array(BugRef),
   noteCount: z.number().int(),
   /** 0..1 — share of status flips across the last 10 results within each run group; max over groups (0 = stable). */
   flakiness: z.number(),
@@ -447,6 +477,8 @@ export const FailureGroup = z.object({
   testCases: z.array(z.object({ id: z.number().int(), key: z.string(), title: z.string() })),
   /** Most common triage category among the affected cases, if any. */
   triage: TriageCategory.nullable(),
+  /** Bugs already linked to this signature or to all affected cases. */
+  bugs: z.array(BugRef),
   /** How many of the group's results are new failures vs previous run. */
   newFailures: z.number().int(),
   /** First run (any branch) where this signature appeared. */
@@ -706,6 +738,103 @@ export const Summary = z.object({
 export type Summary = z.infer<typeof Summary>;
 
 // ---------------------------------------------------------------------------
+// Bugs identified (by automation or manually), linked to test cases
+// ---------------------------------------------------------------------------
+
+export const Bug = z.object({
+  id: z.number().int(),
+  /** Jira key if tracked in Jira (unique when set). */
+  jiraKey: z.string().nullable(),
+  title: z.string(),
+  url: z.string().nullable(),
+  status: BugStatus,
+  severity: BugSeverity.nullable(),
+  /** true if first detected via an automated result (has foundInRunId or created from a failure). */
+  foundByAutomation: z.boolean(),
+  foundInRun: z.object({ id: z.number().int(), name: z.string(), runGroup: z.string() }).nullable(),
+  /** Failure signatures this bug explains (so new failures with the same signature auto-suggest it). */
+  failureSignatures: z.array(z.string()),
+  testCases: z.array(
+    z.object({
+      id: z.number().int(),
+      key: z.string(),
+      title: z.string(),
+      lastStatus: ResultStatus.nullable(),
+    }),
+  ),
+  verification: BugVerification,
+  /** Synced from Jira when jiraKey set & Jira configured; else manual. */
+  source: z.enum(['manual', 'jira']),
+  assignee: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  resolvedAt: z.string().nullable(),
+});
+export type Bug = z.infer<typeof Bug>;
+
+export const BugCreate = z.object({
+  title: trimmed(LIMITS.titleMax).min(1),
+  jiraKey: TestCaseFields.shape.jiraKey,
+  url: SafeUrl.nullable().optional(),
+  status: BugStatus.default('open'),
+  severity: BugSeverity.nullable().optional(),
+  assignee: nullableShort.optional(),
+  testCaseIds: z.array(z.number().int().positive()).max(1000).default([]),
+  /** When logged from a failure group / result. */
+  foundInRunId: z.number().int().positive().nullable().optional(),
+  failureSignatures: z.array(z.string().max(64)).max(50).default([]),
+});
+export type BugCreate = z.infer<typeof BugCreate>;
+
+export const BugUpdate = z
+  .object({
+    title: trimmed(LIMITS.titleMax).min(1),
+    jiraKey: TestCaseFields.shape.jiraKey,
+    url: SafeUrl.nullable(),
+    status: BugStatus,
+    severity: BugSeverity.nullable(),
+    assignee: nullableShort,
+    /** Replace the full set of linked cases / signatures. */
+    testCaseIds: z.array(z.number().int().positive()).max(1000),
+    failureSignatures: z.array(z.string().max(64)).max(50),
+  })
+  .partial();
+export type BugUpdate = z.infer<typeof BugUpdate>;
+
+export const BugQuery = z.object({
+  status: BugStatus.optional(),
+  /** open = open|in_progress; resolved = resolved|closed; all */
+  bucket: z.enum(['open', 'resolved', 'all']).default('open'),
+  severity: BugSeverity.optional(),
+  verification: BugVerification.optional(),
+  testCaseId: z.coerce.number().int().positive().optional(),
+  foundByAutomation: z.stringbool().optional(),
+  search: z.string().trim().max(200).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(LIMITS.pageSizeMax).default(50),
+});
+export type BugQuery = z.infer<typeof BugQuery>;
+
+export const BugList = Paginated(Bug);
+export type BugList = z.infer<typeof BugList>;
+
+
+/** GET /api/bugs/stats — for the Bugs page header and report. */
+export const BugStats = z.object({
+  open: z.number().int(),
+  inProgress: z.number().int(),
+  resolvedAwaitingVerification: z.number().int(),
+  stillFailingAfterFix: z.number().int(),
+  verifiedFixed: z.number().int(),
+  bySeverity: z.array(z.object({ severity: BugSeverity, open: z.number().int() })),
+  /** Weekly, last 26 weeks, oldest first. */
+  trend: z.array(z.object({ weekStart: z.string(), found: z.number().int(), resolved: z.number().int() })),
+  /** Mean days from createdAt to resolvedAt over bugs resolved in last 90 days; null if none. */
+  meanDaysToResolve: z.number().nullable(),
+});
+export type BugStats = z.infer<typeof BugStats>;
+
+// ---------------------------------------------------------------------------
 // Settings & management report ("external" side)
 // ---------------------------------------------------------------------------
 
@@ -787,12 +916,23 @@ export const Report = z.object({
     casesAdded: z.number().int(), // in period
     prsMerged: z.number().int(), // linked automation PRs merged in period
     failuresTriaged: z.number().int(), // notes with triage in period
+    bugsFoundByAutomation: z.number().int(), // created in period with foundByAutomation
+    bugsResolved: z.number().int(), // resolvedAt in period
+    bugsVerifiedFixed: z.number().int(), // verified in period
   }),
   risks: z.object({
     untriagedFailures: z.number().int(),
     flakyTests: z.number().int(), // flakiness ≥ 0.3
     productBugsOpen: z.number().int(), // cases currently triaged product_bug and last result failing
     prsNeedingAttention: z.number().int(),
+    openBugs: z.number().int(),
+    openCriticalBugs: z.number().int(),
+    stillFailingAfterFix: z.number().int(),
+  }),
+  bugs: z.object({
+    bySeverity: BugStats.shape.bySeverity,
+    trend: BugStats.shape.trend, // trimmed to the period (weekly)
+    meanDaysToResolve: z.number().nullable(),
   }),
   prPipeline: Summary.shape.prPipeline,
 });

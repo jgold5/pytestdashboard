@@ -58,6 +58,12 @@ Single deployable: `pnpm build && pnpm start` → one Node process on `PORT` (de
 | PATCH | `/api/notes/:id` | `NoteUpdate` | `Note` |
 | DELETE | `/api/notes/:id` | – | 204 |
 | GET | `/api/pull-requests` | `PullRequestQuery` | `PullRequest[]` (needsAttention first, then updatedAt desc) |
+| GET | `/api/bugs` | `BugQuery` | `BugList` |
+| GET | `/api/bugs/stats` | – | `BugStats` |
+| POST | `/api/bugs` | `BugCreate` | `Bug` (201; 409 duplicate jiraKey) |
+| GET | `/api/bugs/:id` | – | `Bug` |
+| PATCH | `/api/bugs/:id` | `BugUpdate` | `Bug` |
+| DELETE | `/api/bugs/:id` | – | 204 |
 | GET | `/api/integrations` | – | `IntegrationStatus[]` |
 | GET | `/api/report` | `ReportQuery` | `Report` (editor **or viewer**) |
 | GET | `/api/settings` | – | `Settings` (editor or viewer) |
@@ -98,6 +104,13 @@ Errors: always `ApiError` shape `{error, message, details?}` with proper status 
 - Each run's `previousRunId` = latest earlier run with the same runGroup AND same branch (null branch matches null). Order runs by `COALESCE(started_at, imported_at)`. Store `previous_run_id` on the run and `change` on each result at import time (in the import transaction). Deleting a run must recompute `previous_run_id` + `change` for the next run on that branch. Importing an older run (startedAt earlier than existing ones) must re-link the following run too.
 - `Run.changes` counts are stored/derived from results' `change` values; `missing` = cases in previous run not in this one.
 - Compare, matrix and TestCaseDetail.stats as defined in the contract. Must be efficient: index `test_results(run_id)`, `test_results(test_case_id, run_id)`, `runs(branch, started_at)`. Matrix must be computed with at most a few queries (no N+1). Target: matrix of 50 rows × 60 runs on a DB of 5k cases × 300 runs in < 200 ms.
+
+### Bugs identified
+- Tables: `bugs`, `bug_test_cases (bug_id, test_case_id)`, `bug_signatures (bug_id, signature)`. `verification` computed on read per contract definition (runs started after resolvedAt; consider the case's results across all run groups).
+- Auto-create: when a note is created with `triage='product_bug'` and a `ticketUrl` whose path ends in a Jira-like key (`/browse/ABC-123` or `selectedIssue=ABC-123`), upsert a bug by jiraKey (title = first line of note body, ≤ 200 chars, until Jira sync fills the real summary), link the note's case, and the note's result's signature/run. `foundByAutomation` = true when a resultId/runId is involved.
+- Failure groups: `bugs` = bugs linked to that signature, or linked to all affected cases. When importing a run, a new failure whose signature is linked to an open bug gets triage "known_issue" implicitly for untriaged counting (do not create notes).
+- Untriaged failure definition is extended: a failing case with a linked open/in_progress bug is NOT untriaged.
+- Jira sync (integrations engineer): for bugs with jiraKey, fetch `status, statusCategory, resolutiondate, assignee, summary, priority` in batches (JQL `key in (...)`, ≤ 100 per call) → status mapping by statusCategory (new → open, indeterminate → in_progress, done → resolved, unless resolution is Won't Do/Won't Fix/Duplicate → wont_fix), severity from priority (Highest/Blocker→critical, High→major, Medium→minor, Low/Lowest→trivial). Also pull Xray Test issues' linked defects (issuelinks of type "Defect"/"Tests"/"is blocked by" where linked issue type = Bug) → upsert bugs and link to the test case.
 
 ### Flakiness
 `flakiness` = per run group: status flips (passed↔failed/broken, ignoring skipped) across that group's last 10 executed results for the case / max(1, n−1); the case's flakiness = max over groups. `flakyOnly` = flakiness ≥ 0.3.
@@ -162,6 +175,8 @@ Clean, modern, dense-but-calm "Linear/Vercel" aesthetic; light + dark (system de
   - Also show a copy-pastable `curl` snippet for CI uploads with Bearer token.
 - **Mode switch**: top-level segmented control in the header: **Workspace | Report**. Viewers only ever see Report (no switch, no workspace nav).
 - **Report** (`/report`): presentation-style, generous whitespace, big numbers, minimal chrome. Period selector (7/30/90/180d). Sections: headline (automation % with "+x pts this period", goal ring/progress toward target, status pill Ahead/On track/At risk/Behind with projected date); coverage trend line with goal line + projection dashed line; quality (latest & avg pass rate with delta, weekly pass-rate bars); suite readiness grid (traffic-light health tiles); highlights (wins) and risks (4 tiles each); PR pipeline summary. "Print / Save PDF" button with a dedicated `@media print` stylesheet (A4/Letter landscape, light theme forced, no nav). "Copy link" for sharing. Editors can set team name + goal from a small settings dialog on this page.
+- **Bugs** (`/bugs`, workspace nav): header stat tiles (Open, In progress, Resolved awaiting verification, ⚠ Resolved but still failing, Verified fixed, Mean days to resolve); found vs resolved weekly chart; table (key/link, title, severity badge, status, verification badge, linked tests with their last status, found in run, age, assignee); filters (bucket, severity, verification, found by automation, search); "New bug" dialog with test-case multi-picker. "Log bug" action on failure groups (pre-fills linked cases, signature, run, title from message) and on test case detail; test case detail + test cases table show bug badges (bug icon + key). "Resolved but still failing" is a prominent callout on Overview.
+- **Report**: Bugs section — "N bugs found by automation this period", open by severity, found vs resolved trend, mean time to resolve, verified fixes.
 - **Login** (`/login`): shown when `authRequired && !authenticated`; token field.
 - Author name for notes: prompt once, store in `localStorage` (convenience only).
 - Empty states that guide the user (e.g. "No data yet — import your Excel tracker or an allure-results folder").
