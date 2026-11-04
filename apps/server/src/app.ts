@@ -113,6 +113,8 @@ export async function buildApp(opts: BuildOptions): Promise<BuiltApp> {
     },
     hsts: config.httpsOnly ? { maxAge: 31_536_000, includeSubDomains: true } : false,
     crossOriginEmbedderPolicy: false,
+    // Browsers ignore COOP on untrustworthy (plain-http, non-localhost) origins and log an error.
+    crossOriginOpenerPolicy: config.httpsOnly ? { policy: 'same-origin' } : false,
     frameguard: { action: 'deny' },
     referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
   });
