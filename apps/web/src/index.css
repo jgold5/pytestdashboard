@@ -1,0 +1,336 @@
+@import 'tailwindcss';
+
+/* Theme is driven by data-theme on <html> (set by public/theme-init.js + useTheme). */
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+/* ------------------------------------------------------------------------
+ * Design tokens. Everything in the UI references these roles, never raw hex.
+ * Status / series colors follow the dataviz reference palette (validated for
+ * CVD separation); every status color is always paired with an icon + label.
+ * --------------------------------------------------------------------- */
+:root {
+  color-scheme: light;
+  --bg: #f7f7f5;
+  --surface: #ffffff;
+  --surface-2: #f3f3f1;
+  --surface-3: #ebebe8;
+  --border: rgba(11, 11, 11, 0.09);
+  --border-strong: rgba(11, 11, 11, 0.16);
+  --fg: #0b0b0b;
+  --fg-2: #52514e;
+  --fg-3: #7a7974;
+  --accent: #2a78d6;
+  --accent-fg: #ffffff;
+  --accent-soft: rgba(42, 120, 214, 0.1);
+  --ring: rgba(42, 120, 214, 0.55);
+  --grid: #e9e8e2;
+  --axis: #c3c2b7;
+
+  /* Result statuses (status palette) */
+  --st-passed: #0ca30c;
+  --st-failed: #d03b3b;
+  --st-broken: #e07040;
+  --st-skipped: #9a9890;
+  --st-unknown: #7c6fe0;
+  /* Readable text step for success/danger deltas */
+  --good-text: #006300;
+  --bad-text: #b42c2c;
+  --warn: #c98500;
+
+  /* Automation pipeline: ordinal blue ramp — darker = further along */
+  --au-automated: #1c5cab;
+  --au-inpr: #3987e5;
+  --au-progress: #86b6ef;
+  --au-not: #dcdbd4;
+  --au-na: #b4b2aa;
+
+  /* Triage categories (categorical slots, fixed order) */
+  --tr-needs_investigation: #eda100;
+  --tr-product_bug: #eb6834;
+  --tr-test_bug: #2a78d6;
+  --tr-environment: #1baf7a;
+  --tr-flaky: #e87ba4;
+  --tr-known_issue: #6250d6;
+
+  --shadow-sm: 0 1px 2px rgba(11, 11, 11, 0.04);
+  --shadow-md: 0 4px 16px rgba(11, 11, 11, 0.08), 0 1px 3px rgba(11, 11, 11, 0.06);
+  --shadow-lg: 0 16px 48px rgba(11, 11, 11, 0.16), 0 2px 6px rgba(11, 11, 11, 0.08);
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: #0c0c0c;
+  --surface: #151514;
+  --surface-2: #1c1c1b;
+  --surface-3: #262624;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.15);
+  --fg: #f0efec;
+  --fg-2: #c3c2b7;
+  --fg-3: #8d8b84;
+  --accent: #3987e5;
+  --accent-fg: #ffffff;
+  --accent-soft: rgba(57, 135, 229, 0.16);
+  --ring: rgba(57, 135, 229, 0.65);
+  --grid: #262624;
+  --axis: #3a3a37;
+
+  --st-passed: #22b322;
+  --st-failed: #e05252;
+  --st-broken: #ec835a;
+  --st-skipped: #77756e;
+  --st-unknown: #9085e9;
+  --good-text: #3cc43c;
+  --bad-text: #f07070;
+  --warn: #fab219;
+
+  --au-automated: #6da7ec;
+  --au-inpr: #2a78d6;
+  --au-progress: #1c5cab;
+  --au-not: #33332f;
+  --au-na: #55544f;
+
+  --tr-needs_investigation: #c98500;
+  --tr-product_bug: #d95926;
+  --tr-test_bug: #3987e5;
+  --tr-environment: #199e70;
+  --tr-flaky: #d55181;
+  --tr-known_issue: #9085e9;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.45), 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.6), 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+
+@theme inline {
+  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, 'JetBrains Mono', Menlo, Consolas, monospace;
+
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-fg: var(--fg);
+  --color-fg-2: var(--fg-2);
+  --color-fg-3: var(--fg-3);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-soft: var(--accent-soft);
+  --color-ring: var(--ring);
+  --color-good: var(--good-text);
+  --color-bad: var(--bad-text);
+  --color-warn: var(--warn);
+
+  --color-st-passed: var(--st-passed);
+  --color-st-failed: var(--st-failed);
+  --color-st-broken: var(--st-broken);
+  --color-st-skipped: var(--st-skipped);
+  --color-st-unknown: var(--st-unknown);
+
+  --color-au-automated: var(--au-automated);
+  --color-au-inpr: var(--au-inpr);
+  --color-au-progress: var(--au-progress);
+  --color-au-not: var(--au-not);
+  --color-au-na: var(--au-na);
+
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+}
+
+@layer base {
+  *,
+  ::before,
+  ::after {
+    border-color: var(--border);
+  }
+  html {
+    background: var(--bg);
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.45;
+    font-feature-settings: 'cv11', 'ss01';
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+  ::selection {
+    background: var(--accent-soft);
+  }
+  code,
+  pre,
+  kbd {
+    font-family: var(--font-mono);
+  }
+}
+
+@layer components {
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+  /* Notes rendered from markdown — no raw HTML is ever rendered. */
+  .prose-note {
+    overflow-wrap: anywhere;
+  }
+  .prose-note p {
+    margin: 0.25rem 0;
+  }
+  .prose-note ul {
+    list-style: disc;
+    padding-left: 1.25rem;
+    margin: 0.25rem 0;
+  }
+  .prose-note ol {
+    list-style: decimal;
+    padding-left: 1.25rem;
+    margin: 0.25rem 0;
+  }
+  .prose-note a {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .prose-note code {
+    font-size: 0.85em;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.05rem 0.3rem;
+  }
+  .prose-note pre {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.5rem 0.75rem;
+    overflow-x: auto;
+    margin: 0.4rem 0;
+  }
+  .prose-note pre code {
+    background: none;
+    border: 0;
+    padding: 0;
+  }
+  .prose-note blockquote {
+    border-left: 3px solid var(--border-strong);
+    padding-left: 0.75rem;
+    color: var(--fg-2);
+  }
+  .prose-note h1,
+  .prose-note h2,
+  .prose-note h3 {
+    font-weight: 600;
+    margin: 0.4rem 0 0.2rem;
+  }
+
+  .skeleton {
+    background: linear-gradient(90deg, var(--surface-2) 0%, var(--surface-3) 50%, var(--surface-2) 100%);
+    background-size: 200% 100%;
+    animation: skeleton-shimmer 1.4s ease-in-out infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .skeleton {
+      animation: none;
+    }
+  }
+
+  /* Hatched fill for "not automatable" (texture channel, 45°) */
+  .hatch {
+    background-image: repeating-linear-gradient(
+      45deg,
+      var(--au-na) 0 2px,
+      transparent 2px 6px
+    );
+  }
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+/* Recharts: keep focus rings off the svg wrapper, axes recessive. */
+.recharts-wrapper:focus,
+.recharts-surface:focus {
+  outline: none;
+}
+
+/* ------------------------------------------------------------------------
+ * Print: presentation report. Forced light theme, no app chrome, landscape.
+ * --------------------------------------------------------------------- */
+@page {
+  size: landscape;
+  margin: 12mm;
+}
+
+@media print {
+  :root,
+  :root[data-theme='dark'] {
+    color-scheme: light;
+    --bg: #ffffff;
+    --surface: #ffffff;
+    --surface-2: #f5f5f3;
+    --surface-3: #ebebe8;
+    --border: rgba(11, 11, 11, 0.12);
+    --border-strong: rgba(11, 11, 11, 0.2);
+    --fg: #0b0b0b;
+    --fg-2: #52514e;
+    --fg-3: #7a7974;
+    --accent: #2a78d6;
+    --accent-soft: rgba(42, 120, 214, 0.1);
+    --grid: #e9e8e2;
+    --axis: #c3c2b7;
+    --st-passed: #0ca30c;
+    --st-failed: #d03b3b;
+    --st-broken: #e07040;
+    --st-skipped: #9a9890;
+    --st-unknown: #7c6fe0;
+    --good-text: #006300;
+    --bad-text: #b42c2c;
+    --warn: #c98500;
+    --au-automated: #1c5cab;
+    --au-inpr: #3987e5;
+    --au-progress: #86b6ef;
+    --au-not: #dcdbd4;
+    --au-na: #b4b2aa;
+    --shadow-sm: none;
+    --shadow-md: none;
+    --shadow-lg: none;
+  }
+  html,
+  body {
+    background: #fff !important;
+    font-size: 12px;
+  }
+  * {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .no-print {
+    display: none !important;
+  }
+  .print-avoid-break {
+    break-inside: avoid;
+  }
+  .print-break-before {
+    break-before: page;
+  }
+  .print-full {
+    max-width: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+}
