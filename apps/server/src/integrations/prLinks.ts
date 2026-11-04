@@ -76,7 +76,8 @@ export class CaseIndex {
     if (!text) return [];
     const src = opts.caseInsensitive ? text.toUpperCase() : text;
     const out: number[] = [];
-    for (const m of src.matchAll(JIRA_KEY_G)) for (const id of this.byKeyOrJira.get(m[0]) ?? []) out.push(id);
+    for (const m of src.matchAll(JIRA_KEY_G))
+      for (const id of this.byKeyOrJira.get(m[0]) ?? []) out.push(id);
     return out;
   }
 

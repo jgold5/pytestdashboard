@@ -11,7 +11,13 @@ import {
 } from '../src/integrations/jira.js';
 import { createTestApp, type TestApp } from './helpers/app.js';
 import { daysAgo, importResults } from './helpers/allure.js';
-import { notFoundReply, startMockServer, type MockReply, type MockRequest, type MockServer } from './helpers/mockServer.js';
+import {
+  notFoundReply,
+  startMockServer,
+  type MockReply,
+  type MockRequest,
+  type MockServer,
+} from './helpers/mockServer.js';
 
 const EMAIL = 'qa@acme.io';
 const API_TOKEN = 'ATATT3xFfGF0SuperSecretJiraApiToken0123456789';
@@ -23,7 +29,10 @@ const AUTOMATION_FIELD = 'customfield_10123';
 
 type Fields = Record<string, unknown>;
 const issue = (key: string, fields: Fields) => ({ id: key.replace(/\D/g, ''), key, fields });
-const status = (category: 'new' | 'indeterminate' | 'done', name = category) => ({ name, statusCategory: { key: category } });
+const status = (category: 'new' | 'indeterminate' | 'done', name: string = category) => ({
+  name,
+  statusCategory: { key: category },
+});
 
 const TESTS = [
   issue('TC-1', {
@@ -35,25 +44,61 @@ const TESTS = [
     [AUTOMATION_FIELD]: { value: 'Automated' },
     issuelinks: [],
   }),
-  issue('TC-2', { summary: 'Refund', labels: [], components: [], priority: { name: 'Medium' }, [AUTOMATION_FIELD]: null }),
+  issue('TC-2', {
+    summary: 'Refund',
+    labels: [],
+    components: [],
+    priority: { name: 'Medium' },
+    [AUTOMATION_FIELD]: null,
+  }),
   issue('TC-3', { summary: 'Login (has allure results)', [AUTOMATION_FIELD]: { value: 'Manual' } }),
   issue('TC-4', { summary: 'Logout (spreadsheet)', [AUTOMATION_FIELD]: [{ value: 'Manual' }] }),
   issue('TC-5', {
     summary: 'Search',
     issuelinks: [
-      { type: { name: 'Defect', inward: 'created by', outward: 'created' }, outwardIssue: { key: 'BUG-10', fields: { issuetype: { name: 'Bug' } } } },
-      { type: { name: 'Tests', inward: 'is tested by', outward: 'tests' }, outwardIssue: { key: 'STORY-1', fields: { issuetype: { name: 'Story' } } } },
-      { type: { name: 'Relates', inward: 'relates to', outward: 'relates to' }, inwardIssue: { key: 'BUG-11', fields: { issuetype: { name: 'Bug' } } } },
+      {
+        type: { name: 'Defect', inward: 'created by', outward: 'created' },
+        outwardIssue: { key: 'BUG-10', fields: { issuetype: { name: 'Bug' } } },
+      },
+      {
+        type: { name: 'Tests', inward: 'is tested by', outward: 'tests' },
+        outwardIssue: { key: 'STORY-1', fields: { issuetype: { name: 'Story' } } },
+      },
+      {
+        type: { name: 'Relates', inward: 'relates to', outward: 'relates to' },
+        inwardIssue: { key: 'BUG-11', fields: { issuetype: { name: 'Bug' } } },
+      },
     ],
   }),
   issue('TC-6', { summary: 'Checkout (cucumber)', [AUTOMATION_FIELD]: 'maybe?' }),
 ];
 
 const BUGS: Record<string, ReturnType<typeof issue>> = {
-  'BUG-1': issue('BUG-1', { summary: "Won't fix this", status: status('done', 'Closed'), resolution: { name: 'Won’t Fix' }, priority: { name: 'Highest' }, resolutiondate: '2026-10-02T08:00:00.000+0000' }),
-  'BUG-2': issue('BUG-2', { summary: 'Being worked on', status: status('indeterminate', 'In Progress'), priority: { name: 'Medium' }, assignee: { displayName: 'Bob' } }),
-  'BUG-3': issue('BUG-3', { summary: 'Fixed it', status: status('done', 'Done'), resolution: { name: 'Done' }, priority: { name: 'Low' }, resolutiondate: '2026-10-01T10:00:00.000+0000' }),
-  'BUG-10': issue('BUG-10', { summary: 'Search crashes', status: status('new', 'To Do'), priority: { name: 'Lowest' } }),
+  'BUG-1': issue('BUG-1', {
+    summary: "Won't fix this",
+    status: status('done', 'Closed'),
+    resolution: { name: 'Won’t Fix' },
+    priority: { name: 'Highest' },
+    resolutiondate: '2026-10-02T08:00:00.000+0000',
+  }),
+  'BUG-2': issue('BUG-2', {
+    summary: 'Being worked on',
+    status: status('indeterminate', 'In Progress'),
+    priority: { name: 'Medium' },
+    assignee: { displayName: 'Bob' },
+  }),
+  'BUG-3': issue('BUG-3', {
+    summary: 'Fixed it',
+    status: status('done', 'Done'),
+    resolution: { name: 'Done' },
+    priority: { name: 'Low' },
+    resolutiondate: '2026-10-01T10:00:00.000+0000',
+  }),
+  'BUG-10': issue('BUG-10', {
+    summary: 'Search crashes',
+    status: status('new', 'To Do'),
+    priority: { name: 'Lowest' },
+  }),
 };
 
 const XRAY_TYPES: Record<string, { name: string; kind: string }> = {
@@ -72,42 +117,89 @@ interface JiraMockOpts {
 
 function jiraHandler(opts: JiraMockOpts = {}) {
   const pageSize = opts.pageSize ?? 4;
-  const expectAuth = opts.expectAuth ?? `Basic ${Buffer.from(`${EMAIL}:${API_TOKEN}`).toString('base64')}`;
+  const expectAuth =
+    opts.expectAuth ?? `Basic ${Buffer.from(`${EMAIL}:${API_TOKEN}`).toString('base64')}`;
   const keysFromJql = (jql: string) => /^key in \(([^)]*)\)$/.exec(jql)?.[1]?.split(',') ?? null;
   const searchIssues = (jql: string, res: MockRequest) => {
     const keys = keysFromJql(jql);
     if (keys) {
       const missing = keys.filter((k) => !BUGS[k]);
-      if (missing.length) return { error: { status: 400, json: { errorMessages: [`An issue with key '${missing[0]}' does not exist for field 'key'.`] } } };
+      if (missing.length)
+        return {
+          error: {
+            status: 400,
+            json: {
+              errorMessages: [`An issue with key '${missing[0]}' does not exist for field 'key'.`],
+            },
+          },
+        };
       return { issues: keys.map((k) => BUGS[k]!) };
     }
     expect(jql).toBe('issuetype = Test ORDER BY key');
     const fields = (res.body as { fields: string[] }).fields;
-    expect(fields).toEqual(expect.arrayContaining(['summary', 'labels', 'components', 'priority', 'assignee', 'status', 'issuelinks', AUTOMATION_FIELD]));
+    expect(fields).toEqual(
+      expect.arrayContaining([
+        'summary',
+        'labels',
+        'components',
+        'priority',
+        'assignee',
+        'status',
+        'issuelinks',
+        AUTOMATION_FIELD,
+      ]),
+    );
     return { issues: TESTS };
   };
   return (req: MockRequest): MockReply => {
     if (req.path.startsWith('/xray/')) return xrayHandler(req);
-    if (req.headers.authorization !== expectAuth) return { status: 401, json: { errorMessages: ['Unauthorized'] } };
-    const body = (req.body ?? {}) as { jql: string; nextPageToken?: string; startAt?: number; maxResults: number };
+    if (req.headers.authorization !== expectAuth)
+      return { status: 401, json: { errorMessages: ['Unauthorized'] } };
+    const body = (req.body ?? {}) as {
+      jql: string;
+      nextPageToken?: string;
+      startAt?: number;
+      maxResults: number;
+    };
     if (req.method === 'POST' && req.path === '/rest/api/3/search/jql' && !opts.server) {
       const r = searchIssues(body.jql, req);
       if (r.error) return r.error;
       const start = body.nextPageToken ? Number(body.nextPageToken.replace('tok-', '')) : 0;
       const slice = r.issues.slice(start, start + pageSize);
       const more = start + pageSize < r.issues.length;
-      return { json: { issues: slice, ...(more ? { nextPageToken: `tok-${start + pageSize}`, isLast: false } : { isLast: true }) } };
+      return {
+        json: {
+          issues: slice,
+          ...(more
+            ? { nextPageToken: `tok-${start + pageSize}`, isLast: false }
+            : { isLast: true }),
+        },
+      };
     }
     if (req.method === 'POST' && req.path === '/rest/api/2/search') {
       const r = searchIssues(body.jql, req);
       if (r.error) return r.error;
       const start = body.startAt ?? 0;
-      return { json: { startAt: start, maxResults: pageSize, total: r.issues.length, issues: r.issues.slice(start, start + pageSize) } };
+      return {
+        json: {
+          startAt: start,
+          maxResults: pageSize,
+          total: r.issues.length,
+          issues: r.issues.slice(start, start + pageSize),
+        },
+      };
     }
     const one = /^\/rest\/api\/([23])\/issue\/([A-Z0-9_]+-\d+)$/.exec(req.path);
     if (req.method === 'GET' && one) {
       const b = BUGS[one[2]!];
-      return b ? { json: b } : { status: 404, json: { errorMessages: ['Issue does not exist or you do not have permission to see it.'] } };
+      return b
+        ? { json: b }
+        : {
+            status: 404,
+            json: {
+              errorMessages: ['Issue does not exist or you do not have permission to see it.'],
+            },
+          };
     }
     return notFoundReply(req);
   };
@@ -116,18 +208,38 @@ function jiraHandler(opts: JiraMockOpts = {}) {
 function xrayHandler(req: MockRequest): MockReply {
   if (req.path === '/xray/authenticate') {
     const b = req.body as { client_id: string; client_secret: string };
-    if (b.client_id !== XRAY_ID || b.client_secret !== XRAY_SECRET) return { status: 401, json: { error: 'Authentication failed. Invalid client credentials!' } };
+    if (b.client_id !== XRAY_ID || b.client_secret !== XRAY_SECRET)
+      return { status: 401, json: { error: 'Authentication failed. Invalid client credentials!' } };
     return { json: XRAY_JWT };
   }
   if (req.path === '/xray/graphql') {
-    if (req.headers.authorization !== `Bearer ${XRAY_JWT}`) return { status: 401, json: { error: 'unauthorized' } };
-    const { query, variables } = req.body as { query: string; variables: { jql: string; start: number; limit: number } };
+    if (req.headers.authorization !== `Bearer ${XRAY_JWT}`)
+      return { status: 401, json: { error: 'unauthorized' } };
+    const { query, variables } = req.body as {
+      query: string;
+      variables: { jql: string; start: number; limit: number };
+    };
     expect(query).toContain('getTests(jql: $jql, limit: $limit, start: $start)');
     expect(query).toContain('testType { name kind }');
     expect(query).toContain('jira(fields: ["key"])');
-    const all = Object.entries(XRAY_TYPES).map(([key, testType]) => ({ issueId: key.slice(2), testType, jira: { key } }));
+    const all = Object.entries(XRAY_TYPES).map(([key, testType]) => ({
+      issueId: key.slice(2),
+      testType,
+      jira: { key },
+    }));
     const limit = 2; // force pagination regardless of requested limit
-    return { json: { data: { getTests: { total: all.length, start: variables.start, limit, results: all.slice(variables.start, variables.start + limit) } } } };
+    return {
+      json: {
+        data: {
+          getTests: {
+            total: all.length,
+            start: variables.start,
+            limit,
+            results: all.slice(variables.start, variables.start + limit),
+          },
+        },
+      },
+    };
   }
   return notFoundReply(req);
 }
@@ -173,7 +285,14 @@ describe('Jira mappings', () => {
     expect(
       linkedDefectKeys({
         key: 'TC-9',
-        fields: { issuelinks: [{ type: { name: 'Blocks', inward: 'is blocked by', outward: 'blocks' }, inwardIssue: { key: 'BUG-7', fields: { issuetype: { name: 'Bug' } } } }] },
+        fields: {
+          issuelinks: [
+            {
+              type: { name: 'Blocks', inward: 'is blocked by', outward: 'blocks' },
+              inwardIssue: { key: 'BUG-7', fields: { issuetype: { name: 'Bug' } } },
+            },
+          ],
+        },
       }),
     ).toEqual(['BUG-7']);
   });
@@ -203,11 +322,21 @@ describe('Jira sync', () => {
   });
 
   const appWith = async (cfg: JiraConfig) => {
-    const secrets = { JIRA_API_TOKEN: API_TOKEN, JIRA_PAT: PAT, XRAY_CLIENT_SECRET: XRAY_SECRET, XRAY_CLIENT_ID: XRAY_ID };
+    const secrets = {
+      JIRA_API_TOKEN: API_TOKEN,
+      JIRA_PAT: PAT,
+      XRAY_CLIENT_SECRET: XRAY_SECRET,
+      XRAY_CLIENT_ID: XRAY_ID,
+    };
     // env only feeds the runner's secret list (JIRA_BASE_URL must be https in loadConfig, so the
     // provider gets its config directly, pointing at the http loopback mock)
     return createTestApp(secrets, {
-      providers: [createJiraProvider(cfg, { xrayBaseUrl: `${mock!.url}/xray`, http: { sleep: async () => undefined, backoffBaseMs: 1 } })],
+      providers: [
+        createJiraProvider(cfg, {
+          xrayBaseUrl: `${mock!.url}/xray`,
+          http: { sleep: async () => undefined, backoffBaseMs: 1 },
+        }),
+      ],
     });
   };
 
@@ -215,11 +344,15 @@ describe('Jira sync', () => {
     const res = await t!.app.inject({ method: 'POST', url: '/api/integrations/jira/sync' });
     expect(res.statusCode, res.body).toBe(202);
     await t!.runner.waitForIdle();
-    return (await t!.app.inject({ url: '/api/integrations' })).json<IntegrationStatus[]>().find((s) => s.name === 'jira')!;
+    return (await t!.app.inject({ url: '/api/integrations' }))
+      .json<IntegrationStatus[]>()
+      .find((s) => s.name === 'jira')!;
   };
 
-  const cases = async () => (await t!.app.inject({ url: '/api/test-cases?pageSize=100' })).json<TestCaseList>().items;
-  const bugsList = async () => (await t!.app.inject({ url: '/api/bugs?pageSize=100&bucket=all' })).json<BugList>().items;
+  const cases = async () =>
+    (await t!.app.inject({ url: '/api/test-cases?pageSize=100' })).json<TestCaseList>().items;
+  const bugsList = async () =>
+    (await t!.app.inject({ url: '/api/bugs?pageSize=100&bucket=all' })).json<BugList>().items;
   const post = async (url: string, payload: object) => {
     const r = await t!.app.inject({ method: 'POST', url, payload });
     expect(r.statusCode, r.body).toBe(201);
@@ -231,11 +364,27 @@ describe('Jira sync', () => {
     t = await appWith(jiraConfig(mock.url));
 
     // existing data
-    await importResults(t, [{ fullName: 'tests.test_login#test_login', status: 'passed', start: daysAgo(1) }]);
+    await importResults(t, [
+      { fullName: 'tests.test_login#test_login', status: 'passed', start: daysAgo(1) },
+    ]);
     const allureCase = (await cases()).find((c) => c.key === 'tests.test_login#test_login')!;
-    await t.app.inject({ method: 'PATCH', url: `/api/test-cases/${allureCase.id}`, payload: { jiraKey: 'TC-3' } });
-    const t2 = (await post('/api/test-cases', { key: 'TC-2', title: 'old title', suite: 'Keep me', owner: 'Zed' })) as TestCase;
-    const t4 = (await post('/api/test-cases', { key: 'sheet-4', jiraKey: 'TC-4', title: 'Logout', automationStatus: 'automated' })) as TestCase;
+    await t.app.inject({
+      method: 'PATCH',
+      url: `/api/test-cases/${allureCase.id}`,
+      payload: { jiraKey: 'TC-3' },
+    });
+    const t2 = (await post('/api/test-cases', {
+      key: 'TC-2',
+      title: 'old title',
+      suite: 'Keep me',
+      owner: 'Zed',
+    })) as TestCase;
+    const t4 = (await post('/api/test-cases', {
+      key: 'sheet-4',
+      jiraKey: 'TC-4',
+      title: 'Logout',
+      automationStatus: 'automated',
+    })) as TestCase;
     const b1 = (await post('/api/bugs', { title: 'from note', jiraKey: 'BUG-1' })) as Bug;
     await post('/api/bugs', { title: 'b2', jiraKey: 'BUG-2', testCaseIds: [t2.id] });
     await post('/api/bugs', { title: 'b3', jiraKey: 'BUG-3' });
@@ -250,11 +399,20 @@ describe('Jira sync', () => {
     expect(s.lastStats!.created).toBe(4);
 
     // pagination: 6 tests / pageSize 4 → 2 pages via nextPageToken
-    const testSearches = mock.requests.filter((r) => r.path === '/rest/api/3/search/jql' && !(r.body as { jql: string }).jql.startsWith('key in'));
-    expect(testSearches.map((r) => (r.body as { nextPageToken?: string }).nextPageToken)).toEqual([undefined, 'tok-4']);
+    const testSearches = mock.requests.filter(
+      (r) =>
+        r.path === '/rest/api/3/search/jql' &&
+        !(r.body as { jql: string }).jql.startsWith('key in'),
+    );
+    expect(testSearches.map((r) => (r.body as { nextPageToken?: string }).nextPageToken)).toEqual([
+      undefined,
+      'tok-4',
+    ]);
     // Xray: authenticated once, 2 GraphQL pages
     expect(mock.requests.filter((r) => r.path === '/xray/authenticate')).toHaveLength(1);
-    expect(mock.requests.filter((r) => r.path === '/xray/graphql').length).toBeGreaterThanOrEqual(2);
+    expect(mock.requests.filter((r) => r.path === '/xray/graphql').length).toBeGreaterThanOrEqual(
+      2,
+    );
     // bug batch failed (BUG-99 missing) → per-issue fallback
     expect(mock.requests.some((r) => r.path === '/rest/api/3/issue/BUG-99')).toBe(true);
 
@@ -272,11 +430,26 @@ describe('Jira sync', () => {
       source: 'jira',
     });
     // matched by key, Xray Generic → automated; suite/owner kept (Jira has none)
-    expect(byJira('TC-2')).toMatchObject({ id: t2.id, title: 'Refund', automationStatus: 'automated', suite: 'Keep me', owner: 'Zed', priority: 'P2' });
+    expect(byJira('TC-2')).toMatchObject({
+      id: t2.id,
+      title: 'Refund',
+      automationStatus: 'automated',
+      suite: 'Keep me',
+      owner: 'Zed',
+      priority: 'P2',
+    });
     // never downgrade automated with real allure results
-    expect(byJira('TC-3')).toMatchObject({ id: allureCase.id, automationStatus: 'automated', title: 'Login (has allure results)' });
+    expect(byJira('TC-3')).toMatchObject({
+      id: allureCase.id,
+      automationStatus: 'automated',
+      title: 'Login (has allure results)',
+    });
     // automated without results (spreadsheet): field says Manual → applied
-    expect(byJira('TC-4')).toMatchObject({ id: t4.id, key: 'sheet-4', automationStatus: 'not_automated' });
+    expect(byJira('TC-4')).toMatchObject({
+      id: t4.id,
+      key: 'sheet-4',
+      automationStatus: 'not_automated',
+    });
     // Xray Manual → unchanged (new → not_automated)
     expect(byJira('TC-5').automationStatus).toBe('not_automated');
     // unrecognized field value falls through to Xray Cucumber
@@ -284,12 +457,32 @@ describe('Jira sync', () => {
 
     const bl = await bugsList();
     const bug = (k: string) => bl.find((b) => b.jiraKey === k)!;
-    expect(bug('BUG-1')).toMatchObject({ id: b1.id, status: 'wont_fix', severity: 'critical', title: "Won't fix this", source: 'jira' });
+    expect(bug('BUG-1')).toMatchObject({
+      id: b1.id,
+      status: 'wont_fix',
+      severity: 'critical',
+      title: "Won't fix this",
+      source: 'jira',
+    });
     expect(bug('BUG-1').resolvedAt).toBe('2026-10-02T08:00:00.000Z');
-    expect(bug('BUG-2')).toMatchObject({ status: 'in_progress', severity: 'minor', assignee: 'Bob', resolvedAt: null });
+    expect(bug('BUG-2')).toMatchObject({
+      status: 'in_progress',
+      severity: 'minor',
+      assignee: 'Bob',
+      resolvedAt: null,
+    });
     expect(bug('BUG-2').testCases.map((c) => c.id)).toEqual([t2.id]); // manual links kept
-    expect(bug('BUG-3')).toMatchObject({ status: 'resolved', severity: 'trivial', resolvedAt: '2026-10-01T10:00:00.000Z' });
-    expect(bug('BUG-10')).toMatchObject({ status: 'open', severity: 'trivial', title: 'Search crashes', url: `${mock.url}/browse/BUG-10` });
+    expect(bug('BUG-3')).toMatchObject({
+      status: 'resolved',
+      severity: 'trivial',
+      resolvedAt: '2026-10-01T10:00:00.000Z',
+    });
+    expect(bug('BUG-10')).toMatchObject({
+      status: 'open',
+      severity: 'trivial',
+      title: 'Search crashes',
+      url: `${mock.url}/browse/BUG-10`,
+    });
     expect(bug('BUG-10').testCases.map((c) => c.id)).toEqual([byJira('TC-5').id]);
     expect(bug('BUG-99')).toMatchObject({ status: 'open', title: 'gone' }); // untouched
     expect(bl.find((b) => b.jiraKey === 'BUG-11')).toBeUndefined(); // "Relates" link ignored
@@ -301,22 +494,38 @@ describe('Jira sync', () => {
   });
 
   it('Server/DC: PAT bearer auth and /rest/api/2/search (startAt pagination)', async () => {
-    mock = await startMockServer(jiraHandler({ server: true, pageSize: 4, expectAuth: `Bearer ${PAT}` }));
-    t = await appWith(jiraConfig(mock.url, { email: undefined, apiToken: undefined, pat: PAT, xrayClientId: undefined, xrayClientSecret: undefined }));
+    mock = await startMockServer(
+      jiraHandler({ server: true, pageSize: 4, expectAuth: `Bearer ${PAT}` }),
+    );
+    t = await appWith(
+      jiraConfig(mock.url, {
+        email: undefined,
+        apiToken: undefined,
+        pat: PAT,
+        xrayClientId: undefined,
+        xrayClientSecret: undefined,
+      }),
+    );
     const s = await sync();
     expect(s.lastError).toBeNull();
     expect(s.lastStats).toMatchObject({ fetched: 7, created: 7 }); // 6 tests + BUG-10
     expect(mock.requests.some((r) => r.path.startsWith('/rest/api/3'))).toBe(false);
     expect(mock.requests.some((r) => r.path.startsWith('/xray'))).toBe(false);
-    const starts = mock.requests.filter((r) => r.path === '/rest/api/2/search').map((r) => (r.body as { startAt: number }).startAt);
+    const starts = mock.requests
+      .filter((r) => r.path === '/rest/api/2/search')
+      .map((r) => (r.body as { startAt: number }).startAt);
     expect(starts).toEqual([0, 4, 0]);
     // without Xray, TC-2 (no field value) stays not_automated
-    expect((await cases()).find((c) => c.jiraKey === 'TC-2')!.automationStatus).toBe('not_automated');
+    expect((await cases()).find((c) => c.jiraKey === 'TC-2')!.automationStatus).toBe(
+      'not_automated',
+    );
   });
 
   it('Cloud credentials against a Server: falls back from v3 to v2 search', async () => {
     mock = await startMockServer(jiraHandler({ server: true }));
-    t = await appWith(jiraConfig(mock.url, { xrayClientId: undefined, xrayClientSecret: undefined }));
+    t = await appWith(
+      jiraConfig(mock.url, { xrayClientId: undefined, xrayClientSecret: undefined }),
+    );
     const s = await sync();
     expect(s.lastError).toBeNull();
     expect(s.lastStats!.fetched).toBe(7);
@@ -342,7 +551,9 @@ describe('Jira sync', () => {
   it('stores sanitized errors without tokens (Jira and Xray)', async () => {
     mock = await startMockServer((req) => ({
       status: 401,
-      json: { errorMessages: [`Bad auth header ${String(req.headers.authorization)} token ${API_TOKEN}`] },
+      json: {
+        errorMessages: [`Bad auth header ${String(req.headers.authorization)} token ${API_TOKEN}`],
+      },
     }));
     t = await appWith(jiraConfig(mock.url));
     let s = await sync();
@@ -364,7 +575,9 @@ describe('Jira sync', () => {
     expect(s.state).toBe('error');
     expect(s.lastError).toMatch(/Xray POST \/xray\/authenticate → HTTP 401/);
     expect(s.lastError).not.toContain(XRAY_SECRET);
-    const row = t.dbHandle.sqlite.prepare('SELECT last_error FROM integration_state WHERE name = ?').get('jira') as { last_error: string };
+    const row = t.dbHandle.sqlite
+      .prepare('SELECT last_error FROM integration_state WHERE name = ?')
+      .get('jira') as { last_error: string };
     expect(row.last_error).not.toContain(XRAY_SECRET);
   });
 

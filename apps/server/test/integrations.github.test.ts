@@ -1,11 +1,28 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { IntegrationStatus, PullRequest, TestCase } from '@ptd/shared';
 import { loadConfig } from '../src/config.js';
-import { createGithubProvider, deriveChecks, deriveReviewState, graphqlUrl, prState } from '../src/integrations/github.js';
-import { CaseIndex, linkPullRequest, moduleMatchesPath, parseTestName } from '../src/integrations/prLinks.js';
+import {
+  createGithubProvider,
+  deriveChecks,
+  deriveReviewState,
+  graphqlUrl,
+  prState,
+} from '../src/integrations/github.js';
+import {
+  CaseIndex,
+  linkPullRequest,
+  moduleMatchesPath,
+  parseTestName,
+} from '../src/integrations/prLinks.js';
 import { createTestApp, type TestApp } from './helpers/app.js';
 import { daysAgo, importResults } from './helpers/allure.js';
-import { notFoundReply, startMockServer, type MockReply, type MockRequest, type MockServer } from './helpers/mockServer.js';
+import {
+  notFoundReply,
+  startMockServer,
+  type MockReply,
+  type MockRequest,
+  type MockServer,
+} from './helpers/mockServer.js';
 
 const TOKEN = 'github_pat_11ABCDEFG0123456789_secretsecretsecretsecret';
 const iso = (daysBack: number) => new Date(Date.now() - daysBack * 86_400_000).toISOString();
@@ -56,14 +73,21 @@ const gqlNode = (o: {
 });
 
 /** Simulates GitHub Enterprise REST (/api/v3) + GraphQL (/api/graphql) for one repo. */
-function githubHandler(repo: string, prs: FakePr[], opts: { openPageSize?: number; maliciousNext?: boolean; gate?: Promise<void> } = {}) {
+function githubHandler(
+  repo: string,
+  prs: FakePr[],
+  opts: { openPageSize?: number; maliciousNext?: boolean; gate?: Promise<void> } = {},
+) {
   const base = `/api/v3/repos/${repo}`;
   return async (req: MockRequest): Promise<MockReply> => {
     if (opts.gate) await opts.gate;
-    if (req.headers.authorization !== `Bearer ${TOKEN}`) return { status: 401, json: { message: 'Bad credentials' } };
+    if (req.headers.authorization !== `Bearer ${TOKEN}`)
+      return { status: 401, json: { message: 'Bad credentials' } };
     if (req.method === 'GET' && req.path === `${base}/pulls`) {
       const state = req.query.get('state');
-      const list = prs.filter((p) => (state === 'open' ? (p.state ?? 'open') === 'open' : p.state === 'closed'));
+      const list = prs.filter((p) =>
+        state === 'open' ? (p.state ?? 'open') === 'open' : p.state === 'closed',
+      );
       const size = opts.openPageSize ?? 100;
       const page = Number(req.query.get('page') ?? '1');
       const slice = list.slice((page - 1) * size, page * size);
@@ -97,7 +121,9 @@ describe('GitHub derivations', () => {
   it('derives review state (all branches)', () => {
     expect(deriveReviewState('APPROVED', [], [])).toBe('approved');
     expect(deriveReviewState('CHANGES_REQUESTED', [], [])).toBe('changes_requested');
-    expect(deriveReviewState('REVIEW_REQUIRED', [{ author: 'a', state: 'APPROVED' }], [])).toBe('review_required');
+    expect(deriveReviewState('REVIEW_REQUIRED', [{ author: 'a', state: 'APPROVED' }], [])).toBe(
+      'review_required',
+    );
     // null decision: latest review per reviewer
     expect(
       deriveReviewState(
@@ -130,7 +156,9 @@ describe('GitHub derivations', () => {
         ['c'],
       ),
     ).toBe('review_required');
-    expect(deriveReviewState(null, [{ author: 'a', state: 'COMMENTED' }], ['x'])).toBe('review_required');
+    expect(deriveReviewState(null, [{ author: 'a', state: 'COMMENTED' }], ['x'])).toBe(
+      'review_required',
+    );
     expect(deriveReviewState(undefined, [], [])).toBe('none');
   });
 
@@ -143,7 +171,9 @@ describe('GitHub derivations', () => {
     expect(deriveChecks(null)).toBe('none');
     expect(prState({ state: 'open', draft: true, merged_at: null })).toBe('draft');
     expect(prState({ state: 'open', draft: false, merged_at: null })).toBe('open');
-    expect(prState({ state: 'closed', draft: false, merged_at: '2026-01-01T00:00:00Z' })).toBe('merged');
+    expect(prState({ state: 'closed', draft: false, merged_at: '2026-01-01T00:00:00Z' })).toBe(
+      'merged',
+    );
     expect(prState({ state: 'closed', draft: false, merged_at: null })).toBe('closed');
   });
 
@@ -153,16 +183,23 @@ describe('GitHub derivations', () => {
   });
 
   it('parses test names and matches module paths', () => {
-    expect(parseTestName('tests.api.test_users.TestX#test_ok')).toEqual({ test: 'test_ok', moduleSegs: ['tests', 'api', 'test_users', 'TestX'] });
+    expect(parseTestName('tests.api.test_users.TestX#test_ok')).toEqual({
+      test: 'test_ok',
+      moduleSegs: ['tests', 'api', 'test_users', 'TestX'],
+    });
     expect(parseTestName('tests/api/test_users.py::TestX::test_ok[a-b]')).toEqual({
       test: 'test_ok',
       moduleSegs: ['tests', 'api', 'test_users', 'TestX'],
     });
     expect(parseTestName('test_users.test_ok')).toEqual({ test: 'test_ok', moduleSegs: null });
     expect(parseTestName('PAY-1')).toBeNull();
-    expect(moduleMatchesPath(['tests', 'api', 'test_users', 'TestX'], 'tests/api/test_users.py')).toBe(true);
+    expect(
+      moduleMatchesPath(['tests', 'api', 'test_users', 'TestX'], 'tests/api/test_users.py'),
+    ).toBe(true);
     expect(moduleMatchesPath(['api', 'test_users'], 'project/tests/api/test_users.py')).toBe(true);
-    expect(moduleMatchesPath(['tests', 'web', 'test_users'], 'tests/api/test_users.py')).toBe(false);
+    expect(moduleMatchesPath(['tests', 'web', 'test_users'], 'tests/api/test_users.py')).toBe(
+      false,
+    );
   });
 
   it('links by each rule kind', () => {
@@ -172,8 +209,20 @@ describe('GitHub derivations', () => {
       { id: 3, key: 'k3', jiraKey: 'PAY-3', allureId: null, allureFullName: null },
       { id: 4, key: 'k4', jiraKey: null, allureId: '777', allureFullName: null },
       { id: 5, key: 'k5', jiraKey: 'PAY-5', allureId: null, allureFullName: null },
-      { id: 6, key: 'tests.api.test_users#test_login', jiraKey: null, allureId: null, allureFullName: 'tests.api.test_users#test_login' },
-      { id: 7, key: 'tests.web.test_users#test_login', jiraKey: null, allureId: null, allureFullName: null },
+      {
+        id: 6,
+        key: 'tests.api.test_users#test_login',
+        jiraKey: null,
+        allureId: null,
+        allureFullName: 'tests.api.test_users#test_login',
+      },
+      {
+        id: 7,
+        key: 'tests.web.test_users#test_login',
+        jiraKey: null,
+        allureId: null,
+        allureFullName: null,
+      },
       { id: 8, key: 'k8', jiraKey: null, allureId: '888', allureFullName: null },
       { id: 9, key: 'k9', jiraKey: 'PAY-9', allureId: null, allureFullName: null },
     ]);
@@ -228,45 +277,84 @@ describe('GitHub sync', () => {
   });
 
   const createCase = async (body: Record<string, unknown>) => {
-    const res = await t!.app.inject({ method: 'POST', url: '/api/test-cases', payload: { title: 'x', ...body } });
+    const res = await t!.app.inject({
+      method: 'POST',
+      url: '/api/test-cases',
+      payload: { title: 'x', ...body },
+    });
     expect(res.statusCode, res.body).toBe(201);
     return res.json<TestCase>();
   };
 
   const scenario = (): FakePr[] => [
-    { number: 1, title: 'PAY-1 automate payments', branch: 'b1', gql: gqlNode({ decision: 'APPROVED', rollup: 'SUCCESS' }) },
+    {
+      number: 1,
+      title: 'PAY-1 automate payments',
+      branch: 'b1',
+      gql: gqlNode({ decision: 'APPROVED', rollup: 'SUCCESS' }),
+    },
     {
       number: 2,
       title: 'More tests',
       body: 'Implements PAY-2',
       branch: 'b2',
-      gql: gqlNode({ reviews: [['a', 'CHANGES_REQUESTED'], ['a', 'APPROVED']], rollup: 'FAILURE' }),
+      gql: gqlNode({
+        reviews: [
+          ['a', 'CHANGES_REQUESTED'],
+          ['a', 'APPROVED'],
+        ],
+        rollup: 'FAILURE',
+      }),
     },
     {
       number: 3,
       title: 'Login tests',
       branch: 'feature/pay-3-login',
-      gql: gqlNode({ reviews: [['a', 'APPROVED'], ['b', 'CHANGES_REQUESTED'], ['b', 'COMMENTED']], rollup: 'SUCCESS' }),
+      gql: gqlNode({
+        reviews: [
+          ['a', 'APPROVED'],
+          ['b', 'CHANGES_REQUESTED'],
+          ['b', 'COMMENTED'],
+        ],
+        rollup: 'SUCCESS',
+      }),
     },
     {
       number: 4,
       title: 'Orders',
       branch: 'b4',
       files: [
-        { filename: 'tests/api/test_orders.py', patch: '@@ -1 +1,2 @@\n+@allure.id("777")\n-@allure.id("888")\n def test_x(): pass' },
+        {
+          filename: 'tests/api/test_orders.py',
+          patch: '@@ -1 +1,2 @@\n+@allure.id("777")\n-@allure.id("888")\n def test_x(): pass',
+        },
         { filename: 'src/app.py', patch: '+@allure.id("999")' },
       ],
-      gql: gqlNode({ requested: [{ login: 'alice' }, { name: 'qa-team' }], threads: [false, true, false], rollup: 'PENDING' }),
+      gql: gqlNode({
+        requested: [{ login: 'alice' }, { name: 'qa-team' }],
+        threads: [false, true, false],
+        rollup: 'PENDING',
+      }),
     },
     {
       number: 5,
       title: 'Users',
       branch: 'b5',
       draft: true,
-      files: [{ filename: 'tests/api/test_users.py', patch: '+def test_login(client):\n+    assert True' }],
+      files: [
+        {
+          filename: 'tests/api/test_users.py',
+          patch: '+def test_login(client):\n+    assert True',
+        },
+      ],
       gql: gqlNode({ isDraft: true }),
     },
-    { number: 7, title: 'Nope', branch: 'b7', gql: gqlNode({ decision: 'CHANGES_REQUESTED', rollup: 'SUCCESS' }) },
+    {
+      number: 7,
+      title: 'Nope',
+      branch: 'b7',
+      gql: gqlNode({ decision: 'CHANGES_REQUESTED', rollup: 'SUCCESS' }),
+    },
     {
       number: 6,
       title: 'PAY-1 merged follow-up',
@@ -276,7 +364,14 @@ describe('GitHub sync', () => {
       updated_at: iso(3),
       gql: gqlNode({ decision: 'REVIEW_REQUIRED', rollup: 'ERROR' }),
     },
-    { number: 8, title: 'old', branch: 'b8', state: 'closed', merged_at: iso(30), updated_at: iso(30) },
+    {
+      number: 8,
+      title: 'old',
+      branch: 'b8',
+      state: 'closed',
+      merged_at: iso(30),
+      updated_at: iso(30),
+    },
   ];
 
   it('syncs PRs end-to-end via the route: pagination, links, review state, needsAttention', async () => {
@@ -289,32 +384,59 @@ describe('GitHub sync', () => {
     const c2 = await createCase({ key: 'tests.api.test_pay#test_refund', jiraKey: 'PAY-2' });
     const c3 = await createCase({ key: 'login-case', jiraKey: 'PAY-3' });
     const c4 = await createCase({ key: 'tests.api.test_orders#test_create', allureId: '777' });
-    const c5 = await createCase({ key: 'tests.api.test_users#test_login', allureFullName: 'tests.api.test_users#test_login' });
+    const c5 = await createCase({
+      key: 'tests.api.test_users#test_login',
+      allureFullName: 'tests.api.test_users#test_login',
+    });
     const c6 = await createCase({ key: 'tests.web.test_users#test_login' });
     const c8 = await createCase({ key: 'eight', allureId: '888' });
 
     const first = await t.app.inject({ method: 'POST', url: '/api/integrations/github/sync' });
     expect(first.statusCode).toBe(202);
-    expect(first.json<IntegrationStatus>()).toMatchObject({ name: 'github', state: 'running', configured: true });
-    expect((await t.app.inject({ method: 'POST', url: '/api/integrations/github/sync' })).statusCode).toBe(409);
+    expect(first.json<IntegrationStatus>()).toMatchObject({
+      name: 'github',
+      state: 'running',
+      configured: true,
+    });
+    expect(
+      (await t.app.inject({ method: 'POST', url: '/api/integrations/github/sync' })).statusCode,
+    ).toBe(409);
     open();
     await t.runner.waitForIdle();
 
-    const status = (await t.app.inject({ url: '/api/integrations' })).json<IntegrationStatus[]>().find((s) => s.name === 'github')!;
+    const status = (await t.app.inject({ url: '/api/integrations' }))
+      .json<IntegrationStatus[]>()
+      .find((s) => s.name === 'github')!;
     expect(status.lastError).toBeNull();
-    expect(status).toMatchObject({ state: 'idle', lastStats: { fetched: 7, created: 7, updated: 0, linked: 6 } });
+    expect(status).toMatchObject({
+      state: 'idle',
+      lastStats: { fetched: 7, created: 7, updated: 0, linked: 6 },
+    });
     expect(status.target).toContain('acme/api (127.0.0.1');
 
     // pagination: open list fetched over 3 pages
-    const openPages = mock.requests.filter((r) => r.path === '/api/v3/repos/acme/api/pulls' && r.query.get('state') === 'open');
+    const openPages = mock.requests.filter(
+      (r) => r.path === '/api/v3/repos/acme/api/pulls' && r.query.get('state') === 'open',
+    );
     expect(openPages.map((r) => r.query.get('page'))).toEqual([null, '2', '3']);
     expect(mock.requests.filter((r) => r.path === '/api/graphql')).toHaveLength(1);
 
-    const prs = (await t.app.inject({ url: '/api/pull-requests?linkedOnly=false' })).json<PullRequest[]>();
+    const prs = (await t.app.inject({ url: '/api/pull-requests?linkedOnly=false' })).json<
+      PullRequest[]
+    >();
     const pr = (n: number) => prs.find((p) => p.number === n)!;
     expect(prs.map((p) => p.number).sort()).toEqual([1, 2, 3, 4, 5, 6, 7]); // #8 is outside the 14-day window
-    expect(pr(1)).toMatchObject({ state: 'open', reviewState: 'approved', checks: 'passing', needsAttention: false });
-    expect(pr(2)).toMatchObject({ reviewState: 'approved', checks: 'failing', needsAttention: true });
+    expect(pr(1)).toMatchObject({
+      state: 'open',
+      reviewState: 'approved',
+      checks: 'passing',
+      needsAttention: false,
+    });
+    expect(pr(2)).toMatchObject({
+      reviewState: 'approved',
+      checks: 'failing',
+      needsAttention: true,
+    });
     expect(pr(3)).toMatchObject({ reviewState: 'changes_requested', needsAttention: true });
     expect(pr(4)).toMatchObject({
       reviewState: 'review_required',
@@ -323,13 +445,26 @@ describe('GitHub sync', () => {
       requestedReviewers: ['alice', 'qa-team'],
       needsAttention: true,
     });
-    expect(pr(5)).toMatchObject({ state: 'draft', reviewState: 'none', checks: 'none', needsAttention: false });
-    expect(pr(6)).toMatchObject({ state: 'merged', reviewState: 'review_required', checks: 'failing', needsAttention: false });
+    expect(pr(5)).toMatchObject({
+      state: 'draft',
+      reviewState: 'none',
+      checks: 'none',
+      needsAttention: false,
+    });
+    expect(pr(6)).toMatchObject({
+      state: 'merged',
+      reviewState: 'review_required',
+      checks: 'failing',
+      needsAttention: false,
+    });
     expect(pr(7)).toMatchObject({ reviewState: 'changes_requested', needsAttention: true });
     // needsAttention first
     expect(prs.slice(0, 4).every((p) => p.needsAttention)).toBe(true);
 
-    const linkedIds = (n: number) => pr(n).testCases.map((c) => c.id).sort();
+    const linkedIds = (n: number) =>
+      pr(n)
+        .testCases.map((c) => c.id)
+        .sort();
     expect(linkedIds(1)).toEqual([c1.id]);
     expect(linkedIds(2)).toEqual([c2.id]);
     expect(linkedIds(3)).toEqual([c3.id]);
@@ -340,14 +475,18 @@ describe('GitHub sync', () => {
     void c6;
     void c8;
 
-    const detail = (await t.app.inject({ url: `/api/test-cases/${c3.id}` })).json<{ pullRequests: Array<{ linkedBy: string }> }>();
+    const detail = (await t.app.inject({ url: `/api/test-cases/${c3.id}` })).json<{
+      pullRequests: Array<{ linkedBy: string }>;
+    }>();
     expect(detail.pullRequests[0]!.linkedBy).toBe('key_in_branch');
 
     // second sync: updates, replaces links atomically
     const resync = await t.app.inject({ method: 'POST', url: '/api/integrations/github/sync' });
     expect(resync.statusCode).toBe(202);
     await t.runner.waitForIdle();
-    const s2 = (await t.app.inject({ url: '/api/integrations' })).json<IntegrationStatus[]>().find((s) => s.name === 'github')!;
+    const s2 = (await t.app.inject({ url: '/api/integrations' }))
+      .json<IntegrationStatus[]>()
+      .find((s) => s.name === 'github')!;
     expect(s2.lastStats).toEqual({ fetched: 7, created: 0, updated: 7, linked: 6 });
   });
 
@@ -361,24 +500,33 @@ describe('GitHub sync', () => {
     // PR 1 gets closed long ago (not in the 14-day window any more)
     prs[0] = { ...prs[0]!, state: 'closed', updated_at: iso(40) };
     mock.setHandler(async (req) => {
-      if (req.path === '/api/v3/repos/acme/api/pulls/1') return { json: restPr('acme/api', prs[0]!) };
+      if (req.path === '/api/v3/repos/acme/api/pulls/1')
+        return { json: restPr('acme/api', prs[0]!) };
       return githubHandler('acme/api', prs)(req);
     });
     await t.app.inject({ method: 'POST', url: '/api/integrations/github/sync' });
     await t.runner.waitForIdle();
-    const list = (await t.app.inject({ url: '/api/pull-requests?linkedOnly=false' })).json<PullRequest[]>();
+    const list = (await t.app.inject({ url: '/api/pull-requests?linkedOnly=false' })).json<
+      PullRequest[]
+    >();
     expect(list).toHaveLength(1);
     expect(list[0]).toMatchObject({ number: 1, state: 'closed', needsAttention: false });
   });
 
   it('rejects a malicious next link to another host; error stored without token', async () => {
-    mock = await startMockServer(githubHandler('acme/api', scenario(), { openPageSize: 2, maliciousNext: true }));
+    mock = await startMockServer(
+      githubHandler('acme/api', scenario(), { openPageSize: 2, maliciousNext: true }),
+    );
     t = await createTestApp(env(mock.url));
     await t.app.inject({ method: 'POST', url: '/api/integrations/github/sync' });
     await t.runner.waitForIdle();
-    const s = (await t.app.inject({ url: '/api/integrations' })).json<IntegrationStatus[]>().find((x) => x.name === 'github')!;
+    const s = (await t.app.inject({ url: '/api/integrations' }))
+      .json<IntegrationStatus[]>()
+      .find((x) => x.name === 'github')!;
     expect(s.state).toBe('error');
-    expect(s.lastError).toMatch(/acme\/api: GitHub: refused request to a host other than the configured base URL/);
+    expect(s.lastError).toMatch(
+      /acme\/api: GitHub: refused request to a host other than the configured base URL/,
+    );
     expect(mock.requests.every((r) => r.headers.host?.startsWith('127.0.0.1'))).toBe(true);
   });
 
@@ -387,14 +535,23 @@ describe('GitHub sync', () => {
     let calls = 0;
     mock = await startMockServer(async (req) => {
       calls++;
-      if (calls === 1) return { status: 429, headers: { 'retry-after': '1' }, json: { message: 'secondary rate limit' } };
+      if (calls === 1)
+        return {
+          status: 429,
+          headers: { 'retry-after': '1' },
+          json: { message: 'secondary rate limit' },
+        };
       if (calls === 2) return { status: 500, text: 'boom' };
       return handler(req);
     });
     const sleeps: number[] = [];
     const config = loadConfig({ NODE_ENV: 'test', ...env(mock.url) });
     t = await createTestApp(env(mock.url), {
-      providers: [createGithubProvider(config.github, { http: { sleep: async (ms) => void sleeps.push(ms), backoffBaseMs: 5 } })],
+      providers: [
+        createGithubProvider(config.github, {
+          http: { sleep: async (ms) => void sleeps.push(ms), backoffBaseMs: 5 },
+        }),
+      ],
     });
     await t.app.inject({ method: 'POST', url: '/api/integrations/github/sync' });
     await t.runner.waitForIdle();
@@ -408,7 +565,10 @@ describe('GitHub sync', () => {
   it('stores sanitized errors (bad credentials) without the token', async () => {
     mock = await startMockServer((req) => ({
       status: 401,
-      json: { message: `Bad credentials: ${String(req.headers.authorization)}`, documentation_url: 'https://docs.github.com' },
+      json: {
+        message: `Bad credentials: ${String(req.headers.authorization)}`,
+        documentation_url: 'https://docs.github.com',
+      },
     }));
     t = await createTestApp(env(mock.url));
     await t.app.inject({ method: 'POST', url: '/api/integrations/github/sync' });
@@ -418,7 +578,9 @@ describe('GitHub sync', () => {
     expect(s.lastError).toContain('HTTP 401');
     expect(s.lastError).not.toContain(TOKEN);
     expect(s.lastError).not.toContain('secretsecret');
-    const row = t.dbHandle.sqlite.prepare('SELECT last_error FROM integration_state WHERE name = ?').get('github') as { last_error: string };
+    const row = t.dbHandle.sqlite
+      .prepare('SELECT last_error FROM integration_state WHERE name = ?')
+      .get('github') as { last_error: string };
     expect(row.last_error).not.toContain(TOKEN);
   });
 

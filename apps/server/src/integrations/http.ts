@@ -115,7 +115,8 @@ export function assertSafeBaseUrl(raw: string, label: string): URL {
   if (u.protocol !== 'https:' && !(u.protocol === 'http:' && isLoopback(u.hostname))) {
     throw new HttpError(`${label}: base URL must use https`, null);
   }
-  if (u.username || u.password) throw new HttpError(`${label}: base URL must not contain credentials`, null);
+  if (u.username || u.password)
+    throw new HttpError(`${label}: base URL must not contain credentials`, null);
   u.search = '';
   u.hash = '';
   return u;
@@ -162,24 +163,35 @@ export class HttpClient {
         throw new HttpError(`${this.opts.label}: refused malformed URL`, null);
       }
       if (url.origin !== this.base.origin) {
-        throw new HttpError(`${this.opts.label}: refused request to a host other than the configured base URL`, null);
+        throw new HttpError(
+          `${this.opts.label}: refused request to a host other than the configured base URL`,
+          null,
+        );
       }
     } else {
       const p = pathOrUrl.startsWith('/') ? pathOrUrl : `/${pathOrUrl}`;
       url = new URL(`${this.basePath}${p}`, this.base.origin);
     }
-    if (url.username || url.password) throw new HttpError(`${this.opts.label}: refused URL with credentials`, null);
+    if (url.username || url.password)
+      throw new HttpError(`${this.opts.label}: refused URL with credentials`, null);
     if (query) {
-      for (const [k, v] of Object.entries(query)) if (v !== undefined) url.searchParams.set(k, String(v));
+      for (const [k, v] of Object.entries(query))
+        if (v !== undefined) url.searchParams.set(k, String(v));
     }
     return url;
   }
 
-  async get<T>(pathOrUrl: string, opts: Omit<RequestOptions<T>, 'method' | 'body'>): Promise<HttpResponse<T>> {
+  async get<T>(
+    pathOrUrl: string,
+    opts: Omit<RequestOptions<T>, 'method' | 'body'>,
+  ): Promise<HttpResponse<T>> {
     return this.request(pathOrUrl, { ...opts, method: 'GET' });
   }
 
-  async post<T>(pathOrUrl: string, opts: Omit<RequestOptions<T>, 'method'>): Promise<HttpResponse<T>> {
+  async post<T>(
+    pathOrUrl: string,
+    opts: Omit<RequestOptions<T>, 'method'>,
+  ): Promise<HttpResponse<T>> {
     return this.request(pathOrUrl, { ...opts, method: 'POST' });
   }
 
@@ -231,7 +243,9 @@ export class HttpClient {
     let url = initialUrl;
     for (let hop = 0; ; hop++) {
       const timeoutSignal = AbortSignal.timeout(this.timeoutMs);
-      const signal = this.opts.signal ? AbortSignal.any([this.opts.signal, timeoutSignal]) : timeoutSignal;
+      const signal = this.opts.signal
+        ? AbortSignal.any([this.opts.signal, timeoutSignal])
+        : timeoutSignal;
       const headers: Record<string, string> = {
         accept: 'application/json',
         'user-agent': 'pytestdashboard-integrations',
@@ -250,10 +264,19 @@ export class HttpClient {
       } catch (err) {
         if (this.opts.signal?.aborted) throw abortReason(this.opts.signal);
         if (timeoutSignal.aborted) {
-          throw new RetryableError(new HttpError(`${what} timed out after ${Math.round(this.timeoutMs / 1000)}s`, null), null);
+          throw new RetryableError(
+            new HttpError(`${what} timed out after ${Math.round(this.timeoutMs / 1000)}s`, null),
+            null,
+          );
         }
         const cause = err instanceof Error && err.cause instanceof Error ? err.cause.message : '';
-        throw new RetryableError(new HttpError(this.clean(`${what} failed: network error${cause ? ` (${cause})` : ''}`), null), null);
+        throw new RetryableError(
+          new HttpError(
+            this.clean(`${what} failed: network error${cause ? ` (${cause})` : ''}`),
+            null,
+          ),
+          null,
+        );
       }
 
       if (res.status >= 300 && res.status < 400 && res.headers.get('location')) {
@@ -261,7 +284,10 @@ export class HttpClient {
         if (hop >= MAX_REDIRECTS) throw new HttpError(`${what}: too many redirects`, res.status);
         const next = new URL(res.headers.get('location')!, url);
         if (next.origin !== this.base.origin) {
-          throw new HttpError(`${what}: refused redirect to a host other than the configured base URL`, res.status);
+          throw new HttpError(
+            `${what}: refused redirect to a host other than the configured base URL`,
+            res.status,
+          );
         }
         url = next;
         continue;
@@ -274,16 +300,27 @@ export class HttpClient {
         if (err instanceof HttpError) throw err;
         if (this.opts.signal?.aborted) throw abortReason(this.opts.signal);
         if (timeoutSignal.aborted) {
-          throw new RetryableError(new HttpError(`${what} timed out after ${Math.round(this.timeoutMs / 1000)}s`, null), null);
+          throw new RetryableError(
+            new HttpError(`${what} timed out after ${Math.round(this.timeoutMs / 1000)}s`, null),
+            null,
+          );
         }
-        throw new RetryableError(new HttpError(`${what} failed while reading the response`, res.status), null);
+        throw new RetryableError(
+          new HttpError(`${what} failed while reading the response`, res.status),
+          null,
+        );
       }
 
       if (!res.ok) {
-        const err = new HttpError(this.clean(`${what} → HTTP ${res.status}${errorExcerpt(text)}`), res.status);
+        const err = new HttpError(
+          this.clean(`${what} → HTTP ${res.status}${errorExcerpt(text)}`),
+          res.status,
+        );
         const wait = rateLimitWaitMs(res);
         const rateLimited =
-          res.status === 429 || (res.status === 403 && (res.headers.get('x-ratelimit-remaining') === '0' || res.headers.has('retry-after')));
+          res.status === 429 ||
+          (res.status === 403 &&
+            (res.headers.get('x-ratelimit-remaining') === '0' || res.headers.has('retry-after')));
         if (rateLimited || res.status >= 500) throw new RetryableError(err, wait);
         throw err;
       }
@@ -338,9 +375,13 @@ function errorExcerpt(text: string): string {
   try {
     const j = JSON.parse(text) as Record<string, unknown>;
     if (typeof j.message === 'string') msg = j.message;
-    else if (Array.isArray(j.errorMessages) && typeof j.errorMessages[0] === 'string') msg = j.errorMessages[0];
+    else if (Array.isArray(j.errorMessages) && typeof j.errorMessages[0] === 'string')
+      msg = j.errorMessages[0];
     else if (typeof j.error === 'string') msg = j.error;
-    else if (Array.isArray(j.errors) && typeof (j.errors[0] as { message?: unknown })?.message === 'string') {
+    else if (
+      Array.isArray(j.errors) &&
+      typeof (j.errors[0] as { message?: unknown })?.message === 'string'
+    ) {
       msg = (j.errors[0] as { message: string }).message;
     }
   } catch {

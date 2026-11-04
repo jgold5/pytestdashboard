@@ -44,12 +44,19 @@ export async function startMockServer(handler: MockHandler): Promise<MockServer>
         } catch {
           // keep text
         }
-        const mreq: MockRequest = { method: req.method ?? 'GET', path: url.pathname, query: url.searchParams, headers: req.headers, body };
+        const mreq: MockRequest = {
+          method: req.method ?? 'GET',
+          path: url.pathname,
+          query: url.searchParams,
+          headers: req.headers,
+          body,
+        };
         requests.push(mreq);
         try {
           const reply = await current(mreq);
           if (reply.raw) return reply.raw(res);
-          const payload = reply.json !== undefined ? JSON.stringify(reply.json) : (reply.text ?? '');
+          const payload =
+            reply.json !== undefined ? JSON.stringify(reply.json) : (reply.text ?? '');
           res.writeHead(reply.status ?? 200, {
             'content-type': reply.json !== undefined ? 'application/json' : 'text/plain',
             ...reply.headers,

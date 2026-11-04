@@ -14,8 +14,18 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import type { GithubConfig } from '../config.js';
 import type { Db } from '../db/client.js';
-import { pullRequests, testCases, type ChecksState, type PrState, type ReviewState } from '../db/schema.js';
-import { replaceRepoPullRequests, type PullRequestLink, type PullRequestUpsert } from '../domain/pullRequests.js';
+import {
+  pullRequests,
+  testCases,
+  type ChecksState,
+  type PrState,
+  type ReviewState,
+} from '../db/schema.js';
+import {
+  replaceRepoPullRequests,
+  type PullRequestLink,
+  type PullRequestUpsert,
+} from '../domain/pullRequests.js';
 import { createGlobMatcher } from './glob.js';
 import { HttpClient, HttpError, nextLink, type HttpClientOptions } from './http.js';
 import { CaseIndex, linkPullRequest, type PrFile } from './prLinks.js';
@@ -57,7 +67,9 @@ const RestPr = z.object({
   user: Login,
   head: z.object({ ref: z.string() }).nullish(),
   requested_reviewers: z.array(z.object({ login: z.string() }).nullish()).nullish(),
-  requested_teams: z.array(z.object({ name: z.string().nullish(), slug: z.string().nullish() }).nullish()).nullish(),
+  requested_teams: z
+    .array(z.object({ name: z.string().nullish(), slug: z.string().nullish() }).nullish())
+    .nullish(),
 });
 type RestPr = z.infer<typeof RestPr>;
 
@@ -75,7 +87,11 @@ const GqlPr = z
             z
               .object({
                 requestedReviewer: z
-                  .object({ login: z.string().nullish(), name: z.string().nullish(), slug: z.string().nullish() })
+                  .object({
+                    login: z.string().nullish(),
+                    name: z.string().nullish(),
+                    slug: z.string().nullish(),
+                  })
                   .nullish(),
               })
               .nullish(),
@@ -83,12 +99,26 @@ const GqlPr = z
           .nullish(),
       })
       .nullish(),
-    reviews: z.object({ nodes: z.array(z.object({ author: Login, state: z.string() }).nullish()).nullish() }).nullish(),
-    reviewThreads: z.object({ nodes: z.array(z.object({ isResolved: z.boolean() }).nullish()).nullish() }).nullish(),
+    reviews: z
+      .object({
+        nodes: z.array(z.object({ author: Login, state: z.string() }).nullish()).nullish(),
+      })
+      .nullish(),
+    reviewThreads: z
+      .object({ nodes: z.array(z.object({ isResolved: z.boolean() }).nullish()).nullish() })
+      .nullish(),
     commits: z
       .object({
         nodes: z
-          .array(z.object({ commit: z.object({ statusCheckRollup: z.object({ state: z.string() }).nullish() }).nullish() }).nullish())
+          .array(
+            z
+              .object({
+                commit: z
+                  .object({ statusCheckRollup: z.object({ state: z.string() }).nullish() })
+                  .nullish(),
+              })
+              .nullish(),
+          )
           .nullish(),
       })
       .nullish(),
@@ -128,7 +158,8 @@ export function deriveReviewState(
   const latest = new Map<string, string>();
   reviews.forEach((r, i) => {
     // COMMENTED/PENDING reviews don't change a reviewer's verdict (GitHub semantics)
-    if (r.state !== 'APPROVED' && r.state !== 'CHANGES_REQUESTED' && r.state !== 'DISMISSED') return;
+    if (r.state !== 'APPROVED' && r.state !== 'CHANGES_REQUESTED' && r.state !== 'DISMISSED')
+      return;
     latest.set(r.author ?? `#ghost-${i}`, r.state);
   });
   const verdicts = [...latest.values()];
@@ -175,7 +206,11 @@ const PR_FRAGMENT = `fragment PrInfo on PullRequest {
 // Provider
 // ---------------------------------------------------------------------------
 
-async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+async function mapLimit<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
   const out = new Array<R>(items.length);
   let next = 0;
   const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
@@ -188,11 +223,19 @@ async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) 
   return out;
 }
 
-export function createGithubProvider(config: GithubConfig, opts: GithubProviderOptions = {}): IntegrationProvider {
+export function createGithubProvider(
+  config: GithubConfig,
+  opts: GithubProviderOptions = {},
+): IntegrationProvider {
   const isTestFile = createGlobMatcher(config.testPathGlobs);
   const now = opts.now ?? (() => new Date());
 
-  async function syncRepo(gh: HttpClient, db: Db, repo: string, ctx: SyncContext): Promise<SyncStats> {
+  async function syncRepo(
+    gh: HttpClient,
+    db: Db,
+    repo: string,
+    ctx: SyncContext,
+  ): Promise<SyncStats> {
     const [owner, name] = repo.split('/') as [string, string];
     const repoPath = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
     const err = (e: unknown): never => {
@@ -202,12 +245,19 @@ export function createGithubProvider(config: GithubConfig, opts: GithubProviderO
 
     // --- 1. list PRs ------------------------------------------------------
     const byNumber = new Map<number, RestPr>();
-    const listPages = async (query: Record<string, string | number>, cap: number, stop?: (pr: RestPr) => boolean) => {
+    const listPages = async (
+      query: Record<string, string | number>,
+      cap: number,
+      stop?: (pr: RestPr) => boolean,
+    ) => {
       let url: string | null = `${repoPath}/pulls`;
       let first = true;
       let count = 0;
       while (url && count < cap) {
-        const res = await gh.get(url, { query: first ? query : undefined, schema: z.array(RestPr) });
+        const res = await gh.get(url, {
+          query: first ? query : undefined,
+          schema: z.array(RestPr),
+        });
         first = false;
         for (const pr of res.data) {
           if (stop?.(pr)) return;
@@ -220,7 +270,10 @@ export function createGithubProvider(config: GithubConfig, opts: GithubProviderO
     };
     const cutoff = new Date(now().getTime() - GITHUB_LIMITS.recentDays * 86_400_000);
     try {
-      await listPages({ state: 'open', per_page: GITHUB_LIMITS.perPage, sort: 'updated', direction: 'desc' }, GITHUB_LIMITS.openPrs);
+      await listPages(
+        { state: 'open', per_page: GITHUB_LIMITS.perPage, sort: 'updated', direction: 'desc' },
+        GITHUB_LIMITS.openPrs,
+      );
       await listPages(
         { state: 'closed', per_page: GITHUB_LIMITS.perPage, sort: 'updated', direction: 'desc' },
         GITHUB_LIMITS.recentClosedPrs,
@@ -231,7 +284,8 @@ export function createGithubProvider(config: GithubConfig, opts: GithubProviderO
     }
     // keep merged-in-window and closed-in-window (so their state is updated), drop older closed
     for (const [n, pr] of byNumber) {
-      if (pr.state === 'closed' && new Date(pr.merged_at ?? pr.updated_at) < cutoff) byNumber.delete(n);
+      if (pr.state === 'closed' && new Date(pr.merged_at ?? pr.updated_at) < cutoff)
+        byNumber.delete(n);
     }
 
     // PRs we still think are open but GitHub no longer lists as open (closed while
@@ -265,11 +319,15 @@ export function createGithubProvider(config: GithubConfig, opts: GithubProviderO
       let seen = 0;
       try {
         while (url && seen < GITHUB_LIMITS.filesPerPr) {
-          const res = await gh.get(url, { query: first ? { per_page: GITHUB_LIMITS.perPage } : undefined, schema: z.array(RestFile) });
+          const res = await gh.get(url, {
+            query: first ? { per_page: GITHUB_LIMITS.perPage } : undefined,
+            schema: z.array(RestFile),
+          });
           first = false;
           for (const f of res.data) {
             if (seen++ >= GITHUB_LIMITS.filesPerPr) break;
-            if (isTestFile(f.filename)) files.push({ filename: f.filename, patch: f.patch ?? null });
+            if (isTestFile(f.filename))
+              files.push({ filename: f.filename, patch: f.patch ?? null });
           }
           url = nextLink(res.headers.get('link'));
         }
@@ -284,11 +342,16 @@ export function createGithubProvider(config: GithubConfig, opts: GithubProviderO
     const gqlEndpoint = graphqlUrl(config.apiUrl);
     for (let i = 0; i < prs.length; i += GITHUB_LIMITS.graphqlBatch) {
       const batch = prs.slice(i, i + GITHUB_LIMITS.graphqlBatch);
-      const fields = batch.map((pr) => `pr${pr.number}: pullRequest(number: ${pr.number}) { ...PrInfo }`).join('\n');
+      const fields = batch
+        .map((pr) => `pr${pr.number}: pullRequest(number: ${pr.number}) { ...PrInfo }`)
+        .join('\n');
       const query = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) {\n${fields}\n} }\n${PR_FRAGMENT}`;
       let res;
       try {
-        res = await gh.post(gqlEndpoint, { body: { query, variables: { owner, name } }, schema: GqlResponse });
+        res = await gh.post(gqlEndpoint, {
+          body: { query, variables: { owner, name } },
+          schema: GqlResponse,
+        });
       } catch (e) {
         return err(e);
       }
@@ -298,7 +361,10 @@ export function createGithubProvider(config: GithubConfig, opts: GithubProviderO
         throw new HttpError(`${repo}: GitHub GraphQL error: ${msg.slice(0, 200)}`, res.status);
       }
       if (res.data.errors?.length) {
-        ctx.log.warn({ repo, errors: res.data.errors.length }, 'GitHub GraphQL returned partial errors');
+        ctx.log.warn(
+          { repo, errors: res.data.errors.length },
+          'GitHub GraphQL returned partial errors',
+        );
       }
       for (const pr of batch) {
         const d = repoData[`pr${pr.number}`];
@@ -324,7 +390,13 @@ export function createGithubProvider(config: GithubConfig, opts: GithubProviderO
     for (const pr of prs) {
       const g = gql.get(pr.number);
       const gReviewers = (g?.reviewRequests?.nodes ?? [])
-        .map((n) => n?.requestedReviewer?.login ?? n?.requestedReviewer?.name ?? n?.requestedReviewer?.slug ?? null)
+        .map(
+          (n) =>
+            n?.requestedReviewer?.login ??
+            n?.requestedReviewer?.name ??
+            n?.requestedReviewer?.slug ??
+            null,
+        )
         .filter((x): x is string => Boolean(x));
       const restReviewers = [
         ...(pr.requested_reviewers ?? []).map((r) => r?.login),
@@ -334,9 +406,15 @@ export function createGithubProvider(config: GithubConfig, opts: GithubProviderO
       const reviews = (g?.reviews?.nodes ?? [])
         .filter((r): r is NonNullable<typeof r> => Boolean(r))
         .map((r) => ({ author: r.author?.login ?? null, state: r.state }));
-      const unresolvedThreads = (g?.reviewThreads?.nodes ?? []).filter((t) => t && !t.isResolved).length;
+      const unresolvedThreads = (g?.reviewThreads?.nodes ?? []).filter(
+        (t) => t && !t.isResolved,
+      ).length;
       const rollup = g?.commits?.nodes?.[0]?.commit?.statusCheckRollup?.state ?? null;
-      const state = prState({ state: pr.state, draft: g?.isDraft ?? pr.draft, merged_at: pr.merged_at });
+      const state = prState({
+        state: pr.state,
+        draft: g?.isDraft ?? pr.draft,
+        merged_at: pr.merged_at,
+      });
 
       upserts.push({
         number: pr.number,
@@ -354,7 +432,12 @@ export function createGithubProvider(config: GithubConfig, opts: GithubProviderO
         mergedAt: pr.merged_at ?? null,
       });
       for (const l of linkPullRequest(
-        { title: pr.title, body: pr.body ?? null, headBranch: pr.head?.ref ?? null, files: filesByPr.get(pr.number) ?? [] },
+        {
+          title: pr.title,
+          body: pr.body ?? null,
+          headBranch: pr.head?.ref ?? null,
+          files: filesByPr.get(pr.number) ?? [],
+        },
         index,
       )) {
         links.push({ prNumber: pr.number, testCaseId: l.testCaseId, linkedBy: l.linkedBy });

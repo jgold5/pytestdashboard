@@ -57,7 +57,13 @@ const LinkedIssue = z
 
 const IssueLink = z
   .object({
-    type: z.object({ name: z.string().nullish(), inward: z.string().nullish(), outward: z.string().nullish() }).nullish(),
+    type: z
+      .object({
+        name: z.string().nullish(),
+        inward: z.string().nullish(),
+        outward: z.string().nullish(),
+      })
+      .nullish(),
     inwardIssue: LinkedIssue,
     outwardIssue: LinkedIssue,
   })
@@ -70,7 +76,10 @@ const IssueFields = z.looseObject({
   priority: Named,
   assignee: z.object({ displayName: z.string().nullish() }).nullish(),
   status: z
-    .object({ name: z.string().nullish(), statusCategory: z.object({ key: z.string().nullish() }).nullish() })
+    .object({
+      name: z.string().nullish(),
+      statusCategory: z.object({ key: z.string().nullish() }).nullish(),
+    })
     .nullish(),
   resolution: Named,
   resolutiondate: z.string().nullish(),
@@ -78,7 +87,11 @@ const IssueFields = z.looseObject({
   issuelinks: z.array(IssueLink).nullish(),
 });
 
-const Issue = z.object({ id: z.string().nullish(), key: z.string(), fields: IssueFields.nullish() });
+const Issue = z.object({
+  id: z.string().nullish(),
+  key: z.string(),
+  fields: IssueFields.nullish(),
+});
 export type JiraIssue = z.infer<typeof Issue>;
 
 const SearchResponse = z.object({
@@ -103,7 +116,9 @@ const XrayTests = z.object({
               z
                 .object({
                   issueId: z.string().nullish(),
-                  testType: z.object({ name: z.string().nullish(), kind: z.string().nullish() }).nullish(),
+                  testType: z
+                    .object({ name: z.string().nullish(), kind: z.string().nullish() })
+                    .nullish(),
                   jira: z.object({ key: z.string().nullish() }).nullish(),
                 })
                 .nullish(),
@@ -121,16 +136,23 @@ const XrayTests = z.object({
 // ---------------------------------------------------------------------------
 
 const canon = (s: string | null | undefined) =>
-  (s ?? '')
-    .replace(/[‘’ʼ]/g, "'")
-    .toLowerCase()
-    .replace(/\s+/g, ' ')
-    .trim();
+  (s ?? '').replace(/[‘’ʼ]/g, "'").toLowerCase().replace(/\s+/g, ' ').trim();
 
-const WONT_FIX_RESOLUTIONS = new Set(["won't do", "won't fix", 'wont do', 'wont fix', 'duplicate', 'will not fix', 'will not do']);
+const WONT_FIX_RESOLUTIONS = new Set([
+  "won't do",
+  "won't fix",
+  'wont do',
+  'wont fix',
+  'duplicate',
+  'will not fix',
+  'will not do',
+]);
 
 /** statusCategory new → open, indeterminate → in_progress, done → resolved (or wont_fix for Won't Do/Won't Fix/Duplicate). */
-export function mapBugStatus(statusCategoryKey: string | null | undefined, resolutionName: string | null | undefined): BugStatus {
+export function mapBugStatus(
+  statusCategoryKey: string | null | undefined,
+  resolutionName: string | null | undefined,
+): BugStatus {
   switch (canon(statusCategoryKey)) {
     case 'indeterminate':
       return 'in_progress';
@@ -153,11 +175,17 @@ export function mapSeverity(priorityName: string | null | undefined): BugSeverit
 }
 
 /** Xray test type → automated? Cucumber/Generic (kinds Gherkin/Unstructured) ⇒ true; Manual/Steps ⇒ false. */
-export function isAutomatedTestType(t: { name?: string | null; kind?: string | null } | null | undefined): boolean {
+export function isAutomatedTestType(
+  t: { name?: string | null; kind?: string | null } | null | undefined,
+): boolean {
   if (!t) return false;
   const name = canon(t.name);
   const kind = canon(t.kind);
-  return name === 'cucumber' || name === 'generic' || ['cucumber', 'generic', 'gherkin', 'unstructured'].includes(kind);
+  return (
+    name === 'cucumber' ||
+    name === 'generic' ||
+    ['cucumber', 'generic', 'gherkin', 'unstructured'].includes(kind)
+  );
 }
 
 /** Custom-field value → text: string, number, {value}, {name}, [first option]. null/empty ⇒ null (no opinion). */
@@ -168,7 +196,8 @@ export function automationFieldText(v: unknown): string | null {
   if (typeof v === 'number' || typeof v === 'boolean') return String(v);
   if (typeof v === 'object') {
     const o = v as Record<string, unknown>;
-    for (const k of ['value', 'name']) if (typeof o[k] === 'string' && (o[k] as string).trim()) return o[k] as string;
+    for (const k of ['value', 'name'])
+      if (typeof o[k] === 'string' && (o[k] as string).trim()) return o[k] as string;
   }
   return null;
 }
@@ -191,7 +220,8 @@ export function linkedDefectKeys(issue: JiraIssue): string[] {
     const typeText = [l.type?.name, l.type?.inward, l.type?.outward].filter(Boolean).join(' | ');
     if (!LINK_TYPE_RE.test(typeText)) continue;
     for (const other of [l.inwardIssue, l.outwardIssue]) {
-      if (other && BUG_TYPE_RE.test(other.fields?.issuetype?.name ?? '') && isJiraKey(other.key)) out.add(other.key);
+      if (other && BUG_TYPE_RE.test(other.fields?.issuetype?.name ?? '') && isJiraKey(other.key))
+        out.add(other.key);
     }
   }
   return [...out];
@@ -203,7 +233,10 @@ export function linkedDefectKeys(issue: JiraIssue): string[] {
 
 type ApiVersion = '3' | '2';
 
-export function createJiraProvider(config: JiraConfig, opts: JiraProviderOptions = {}): IntegrationProvider {
+export function createJiraProvider(
+  config: JiraConfig,
+  opts: JiraProviderOptions = {},
+): IntegrationProvider {
   const hasBasic = Boolean(config.email && config.apiToken);
   const hasAuth = hasBasic || Boolean(config.pat);
   const xrayEnabled = Boolean(config.xrayClientId && config.xrayClientSecret);
@@ -211,7 +244,8 @@ export function createJiraProvider(config: JiraConfig, opts: JiraProviderOptions
   return {
     name: 'jira',
     isConfigured: () => Boolean(config.baseUrl) && hasAuth,
-    describeTarget: () => (config.baseUrl ? `${config.baseUrl} — ${config.jql}${xrayEnabled ? ' (+ Xray)' : ''}` : null),
+    describeTarget: () =>
+      config.baseUrl ? `${config.baseUrl} — ${config.jql}${xrayEnabled ? ' (+ Xray)' : ''}` : null,
     intervalMinutes: () => config.intervalMinutes,
     sync: async (ctx) => {
       if (!config.baseUrl || !hasAuth) throw new Error('Jira is not configured');
@@ -252,9 +286,18 @@ async function search(
     let token: string | undefined;
     const seen = new Set<string>();
     try {
-      for (let page = 0; out.length < cap && page <= Math.ceil(cap / JIRA_LIMITS.pageSize); page++) {
+      for (
+        let page = 0;
+        out.length < cap && page <= Math.ceil(cap / JIRA_LIMITS.pageSize);
+        page++
+      ) {
         const res = await jira.post('/rest/api/3/search/jql', {
-          body: { jql, fields, maxResults: JIRA_LIMITS.pageSize, ...(token ? { nextPageToken: token } : {}) },
+          body: {
+            jql,
+            fields,
+            maxResults: JIRA_LIMITS.pageSize,
+            ...(token ? { nextPageToken: token } : {}),
+          },
           schema: SearchResponse,
         });
         const issues = res.data.issues ?? [];
@@ -283,7 +326,8 @@ async function search(
     const issues = res.data.issues ?? [];
     out.push(...issues.slice(0, cap - out.length));
     startAt += issues.length;
-    if (issues.length === 0 || (typeof res.data.total === 'number' && startAt >= res.data.total)) break;
+    if (issues.length === 0 || (typeof res.data.total === 'number' && startAt >= res.data.total))
+      break;
   }
   return out;
 }
@@ -330,7 +374,12 @@ async function fetchXrayTypes(
     start += results.length;
     // Xray may return fewer than `limit` per page: continue until `total` (or an empty page)
     if (results.length === 0) break;
-    if (typeof tests.total === 'number' ? start >= tests.total : results.length < JIRA_LIMITS.xrayPageSize) break;
+    if (
+      typeof tests.total === 'number'
+        ? start >= tests.total
+        : results.length < JIRA_LIMITS.xrayPageSize
+    )
+      break;
   }
   return types;
 }
@@ -347,16 +396,35 @@ async function runJiraSync(
   const stats: SyncStats = { fetched: 0, created: 0, updated: 0, linked: 0 };
 
   // --- 1. Test issues ------------------------------------------------------
-  const fields = ['summary', 'labels', 'components', 'priority', 'assignee', 'status', 'issuetype', 'issuelinks'];
+  const fields = [
+    'summary',
+    'labels',
+    'components',
+    'priority',
+    'assignee',
+    'status',
+    'issuetype',
+    'issuelinks',
+  ];
   if (config.automationField) fields.push(config.automationField);
-  const issues = (await search(jira, state, config.jql, fields, JIRA_LIMITS.maxIssues)).filter((i) => isJiraKey(i.key));
+  const issues = (await search(jira, state, config.jql, fields, JIRA_LIMITS.maxIssues)).filter(
+    (i) => isJiraKey(i.key),
+  );
   stats.fetched += issues.length;
 
   // --- 2. Xray test types (optional) --------------------------------------
-  const xrayTypes = config.xrayClientId && config.xrayClientSecret ? await fetchXrayTypes(config, ctx, opts) : null;
+  const xrayTypes =
+    config.xrayClientId && config.xrayClientSecret ? await fetchXrayTypes(config, ctx, opts) : null;
 
   // --- 3. Upsert test cases -------------------------------------------------
-  const caseIdByJiraKey = upsertTestCases(db, base, config.automationField, issues, xrayTypes, stats);
+  const caseIdByJiraKey = upsertTestCases(
+    db,
+    base,
+    config.automationField,
+    issues,
+    xrayTypes,
+    stats,
+  );
 
   // --- 4. Bugs ---------------------------------------------------------------
   const defectLinks: Array<{ bugKey: string; caseId: number }> = [];
@@ -381,7 +449,8 @@ async function runJiraSync(
   const keys = [...bugKeys].sort();
   for (let i = 0; i < keys.length; i += JIRA_LIMITS.bugBatch) {
     const batch = keys.slice(i, i + JIRA_LIMITS.bugBatch);
-    for (const issue of await fetchBugBatch(jira, state, batch, bugFields)) fetchedBugs.set(issue.key, issue);
+    for (const issue of await fetchBugBatch(jira, state, batch, bugFields))
+      fetchedBugs.set(issue.key, issue);
   }
   stats.fetched += fetchedBugs.size;
 
@@ -465,28 +534,41 @@ function upsertTestCases(
     const byKey = new Map<string, TestCaseRow>();
     for (let i = 0; i < keys.length; i += 500) {
       const chunk = keys.slice(i, i + 500);
-      for (const r of tx.select().from(testCases).where(inArray(testCases.jiraKey, chunk)).all()) byJira.set(r.jiraKey!, r);
-      for (const r of tx.select().from(testCases).where(inArray(testCases.key, chunk)).all()) byKey.set(r.key, r);
+      for (const r of tx.select().from(testCases).where(inArray(testCases.jiraKey, chunk)).all())
+        byJira.set(r.jiraKey!, r);
+      for (const r of tx.select().from(testCases).where(inArray(testCases.key, chunk)).all())
+        byKey.set(r.key, r);
     }
     const hasResults = (caseId: number) =>
-      Boolean(tx.select({ id: testResults.id }).from(testResults).where(and(eq(testResults.testCaseId, caseId))).limit(1).get());
+      Boolean(
+        tx
+          .select({ id: testResults.id })
+          .from(testResults)
+          .where(and(eq(testResults.testCaseId, caseId)))
+          .limit(1)
+          .get(),
+      );
 
     for (const issue of issues) {
       const f = issue.fields;
       const now = nowIso();
       const title = (f?.summary?.trim() || issue.key).slice(0, LIMITS.titleMax);
-      const suite = f?.components?.find((c) => c?.name)?.name?.slice(0, LIMITS.shortTextMax) ?? null;
-      const tags = [...new Set((f?.labels ?? []).map((l) => l.trim().slice(0, LIMITS.shortTextMax)).filter(Boolean))].slice(
-        0,
-        LIMITS.tagsMax,
-      );
+      const suite =
+        f?.components?.find((c) => c?.name)?.name?.slice(0, LIMITS.shortTextMax) ?? null;
+      const tags = [
+        ...new Set(
+          (f?.labels ?? []).map((l) => l.trim().slice(0, LIMITS.shortTextMax)).filter(Boolean),
+        ),
+      ].slice(0, LIMITS.tagsMax);
       const owner = f?.assignee?.displayName?.slice(0, LIMITS.shortTextMax) ?? null;
       const priority = normalizePriority(f?.priority?.name ?? null);
       const externalUrl = `${base}/browse/${issue.key}`;
 
       let desired: AutomationStatus | null = null;
       if (automationField) {
-        const raw = automationFieldText((f as Record<string, unknown> | null | undefined)?.[automationField]);
+        const raw = automationFieldText(
+          (f as Record<string, unknown> | null | undefined)?.[automationField],
+        );
         if (raw !== null) desired = normalizeAutomationStatus(raw); // unrecognized → null → fall through
       }
       if (desired === null && xrayTypes) {
@@ -522,7 +604,12 @@ function upsertTestCases(
 
       ids.set(issue.key, existing.id);
       // Never downgrade an `automated` case that has real (allure) results.
-      if (existing.automationStatus === 'automated' && desired !== null && desired !== 'automated' && hasResults(existing.id)) {
+      if (
+        existing.automationStatus === 'automated' &&
+        desired !== null &&
+        desired !== 'automated' &&
+        hasResults(existing.id)
+      ) {
         desired = null;
       }
       const set: Partial<typeof testCases.$inferInsert> = {};
