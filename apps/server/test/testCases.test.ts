@@ -90,7 +90,7 @@ describe('test cases API', () => {
     expect(summary.coverage).toMatchObject({ total: 5, automated: 2, inProgress: 1, notAutomated: 1, notAutomatable: 1 });
     expect(summary.coverage.automationRate).toBeCloseTo(2 / 4);
     expect(summary.coverageTrend).toHaveLength(1);
-    expect(summary.byOwner).toEqual([{ owner: 'Ann', total: 5, automated: 2 }]);
+    expect(summary.byOwner).toEqual([{ owner: 'Ann', total: 5, automated: 2, notAutomatable: 0 }]);
 
     const bulk = await t.app.inject({
       method: 'POST',

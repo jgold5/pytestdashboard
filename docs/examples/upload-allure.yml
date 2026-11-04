@@ -1,0 +1,78 @@
+# Example: run pytest in YOUR test repository and upload the allure-results to the
+# Test Automation Dashboard. Copy to .github/workflows/tests.yml in the pytest repo.
+#
+# Repository settings → Secrets and variables → Actions:
+#   secret   DASHBOARD_INGEST_TOKEN  = the dashboard's INGEST_TOKEN (upload-only; never
+#                                      use DASHBOARD_TOKEN in CI)
+#   variable DASHBOARD_URL           = https://qa.example.com   (no trailing slash)
+#
+# Security notes
+# - Untrusted values from the GitHub context (branch names, PR titles…) are passed
+#   via `env:` and referenced as "$VAR" in the script — never interpolated with
+#   ${{ }} inside `run:` (that would allow script injection via a crafted branch name).
+# - Text fields use curl --form-string, not -F: with -F a value starting with @ or <
+#   (e.g. a branch named "@/etc/passwd") would make curl read and upload a local file.
+# - Fork PRs don't get secrets; the upload step is skipped for them.
+# - Actions are pinned by commit SHA; Dependabot (github-actions) keeps them current.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '17 2 * * *' # nightly
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Install
+        run: pip install -r requirements.txt allure-pytest
+
+      - name: Run tests
+        # Keep going to the upload even when tests fail; the job still fails below.
+        id: pytest
+        continue-on-error: true
+        run: pytest tests/api --alluredir=allure-results
+
+      - name: Upload results to the dashboard
+        if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        env:
+          DASHBOARD_URL: ${{ vars.DASHBOARD_URL }}
+          DASHBOARD_INGEST_TOKEN: ${{ secrets.DASHBOARD_INGEST_TOKEN }}
+          # One run group per test set: runs are only ever compared within a group.
+          RUN_GROUP: tests/api
+          RUN_NAME: ${{ github.workflow }} #${{ github.run_number }}
+          # Untrusted (user-controlled) values: env only, quoted in the script.
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+          COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+          BUILD_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          test -d allure-results || { echo "no allure-results produced"; exit 0; }
+          (cd allure-results && zip -qr ../allure-results.zip .)
+          curl --fail-with-body -sS --retry 3 --retry-all-errors --max-time 300 \
+            -X POST "$DASHBOARD_URL/api/runs/import" \
+            -H "Authorization: Bearer $DASHBOARD_INGEST_TOKEN" \
+            --form-string "name=$RUN_NAME" \
+            --form-string "runGroup=$RUN_GROUP" \
+            --form-string "branch=$BRANCH" \
+            --form-string "commit=$COMMIT" \
+            --form-string "buildUrl=$BUILD_URL" \
+            -F "files=@allure-results.zip;type=application/zip"
+
+      - name: Fail the job if tests failed
+        if: ${{ steps.pytest.outcome == 'failure' }}
+        run: exit 1

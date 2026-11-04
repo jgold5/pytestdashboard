@@ -955,3 +955,63 @@ The `ssrf` mode is still refused. Regression test: a 1 MB hostile line, a 64 KB 
 - It enforces a hard page cap of `ceil(cap/per_page) + 1`.
 - `gh_loop.mts` now makes 2 requests in 3 s, down from 5,825.
 - A test covers empty pages with a self link, a repeating self link, and an endless next chain.
+
+### Round 2 remediation: R2-02, R2-05, R2-06
+
+**R2-02: xlsx pre-scan bypass and unbounded parser workers.**
+
+- The pre-scan (`import/spreadsheet/parse.ts`) now covers **every `*.xml` entry**, wherever it is in the archive. Entries under `xl/worksheets/` are scanned strictly; other parts tolerate over-long tags.
+- After the scan, the worksheet targets are resolved from `xl/_rels/workbook.xml.rels` exactly as read-excel-file resolves them (`/x` becomes `x`, anything else becomes `xl/<target>`). If any target was not scanned, for example a `.bin` target, the file is rejected with 400.
+- Archives with duplicate entry names are rejected with 400.
+- Row and cell references are now read the way the parser reads them:
+  - any quoting, and whitespace around `=`;
+  - XML entities decoded;
+  - `Number()` semantics, so `6e7`, `" 60000000"` and `&#54;…` are caught;
+  - column letters computed as `charCode − 64`.
+  - NaN and Infinity are rejected.
+- A process-wide semaphore allows at most **2 parser workers at once** and **4 waiting**; any more get `503 parser_busy`. A slot is released only after the worker has actually terminated.
+- The worker heap is lowered to **256 MB**.
+- Not done: the second unzip in read-excel-file (`unzipper-esm`) is still a possible zip-parser differential. It is now limited by the duplicate-name check and the target-coverage check.
+
+Tests in `test/security.test.ts`:
+
+- "rejects a row-gap bomb whose sheet was moved out of xl/worksheets/ (413, fast)" covers 5 encodings of `r`.
+- "rejects worksheets the scanner cannot see and duplicate entries"
+- "bounds concurrent parser workers (10 parallel uploads)": the peak is at most 2, all workers are released afterwards, and every response is 200 or 503.
+
+Verified against a production build:
+
+- `mkx.py` then `xl.sh`: `plain.xlsx`, `moved.xlsx` and `moved_small.xlsx` all return **413 `too_many_rows` in 7–40 ms**. Before, `moved.xlsx` caused a worker OOM after 6.2 s.
+- `conc.sh` (9 × `moved.xlsx` in parallel): 413 for all nine in about 35 ms each, with **server peak RSS 91 MB**. Before, it reached 5,776 MB.
+- 9 parallel valid uploads: 6 × 200 and 3 × 503.
+
+**R2-05: login `next=` validation.**
+
+- `apps/web/src/lib/url.ts#safeNextPath` replaces `safeNext` in `Login.tsx`.
+- It accepts the value only if it is `/` alone, or starts with a single `/` followed by a character other than `/` or `\`.
+- It rejects any backslash, whitespace or control character anywhere in the value, including C0, C1, NBSP, Unicode spaces and line/paragraph separators.
+- It then resolves the value against a fixed base and rejects it if the origin changes or the normalised pathname starts with `//`. This catches `/.//evil` and `/..//evil`.
+
+Test: `apps/web/src/test/url.test.ts` "safeNextPath (R2-05)", using every variant from `redir3.cjs`.
+
+Verified with `redir3.cjs` in Chromium against a production build:
+
+- Every hostile `next` value now lands on `/`, or on a percent-encoded path on the same origin.
+- There are no "External navigation" page errors and no external requests.
+
+**R2-06: CI holds the editor token.**
+
+- New optional `INGEST_TOKEN`:
+  - at least 32 characters;
+  - must differ from `DASHBOARD_TOKEN` and `VIEWER_TOKEN`;
+  - requires `DASHBOARD_TOKEN` to be set.
+- It maps to the server-side, bearer-only role `ingest`. Its only route is `config.access = 'ingest'`, on `POST /api/runs/import`; it can also call the public routes such as health. Everything else returns 403.
+- `/api/auth/login` rejects it with 401, and `/api/auth/session` reports it as not authenticated, so it can never become a UI session.
+- The shared `Role` enum is unchanged, because the web app never sees `ingest`.
+- Documented in `.env.example` and in SPEC "Roles". The Import page's CI snippet now uses `$PTD_INGEST_TOKEN`.
+
+Tests:
+
+- "R2-06 … validates the token in config"
+- "may only upload runs (and call health)": the upload gets 201; 9 other routes get 403, including `/%61pi/test-cases`.
+- "cannot sign into the UI"

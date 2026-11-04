@@ -76,7 +76,8 @@ Errors: always `ApiError` shape `{error, message, details?}` with proper status 
 ## Domain rules
 
 ### Coverage
-- `automationRate = automated / (total − notAutomatable)`.
+- `automationRate = automated / (total − notAutomatable)`. The same definition applies per suite and per owner (`Summary.bySuite` / `byOwner` carry `notAutomatable`; `Report.suites` carries `automatable`), so the Overview, Report and headline numbers agree.
+- "Newly automated" (Report highlights) counts cases that *became* automated in the period (`automatedAt > createdAt`) plus cases discovered by an allure import after the very first one; cases that arrived already automated (spreadsheet/Jira bootstrap, manual create, first import) count as "cases added" instead.
 - A daily snapshot row `(date, total, automated)` is upserted after every mutation that can change counts (create/update/delete/bulk/imports). Trend = these rows.
 
 ### Allure import
@@ -138,7 +139,7 @@ Credentials come **only** from env vars. The UI can trigger a sync and see statu
 ### Two sides: Workspace (internal) vs Report (management)
 - **Workspace** = everything operational (cases, triage, notes, runs, PRs, imports, integrations).
 - **Report** = presentation-grade rollup for management: `GET /api/report` returns aggregates only (no notes text, traces, messages, author names). Projection: weeklyVelocity = (automated_end − automated_start) / (periodDays/7) from coverage snapshots; remainingToGoal = ceil(targetRate × (total − notAutomatable)) − automated (min 0); projectedGoalDate = today + remaining/velocity weeks; status vs targetDate: projected ≤ target − 14d → ahead; ≤ target → on_track; ≤ target + 30d → at_risk; else behind (or behind if velocity ≤ 0 and remaining > 0).
-- **Roles**: `DASHBOARD_TOKEN` → role `editor` (everything). Optional `VIEWER_TOKEN` (≥ 32 chars, must differ) → role `viewer`, which may ONLY call: health, auth/*, `GET /api/report`, `GET /api/settings`. Every other route returns 403 for viewers. Role is embedded in the signed session cookie and re-checked server-side on every request (never trust the client). Bearer tokens map to roles the same way.
+- **Roles**: `DASHBOARD_TOKEN` → role `editor` (everything). Optional `VIEWER_TOKEN` (≥ 32 chars, must differ) → role `viewer`, which may ONLY call: health, auth/*, `GET /api/report`, `GET /api/settings`. Every other route returns 403 for viewers. Role is embedded in the signed session cookie and re-checked server-side on every request (never trust the client). Bearer tokens map to roles the same way. Optional `INGEST_TOKEN` (≥ 32 chars, distinct) → bearer-only role `ingest`, which may ONLY call `POST /api/runs/import` (and health); it cannot log into the UI. CI pipelines should use it instead of the editor token.
 
 ## Security requirements (non-negotiable)
 1. **Auth**: env `DASHBOARD_TOKEN` (shared secret, ≥ 32 chars). If set, every `/api/*` route except health/session/login requires either `Authorization: Bearer <token>` (for CI uploads) or a valid session cookie. Login compares with `crypto.timingSafeEqual` (hash both sides first to equalize length), is rate-limited (e.g. 10/min/IP), and sets a signed, `httpOnly`, `SameSite=Strict`, `Secure` (in production), `Path=/` cookie with expiry (default 7d); sessions are stateless HMAC-signed with `SESSION_SECRET` and include issued-at. When `NODE_ENV=production` the server **refuses to start** without `DASHBOARD_TOKEN` and `SESSION_SECRET` (≥ 32 chars). In dev without a token, auth is disabled and a loud warning is logged.

@@ -304,14 +304,16 @@ function ImportResult({ r }: { r: RunImportResponse }) {
 function CiSnippet() {
   const origin = typeof window !== 'undefined' ? window.location.origin : 'https://dashboard.example.com';
   const snippet = `# From your CI job, after pytest --alluredir=allure-results
+# Use the upload-only INGEST_TOKEN (never the editor token) as a CI secret.
+# --form-string: a branch name starting with @ must not make curl read a file.
 cd allure-results && zip -qr ../allure-results.zip . && cd ..
 curl -fsS -X POST "${origin}/api/runs/import" \\
-  -H "Authorization: Bearer $DASHBOARD_TOKEN" \\
-  -F "name=$CI_PIPELINE_NAME #$CI_BUILD_NUMBER" \\
-  -F "runGroup=regression" \\
-  -F "branch=$GIT_BRANCH" \\
-  -F "commit=$GIT_COMMIT" \\
-  -F "buildUrl=$BUILD_URL" \\
+  -H "Authorization: Bearer $PTD_INGEST_TOKEN" \\
+  --form-string "name=$CI_PIPELINE_NAME #$CI_BUILD_NUMBER" \\
+  --form-string "runGroup=regression" \\
+  --form-string "branch=$GIT_BRANCH" \\
+  --form-string "commit=$GIT_COMMIT" \\
+  --form-string "buildUrl=$BUILD_URL" \\
   -F "file=@allure-results.zip"`;
   const copy = async () => {
     try {
