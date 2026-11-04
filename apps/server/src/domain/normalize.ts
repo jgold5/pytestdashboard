@@ -4,8 +4,12 @@
  */
 import type { AutomationStatus, Priority } from '@ptd/shared';
 
+/** Inputs are capped before any regex runs (status/priority cells are short). */
+const MAX_INPUT = 200;
+
 function canon(raw: string): string {
   return raw
+    .slice(0, MAX_INPUT)
     .normalize('NFKC')
     .replace(/[‘’ʼ]/g, "'")
     .toLowerCase()
@@ -13,9 +17,9 @@ function canon(raw: string): string {
     .trim();
 }
 
-const STATUS_WORDS: Record<string, AutomationStatus> = {};
+const STATUS_WORDS = new Map<string, AutomationStatus>();
 const add = (status: AutomationStatus, words: string[]) => {
-  for (const w of words) STATUS_WORDS[canon(w)] = status;
+  for (const w of words) STATUS_WORDS.set(canon(w), status);
 };
 add('automated', ['yes', 'y', 'true', '1', 'automated', 'done', 'complete', 'completed', '✓', '✔', '✅', 'x', 'auto']);
 add('in_progress', ['wip', 'in progress', 'in-progress', 'inprogress', 'ongoing', 'started', 'in development', 'in review']);
@@ -57,7 +61,7 @@ add('not_automatable', [
 export function normalizeAutomationStatus(raw: string | null | undefined): AutomationStatus | null {
   if (raw === null || raw === undefined) return 'not_automated';
   const c = canon(String(raw));
-  const direct = STATUS_WORDS[c];
+  const direct = STATUS_WORDS.get(c);
   if (direct) return direct;
   const enumLike = c.replace(/[\s-]+/g, '_');
   if (enumLike === 'automated' || enumLike === 'in_progress' || enumLike === 'not_automated' || enumLike === 'not_automatable') {
@@ -93,7 +97,7 @@ export function isJiraKey(v: string): boolean {
 export function splitTags(raw: string | null | undefined, max = 50): string[] {
   if (!raw) return [];
   const out: string[] = [];
-  for (const part of raw.split(/[,;|]/)) {
+  for (const part of raw.slice(0, 20_000).split(/[,;|]/)) {
     const t = part.trim().slice(0, 200);
     if (t && !out.includes(t)) out.push(t);
     if (out.length >= max) break;

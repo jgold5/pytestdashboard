@@ -73,6 +73,10 @@ export class AllureBundle {
   addFile(basename: string, data: Buffer): void {
     if (RESULT_RE.test(basename)) return this.addResult(basename, data);
     if (basename === 'environment.properties') {
+      if (data.length > MAX_PROPERTIES_BYTES) {
+        this.warn('environment.properties: file too large, ignored');
+        return;
+      }
       this.environment = { ...this.environment, ...parseProperties(data.toString('utf8')) };
       return;
     }
@@ -208,18 +212,27 @@ function links(arr: unknown[] | null | undefined): ParsedResult['links'] {
   return out;
 }
 
-/** Java-style .properties (key=value / key: value, # and ! comments). Capped. */
+export const MAX_PROPERTIES_BYTES = 64 * 1024;
+const MAX_PROPERTIES_LINE = 8 * 1024;
+
+/**
+ * Java-style .properties (key=value / key: value, # and ! comments). Linear
+ * time (indexOf-based, no regex backtracking), lines > 8 KB skipped, ≤ 200 keys.
+ */
 export function parseProperties(text: string): Record<string, string> {
   const out: Record<string, string> = {};
   let n = 0;
-  for (const raw of text.split(/\r?\n/)) {
+  for (const raw of text.split('\n')) {
+    if (raw.length > MAX_PROPERTIES_LINE) continue;
     const line = raw.trim();
     if (!line || line.startsWith('#') || line.startsWith('!')) continue;
-    const m = /^([^=:]+?)\s*[=:]\s*(.*)$/.exec(line);
-    if (!m?.[1]) continue;
-    const key = m[1].trim().slice(0, LIMITS.shortTextMax);
-    if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
-    out[key] = (m[2] ?? '').trim().slice(0, MAX_VALUE);
+    const eq = line.indexOf('=');
+    const colon = line.indexOf(':');
+    const sep = eq < 0 ? colon : colon < 0 ? eq : Math.min(eq, colon);
+    if (sep <= 0) continue;
+    const key = line.slice(0, sep).trim().slice(0, LIMITS.shortTextMax);
+    if (!key || key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
+    out[key] = line.slice(sep + 1).trim().slice(0, MAX_VALUE);
     if (++n >= 200) break;
   }
   return out;

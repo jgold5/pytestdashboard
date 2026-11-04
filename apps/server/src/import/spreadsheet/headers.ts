@@ -3,6 +3,7 @@ import type { ImportField } from '@ptd/shared';
 /** Canonical header text: lowercase alphanumerics separated by single spaces. */
 export function canonHeader(h: string): string {
   return h
+    .slice(0, 200)
     .normalize('NFKC')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, ' ')
@@ -45,12 +46,12 @@ export function suggestMapping(headers: readonly string[]): Record<string, Impor
     }
   }
   candidates.sort((a, b) => b.score - a.score);
-  const out: Record<string, ImportField> = {};
+  const assigned = new Map<string, ImportField>();
   const usedFields = new Set<ImportField>();
   for (const c of candidates) {
-    if (usedFields.has(c.field) || c.header in out) continue;
-    out[c.header] = c.field;
+    if (usedFields.has(c.field) || assigned.has(c.header)) continue;
+    assigned.set(c.header, c.field);
     usedFields.add(c.field);
   }
-  return out;
+  return Object.fromEntries(assigned);
 }

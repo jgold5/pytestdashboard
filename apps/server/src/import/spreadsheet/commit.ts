@@ -68,8 +68,9 @@ export function commitImport(db: Db, sheet: ParsedSheet, req: ImportCommitReques
     if (result.errors.length < MAX_ERRORS) result.errors.push({ row, message });
   };
 
+  const statusMap = new Map(Object.entries(req.statusValueMap));
   const mapStatus = (raw: string): AutomationStatus =>
-    req.statusValueMap[raw] ?? normalizeAutomationStatus(raw) ?? 'not_automated';
+    statusMap.get(raw) ?? normalizeAutomationStatus(raw) ?? 'not_automated';
 
   try {
     db.transaction((tx) => {

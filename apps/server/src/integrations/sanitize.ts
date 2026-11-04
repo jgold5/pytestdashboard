@@ -8,6 +8,7 @@ export function sanitizeError(err: unknown, secrets: readonly string[], max = 50
   else if (typeof err === 'string') msg = err;
   else msg = 'Unknown error';
 
+  msg = msg.slice(0, 4000); // bound regex work below
   for (const s of secrets) {
     if (s.length >= 4) msg = msg.split(s).join('[redacted]');
   }
