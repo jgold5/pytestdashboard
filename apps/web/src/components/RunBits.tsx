@@ -10,7 +10,7 @@ export function PassRateBar({ r, className }: { r: Pick<Run, 'counts' | 'passRat
       <SegmentedBar
         label="Results"
         height={6}
-        className="w-24 sm:w-32"
+        className="hidden w-32 sm:flex"
         parts={[
           { label: 'Passed', value: c.passed, color: RESULT_META.passed.color },
           { label: 'Failed', value: c.failed, color: RESULT_META.failed.color },

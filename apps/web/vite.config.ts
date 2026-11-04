@@ -3,13 +3,16 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 
+// Dev proxy target for /api (override with API_PROXY_TARGET, e.g. when 3000 is busy).
+const apiTarget = process.env.API_PROXY_TARGET ?? 'http://localhost:3000';
+
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
     port: 5173,
     strictPort: true,
     proxy: {
-      '/api': { target: 'http://localhost:3000', changeOrigin: false },
+      '/api': { target: apiTarget, changeOrigin: false },
     },
   },
   preview: { port: 4173 },

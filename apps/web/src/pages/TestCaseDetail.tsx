@@ -110,7 +110,7 @@ function Detail({ t }: { t: TestCaseDetail }) {
       <Link to="/tests" className="mb-3 inline-flex items-center gap-1 text-xs text-fg-2 hover:text-fg">
         <ArrowLeft className="size-3.5" aria-hidden /> Test cases
       </Link>
-      <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+      <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2 text-xs text-fg-3">
             <span className="font-mono text-fg-2 break-all">{t.key}</span>
@@ -130,6 +130,7 @@ function Detail({ t }: { t: TestCaseDetail }) {
               value={t.automationStatus}
               onValueChange={(v) => v && setStatus.mutate({ id: t.id, status: v }, { onSuccess: () => toast.success(`Status → ${AUTOMATION_META[v].label}`) })}
               options={AUTOMATION_OPTIONS}
+              className="shrink-0"
             />
             {t.lastResult ? <ResultBadge status={t.lastResult.status} /> : null}
             {t.triage ? <TriageBadge triage={t.triage} /> : null}
@@ -387,7 +388,7 @@ function DurationChart({ history }: { history: HistoryItem[] }) {
       </div>
       <div className="h-28" role="img" aria-label="Duration per run">
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={data} margin={{ top: 6, right: 6, bottom: 0, left: -12 }}>
+          <LineChart data={data} margin={{ top: 6, right: 6, bottom: 0, left: 0 }}>
             <CartesianGrid vertical={false} stroke={c.grid} />
             <XAxis dataKey="id" hide />
             <YAxis tick={{ fontSize: 10, fill: c['fg-3'] }} tickLine={false} axisLine={false} width={44} tickFormatter={(v: number) => (v < 1000 ? `${Math.round(v)}ms` : `${(v / 1000).toFixed(v < 10000 ? 1 : 0)}s`)} />

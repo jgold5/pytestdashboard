@@ -8,6 +8,7 @@ import {
   ChevronRight,
   ChevronsUpDown,
   Download,
+  Funnel,
   FileSpreadsheet,
   FunnelX,
   GitPullRequest,
@@ -43,10 +44,11 @@ import { PageHeader } from '../components/ui/misc';
 import { Select } from '../components/ui/select';
 import { SkeletonRows } from '../components/ui/skeleton';
 import { linkButton } from '../components/ui/link-button';
-import { AUTOMATION_META, FlakyMeter, InPrBadge, RESULT_META, ResultBadge, TriageBadge } from '../components/status';
+import { AUTOMATION_META, FlakyMeter, InPrBadge, RESULT_META, ResultBadge, TRIAGE_META, TriageBadge } from '../components/status';
 import { AUTOMATION_OPTIONS, NewTestCaseDialog, PRIORITY_OPTIONS } from '../components/TestCaseForm';
 import { BulkNoteDialog, TRIAGE_OPTIONS } from '../components/NoteForm';
 import { BugBadge } from '../components/bugs';
+import { Tooltip } from '../components/ui/tooltip';
 import * as S from '@radix-ui/react-select';
 
 type Sort = TestCaseQuery['sort'];
@@ -112,6 +114,7 @@ export default function TestCasesPage() {
   const [newOpen, setNewOpen] = useState(false);
   const [bulkNoteOpen, setBulkNoteOpen] = useState(false);
   const [textDialog, setTextDialog] = useState<null | 'owner' | 'suite'>(null);
+  const [filtersOpen, setFiltersOpen] = useState(false);
 
   const [search, setSearch] = useState(query.search ?? '');
   const debounced = useDebounced(search, 300);
@@ -181,6 +184,10 @@ export default function TestCasesPage() {
             maxLength={200}
           />
         </div>
+        <Button variant="outline" className="sm:hidden" onClick={() => setFiltersOpen((o) => !o)} aria-expanded={filtersOpen} aria-controls="case-filters">
+          <Funnel /> Filters{activeFilters.filter((k) => k !== 'search').length ? ` (${activeFilters.filter((k) => k !== 'search').length})` : ''}
+        </Button>
+        <div id="case-filters" className={cn('contents', !filtersOpen && 'max-sm:hidden')}>
         <Select
           ariaLabel="Automation status"
           value={query.automationStatus ?? null}
@@ -241,6 +248,7 @@ export default function TestCasesPage() {
         <ToggleChip active={!!query.flakyOnly} onClick={() => update({ flakyOnly: !query.flakyOnly })} icon={<Shuffle />}>
           Flaky
         </ToggleChip>
+        </div>
         {activeFilters.length > 0 ? (
           <Button
             variant="ghost"
@@ -295,7 +303,14 @@ export default function TestCasesPage() {
             Try a different search or remove some filters.
           </EmptyState>
         ) : (
-          <div className="overflow-x-auto">
+          <>
+          {/* Phones: compact card list */}
+          <ul className="divide-y divide-border md:hidden">
+            {items.map((t) => (
+              <MobileRow key={t.id} t={t} selected={selected.has(t.id)} onSelect={(c) => toggle(t.id, c)} />
+            ))}
+          </ul>
+          <div className="hidden overflow-x-auto md:block">
             <table className="w-full min-w-[720px] table-fixed text-[13px]">
               <thead className="bg-surface-2/60 text-left text-[11px] font-medium tracking-wide text-fg-3 uppercase">
                 <tr className="border-b border-border">
@@ -308,13 +323,13 @@ export default function TestCasesPage() {
                   </th>
                   <SortTh label="Key" s="key" query={query} onSort={sortBy} className="w-28" />
                   <SortTh label="Title" s="title" query={query} onSort={sortBy} className="w-auto" />
-                  <SortTh label="Suite" s="suite" query={query} onSort={sortBy} className="hidden w-32 md:table-cell" />
+                  <SortTh label="Suite" s="suite" query={query} onSort={sortBy} className="hidden w-28 md:table-cell" />
                   <SortTh label="Pri" s="priority" query={query} onSort={sortBy} className="w-14" />
-                  <SortTh label="Automation" s="automationStatus" query={query} onSort={sortBy} className="w-40" />
+                  <SortTh label="Automation" s="automationStatus" query={query} onSort={sortBy} className="w-36" />
                   <SortTh label="Last result" s="lastRun" query={query} onSort={sortBy} className="w-32" />
-                  <th className="hidden w-40 px-2 py-2 font-medium xl:table-cell">Triage</th>
-                  <SortTh label="Flaky" s="flakiness" query={query} onSort={sortBy} className="hidden w-24 lg:table-cell" />
-                  <th className="hidden w-32 px-2 py-2 pr-4 font-medium lg:table-cell">Owner</th>
+                  <th className="hidden w-36 px-2 py-2 font-medium 2xl:table-cell">Triage</th>
+                  <SortTh label="Flaky" s="flakiness" query={query} onSort={sortBy} className="hidden w-20 lg:table-cell" />
+                  <th className="hidden w-28 px-2 py-2 pr-4 font-medium xl:table-cell">Owner</th>
                 </tr>
               </thead>
               <tbody>
@@ -324,6 +339,7 @@ export default function TestCasesPage() {
               </tbody>
             </table>
           </div>
+          </>
         )}
         {list.data && total > 0 ? (
           <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-4 py-2 text-xs text-fg-2">
@@ -368,6 +384,44 @@ export default function TestCasesPage() {
       />
       <BulkTextDialog field={textDialog} ids={[...selected]} onClose={() => setTextDialog(null)} onDone={() => setSelected(new Set())} />
     </>
+  );
+}
+
+/** Triage as an icon (with tooltip + accessible name) when the Triage column is hidden. */
+function CompactTriage({ triage }: { triage: NonNullable<TestCase['triage']> }) {
+  const M = TRIAGE_META[triage];
+  return (
+    <Tooltip content={`Triage: ${M.label}`}>
+      <span className="inline-flex 2xl:hidden" role="img" aria-label={`Triage: ${M.label}`} tabIndex={0}>
+        <M.icon className="size-3.5" style={{ color: M.color }} aria-hidden />
+      </span>
+    </Tooltip>
+  );
+}
+
+function MobileRow({ t, selected, onSelect }: { t: TestCase; selected: boolean; onSelect: (c: boolean) => void }) {
+  return (
+    <li className={cn('flex gap-3 px-4 py-3', selected && 'bg-accent-soft')}>
+      <Checkbox checked={selected} onCheckedChange={onSelect} ariaLabel={`Select ${t.key}`} className="mt-0.5" />
+      <div className="min-w-0 flex-1">
+        <Link to={`/tests/${t.id}`} className="block text-[13px] font-medium text-fg outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring/50">
+          <span className="line-clamp-2">{t.title}</span>
+        </Link>
+        <div className="mt-0.5 truncate font-mono text-[11px] text-fg-3">
+          {t.key}
+          {t.suite ? <span className="font-sans"> · {t.suite}</span> : null}
+        </div>
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          <InlineStatus t={t} />
+          {t.lastResult ? <ResultBadge status={t.lastResult.status} /> : null}
+          {t.triage ? <TriageBadge triage={t.triage} /> : null}
+          <InPrBadge prs={t.pullRequests} />
+          {t.openBugs.slice(0, 2).map((b) => (
+            <BugBadge key={b.id} bug={b} />
+          ))}
+        </div>
+      </div>
+    </li>
   );
 }
 
@@ -459,15 +513,16 @@ function Row({ t, selected, onSelect, onOpen }: { t: TestCase; selected: boolean
         {t.lastResult ? (
           <span className="flex items-center gap-1.5" title={`${t.lastResult.runName} · ${fmtRelative(t.lastResult.at)}`}>
             <ResultBadge status={t.lastResult.status} />
+            {t.triage ? <CompactTriage triage={t.triage} /> : null}
             <span className="hidden truncate text-[11px] text-fg-3 2xl:inline">{fmtRelative(t.lastResult.at)}</span>
           </span>
         ) : (
           <span className="text-xs text-fg-3">Never run</span>
         )}
       </td>
-      <td className="hidden px-2 py-1.5 xl:table-cell">{t.triage ? <TriageBadge triage={t.triage} /> : <span className="text-fg-3">—</span>}</td>
+      <td className="hidden px-2 py-1.5 2xl:table-cell">{t.triage ? <TriageBadge triage={t.triage} /> : <span className="text-fg-3">—</span>}</td>
       <td className="hidden px-2 py-1.5 lg:table-cell">{t.flakiness > 0 ? <FlakyMeter value={t.flakiness} /> : <span className="text-fg-3">—</span>}</td>
-      <td className="hidden truncate px-2 py-1.5 pr-4 text-fg-2 lg:table-cell">{t.owner ?? <span className="text-fg-3">—</span>}</td>
+      <td className="hidden truncate px-2 py-1.5 pr-4 text-fg-2 xl:table-cell">{t.owner ?? <span className="text-fg-3">—</span>}</td>
     </tr>
   );
 }

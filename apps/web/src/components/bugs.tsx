@@ -89,7 +89,7 @@ export function BugBadge({ bug, className }: { bug: BugRef; className?: string }
   const content = (
     <span
       className={cn(
-        'inline-flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-px font-mono text-[11px] leading-[18px] text-fg',
+        'inline-flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-px font-mono text-[11px] leading-[18px] whitespace-nowrap text-fg',
         stillFailing ? 'border-[color-mix(in_oklab,var(--st-failed)_45%,transparent)]' : 'border-[color-mix(in_oklab,var(--st-broken)_30%,transparent)]',
         'bg-[color-mix(in_oklab,var(--st-broken)_9%,transparent)]',
         className,

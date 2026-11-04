@@ -37,7 +37,10 @@ export default function ComparePage() {
   const runs = useRuns({ runGroup: group ?? undefined, pageSize: 100 });
   const runList = useMemo(() => runs.data?.items ?? [], [runs.data]);
   const head = headParam ?? runList[0]?.id ?? null;
-  const cmp = useCompare(head, baseParam);
+  const headRun = runList.find((r) => r.id === head);
+  // Skip the request when we already know the head has no baseline (first run in its group/branch).
+  const knownNoPrevious = !baseParam && headRun != null && headRun.previousRunId == null;
+  const cmp = useCompare(knownNoPrevious ? null : head, baseParam);
 
   const setRun = (k: 'base' | 'head', v: string) =>
     setParams(
@@ -74,7 +77,7 @@ export default function ComparePage() {
     return [...m.values()].sort((a, b) => (b.startedAt ?? b.importedAt).localeCompare(a.startedAt ?? a.importedAt));
   }, [runList, cmp.data]);
 
-  const noPrevious = cmp.error instanceof ApiError && cmp.error.status === 400 && !baseParam;
+  const noPrevious = knownNoPrevious || (cmp.error instanceof ApiError && cmp.error.status === 400 && !baseParam);
 
   return (
     <>

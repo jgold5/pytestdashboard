@@ -260,7 +260,7 @@ function RunRow({
   const when = r.startedAt ?? r.importedAt;
   return (
     <li
-      className={cn('group flex cursor-pointer flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2.5 hover:bg-surface-2/50 md:flex-nowrap', selected && 'bg-accent-soft hover:bg-accent-soft')}
+      className={cn('group relative flex cursor-pointer flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2.5 pr-12 md:pr-4 hover:bg-surface-2/50 md:flex-nowrap', selected && 'bg-accent-soft hover:bg-accent-soft')}
       onClick={() => void navigate(`/runs/${r.id}`)}
     >
       <Checkbox checked={selected} onCheckedChange={onSelect} ariaLabel={`Select ${r.name} for comparison`} />
@@ -296,7 +296,7 @@ function RunRow({
         <StatusCounts c={r.counts} />
         <PassRateBar r={r} className="ml-auto md:ml-0" />
       </div>
-      <div onClick={(e) => e.stopPropagation()}>
+      <div onClick={(e) => e.stopPropagation()} className="absolute top-2.5 right-2 md:static">
         <Menu>
           <MenuTrigger asChild>
             <Button size="icon-sm" variant="ghost" aria-label={`Actions for ${r.name}`}>
