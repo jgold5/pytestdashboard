@@ -155,7 +155,7 @@ export const TestCase = z.object({
   /** Latest triage category from the newest note that set one (null if none). */
   triage: TriageCategory.nullable(),
   noteCount: z.number().int(),
-  /** 0..1 — share of status flips across the last 10 results (0 = stable). */
+  /** 0..1 — share of status flips across the last 10 results within each run group; max over groups (0 = stable). */
   flakiness: z.number(),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -247,6 +247,13 @@ export type StatusCounts = z.infer<typeof StatusCounts>;
 export const Run = z.object({
   id: z.number().int(),
   name: z.string(),
+  /**
+   * Run group: separates independent test sets (e.g. folder A vs folder B,
+   * "smoke" vs "regression"). History baselines, change tagging, trends and
+   * flakiness are computed within (runGroup, branch). Set explicitly on import
+   * or auto-derived from the results' common test folder (see SPEC).
+   */
+  runGroup: z.string(),
   branch: z.string().nullable(),
   commit: z.string().nullable(),
   buildUrl: z.string().nullable(),
@@ -260,14 +267,57 @@ export const Run = z.object({
   counts: StatusCounts,
   /** passed / (total - skipped), 0..1; null if nothing executed. */
   passRate: z.number().nullable(),
+  /**
+   * Previous run used as the baseline for `change` tagging: the most recent run
+   * (by startedAt, falling back to importedAt) before this one with the same
+   * runGroup AND the same branch (null branch matches null). Null for the first run.
+   */
+  previousRunId: z.number().int().nullable(),
+  /** Counts of results by `change` vs previousRunId. */
+  changes: z.object({
+    newFailures: z.number().int(),
+    stillFailing: z.number().int(),
+    fixed: z.number().int(),
+    newTests: z.number().int(),
+    /** Cases present in previous run but missing from this one. */
+    missing: z.number().int(),
+  }),
 });
 export type Run = z.infer<typeof Run>;
+
+/**
+ * How a result compares with the same test case in the run's previousRunId.
+ * failing = failed|broken; passing = passed. skipped/unknown → 'other'.
+ */
+export const ResultChange = z.enum([
+  'new_failure', // failing now, passing (or skipped) before
+  'still_failing', // failing now and before
+  'fixed', // passing now, failing before
+  'stable_pass', // passing now and before
+  'new_test', // not present in previous run (or no previous run)
+  'other',
+]);
+export type ResultChange = z.infer<typeof ResultChange>;
 
 export const RunList = Paginated(Run);
 export type RunList = z.infer<typeof RunList>;
 
+/** PATCH /api/runs/:id — fix metadata after import. Changing runGroup/branch re-links baselines. */
+export const RunUpdate = z
+  .object({
+    name: trimmed(LIMITS.shortTextMax).min(1),
+    runGroup: trimmed(LIMITS.shortTextMax).min(1),
+    branch: nullableShort,
+  })
+  .partial();
+export type RunUpdate = z.infer<typeof RunUpdate>;
+
 export const RunQuery = z.object({
+  runGroup: z.string().max(LIMITS.shortTextMax).optional(),
   branch: z.string().max(LIMITS.shortTextMax).optional(),
+  search: z.string().trim().max(200).optional(), // run name / commit
+  from: z.iso.date().optional(),
+  to: z.iso.date().optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(LIMITS.pageSizeMax).default(25),
 });
@@ -289,6 +339,7 @@ export const TestResult = z.object({
   failureSignature: z.string().nullable(),
   /** Allure retries (multiple results with same historyId in one run). */
   retries: z.number().int(),
+  change: ResultChange,
   parameters: z.array(z.object({ name: z.string(), value: z.string() })),
   labels: z.array(z.object({ name: z.string(), value: z.string() })),
 });
@@ -296,6 +347,7 @@ export type TestResult = z.infer<typeof TestResult>;
 
 export const RunResultsQuery = z.object({
   status: ResultStatus.optional(),
+  change: ResultChange.optional(),
   search: z.string().trim().max(200).optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(LIMITS.pageSizeMax).default(100),
@@ -304,6 +356,86 @@ export type RunResultsQuery = z.infer<typeof RunResultsQuery>;
 
 export const TestResultList = Paginated(TestResult);
 export type TestResultList = z.infer<typeof TestResultList>;
+
+/**
+ * GET /api/runs/compare?base=<runId>&head=<runId> — diff two runs by test case.
+ * Lists are capped at 500 each (counts are exact).
+ */
+/** If base is omitted, the server uses head's previousRunId (400 if none). */
+export const RunCompareQuery = z.object({
+  base: z.coerce.number().int().positive().optional(),
+  head: z.coerce.number().int().positive(),
+});
+export const RunCompareEntry = z.object({
+  testCase: z.object({ id: z.number().int(), key: z.string(), title: z.string(), suite: z.string().nullable() }),
+  baseStatus: ResultStatus.nullable(), // null = not in base
+  headStatus: ResultStatus.nullable(), // null = not in head
+  baseDurationMs: z.number().int().nullable(),
+  headDurationMs: z.number().int().nullable(),
+  headMessage: z.string().nullable(), // first line, ≤ 300 chars
+  headResultId: z.number().int().nullable(),
+});
+export type RunCompareEntry = z.infer<typeof RunCompareEntry>;
+export const RunComparison = z.object({
+  base: Run,
+  head: Run,
+  counts: z.object({
+    newFailures: z.number().int(),
+    fixed: z.number().int(),
+    stillFailing: z.number().int(),
+    added: z.number().int(),
+    removed: z.number().int(),
+    slower: z.number().int(),
+    unchangedPass: z.number().int(),
+  }),
+  newFailures: z.array(RunCompareEntry),
+  fixed: z.array(RunCompareEntry),
+  stillFailing: z.array(RunCompareEntry),
+  added: z.array(RunCompareEntry),
+  removed: z.array(RunCompareEntry),
+  /** head ≥ 1.5× base AND +≥ 1000 ms; sorted by absolute increase desc. */
+  slower: z.array(RunCompareEntry),
+});
+export type RunComparison = z.infer<typeof RunComparison>;
+
+/**
+ * GET /api/history/matrix — tests × runs grid (heatmap).
+ * Runs: the latest `runs` runs matching branch (oldest → newest left→right).
+ * Rows: test cases with ≥1 result in those runs, filtered; sorted by
+ * instability (flips desc, then failures desc), then key.
+ */
+export const HistoryMatrixQuery = z.object({
+  runs: z.coerce.number().int().min(5).max(60).default(20),
+  /** Required in practice: the UI always sends one (defaults to the most recently active group). If omitted, server uses the runGroup of the latest run. */
+  runGroup: z.string().max(LIMITS.shortTextMax).optional(),
+  branch: z.string().max(LIMITS.shortTextMax).optional(),
+  suite: z.string().max(LIMITS.shortTextMax).optional(),
+  search: z.string().trim().max(200).optional(),
+  /** Only tests with ≥1 failed/broken in the window (default true). */
+  onlyUnstable: z.stringbool().default(true),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(200).default(50),
+});
+export type HistoryMatrixQuery = z.infer<typeof HistoryMatrixQuery>;
+export const HistoryMatrix = z.object({
+  runGroup: z.string().nullable(), // the group actually used
+  runs: z.array(
+    Run.pick({ id: true, name: true, runGroup: true, branch: true, startedAt: true, importedAt: true, passRate: true }),
+  ),
+  rows: z.array(
+    z.object({
+      testCase: z.object({ id: z.number().int(), key: z.string(), title: z.string(), suite: z.string().nullable() }),
+      /** Same length/order as `runs`; status null = not executed in that run. */
+      cells: z.array(z.object({ status: ResultStatus.nullable(), resultId: z.number().int().nullable() })),
+      flips: z.number().int(),
+      failures: z.number().int(),
+    }),
+  ),
+  total: z.number().int(),
+  page: z.number().int(),
+  pageSize: z.number().int(),
+});
+export type HistoryMatrix = z.infer<typeof HistoryMatrix>;
 
 /** Failures in a run grouped by normalized error signature. */
 export const FailureGroup = z.object({
@@ -315,6 +447,10 @@ export const FailureGroup = z.object({
   testCases: z.array(z.object({ id: z.number().int(), key: z.string(), title: z.string() })),
   /** Most common triage category among the affected cases, if any. */
   triage: TriageCategory.nullable(),
+  /** How many of the group's results are new failures vs previous run. */
+  newFailures: z.number().int(),
+  /** First run (any branch) where this signature appeared. */
+  firstSeen: z.object({ runId: z.number().int(), runName: z.string(), at: z.string() }).nullable(),
 });
 export type FailureGroup = z.infer<typeof FailureGroup>;
 
@@ -328,6 +464,8 @@ export type FailureGroup = z.infer<typeof FailureGroup>;
  */
 export const RunImportFields = z.object({
   name: trimmed(LIMITS.shortTextMax).min(1).optional(),
+  /** Omit to auto-derive from the results' common test folder. */
+  runGroup: trimmed(LIMITS.shortTextMax).min(1).optional(),
   branch: nullableShort.optional(),
   commit: nullableShort.optional(),
   buildUrl: SafeUrl.nullable().optional(),
@@ -406,9 +544,22 @@ export const TestCaseDetail = TestCase.extend({
       startedAt: true,
       message: true,
       failureSignature: true,
-    }).extend({ runName: z.string() }),
+      change: true,
+    }).extend({ runName: z.string(), runGroup: z.string(), branch: z.string().nullable() }),
   ),
   notes: z.array(Note), // newest first
+  stats: z.object({
+    /** Oldest run of the current consecutive failing streak (null if last result not failing). */
+    failingSince: z.object({ runId: z.number().int(), runName: z.string(), at: z.string() }).nullable(),
+    consecutiveFailures: z.number().int(),
+    lastPassed: z.object({ runId: z.number().int(), runName: z.string(), at: z.string() }).nullable(),
+    /** Over the last 30 executed (non-skipped) results; null if none. */
+    passRate: z.number().nullable(),
+    executions: z.number().int(), // total results ever
+    avgDurationMs: z.number().int().nullable(), // last 30 passed
+    /** Latest duration vs avg — >1.5 = notably slower. Null if not computable. */
+    durationRatio: z.number().nullable(),
+  }),
 });
 export type TestCaseDetail = z.infer<typeof TestCaseDetail>;
 
@@ -522,7 +673,7 @@ export const Summary = z.object({
   latestRun: Run.nullable(),
   /** Last 30 runs, oldest first. */
   runTrend: z.array(
-    Run.pick({ id: true, name: true, startedAt: true, importedAt: true, counts: true, passRate: true }),
+    Run.pick({ id: true, name: true, runGroup: true, branch: true, startedAt: true, importedAt: true, counts: true, passRate: true, changes: true }),
   ),
   bySuite: z.array(
     z.object({
@@ -608,6 +759,16 @@ export const Report = z.object({
     runsInPeriod: z.number().int(),
     /** Weekly buckets, oldest first. */
     weeklyPassRate: z.array(z.object({ weekStart: z.string(), passRate: z.number().nullable(), runs: z.number().int() })),
+    /** Latest run per run group (management sees each test set separately). */
+    byRunGroup: z.array(
+      z.object({
+        runGroup: z.string(),
+        latestPassRate: z.number().nullable(),
+        periodAvgPassRate: z.number().nullable(),
+        runsInPeriod: z.number().int(),
+        lastRunAt: z.string().nullable(),
+      }),
+    ),
   }),
   /** Per-suite readiness, worst first. */
   suites: z.array(
@@ -724,6 +885,8 @@ export const Meta = z.object({
   owners: z.array(z.string()),
   tags: z.array(z.string()),
   branches: z.array(z.string()),
+  /** Ordered by most recent run first. */
+  runGroups: z.array(z.object({ name: z.string(), runs: z.number().int(), lastRunAt: z.string() })),
 });
 export type Meta = z.infer<typeof Meta>;
 

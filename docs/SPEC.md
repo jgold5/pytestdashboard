@@ -46,9 +46,12 @@ Single deployable: `pnpm build && pnpm start` → one Node process on `PORT` (de
 | GET | `/api/runs` | `RunQuery` | `RunList` (newest first) |
 | POST | `/api/runs/import` | multipart (see `RunImportFields`) | `RunImportResponse` (201) |
 | GET | `/api/runs/:id` | – | `Run` |
+| PATCH | `/api/runs/:id` | `RunUpdate` | `Run` (re-links baselines if runGroup/branch change) |
 | DELETE | `/api/runs/:id` | – | 204 |
 | GET | `/api/runs/:id/results` | `RunResultsQuery` | `TestResultList` |
-| GET | `/api/runs/:id/failures` | – | `FailureGroup[]` (largest first) |
+| GET | `/api/runs/:id/failures` | – | `FailureGroup[]` (new failures first, then largest) |
+| GET | `/api/runs/compare` | `RunCompareQuery` | `RunComparison` |
+| GET | `/api/history/matrix` | `HistoryMatrixQuery` | `HistoryMatrix` |
 | GET | `/api/notes` | `NoteQuery` | `Note[]` |
 | POST | `/api/notes` | `NoteCreate` | `Note` (201) |
 | POST | `/api/notes/bulk` | `NoteBulkCreate` | `{created:number}` |
@@ -90,8 +93,14 @@ Errors: always `ApiError` shape `{error, message, details?}` with proper status 
 - Priority normalization: P0–P3, Critical/Blocker→P0, High→P1, Medium→P2, Low→P3, 0–3 → P0–P3; else null.
 - Commit upserts by `key` in one transaction; per-row validation errors reported (row number = spreadsheet row, 1-based incl header), others still imported. If key unmapped, use title as key.
 
+### Run history (critical feature — user priority)
+- **Run groups**: runs of different test sets (folder A vs folder B, smoke vs regression) must never be baselined against each other. `runGroup` resolution on import: explicit form field → executor.json `buildName`? NO (that's the run name) → **auto-derive**: for each result, take the module path (fullName before `#`/`::`, or label `package`, converted `.`→`/`, dropping the final module file segment, e.g. `tests.api.users.test_login#test_ok` → `tests/api/users`); runGroup = longest common directory prefix across all results, trimmed to at most 3 segments; if empty → `"default"`. Allure labels `parentSuite`-only uploads with no fullName → `"default"`. Report the derived group in import warnings ("Run group auto-detected as tests/api — set runGroup to override").
+- Each run's `previousRunId` = latest earlier run with the same runGroup AND same branch (null branch matches null). Order runs by `COALESCE(started_at, imported_at)`. Store `previous_run_id` on the run and `change` on each result at import time (in the import transaction). Deleting a run must recompute `previous_run_id` + `change` for the next run on that branch. Importing an older run (startedAt earlier than existing ones) must re-link the following run too.
+- `Run.changes` counts are stored/derived from results' `change` values; `missing` = cases in previous run not in this one.
+- Compare, matrix and TestCaseDetail.stats as defined in the contract. Must be efficient: index `test_results(run_id)`, `test_results(test_case_id, run_id)`, `runs(branch, started_at)`. Matrix must be computed with at most a few queries (no N+1). Target: matrix of 50 rows × 60 runs on a DB of 5k cases × 300 runs in < 200 ms.
+
 ### Flakiness
-`flakiness` = status flips (passed↔failed/broken, ignoring skipped) across the last 10 executed results / max(1, n−1). `flakyOnly` = flakiness ≥ 0.3.
+`flakiness` = per run group: status flips (passed↔failed/broken, ignoring skipped) across that group's last 10 executed results for the case / max(1, n−1); the case's flakiness = max over groups. `flakyOnly` = flakiness ≥ 0.3.
 
 ### Triage
 A case's `triage` = triage of its newest note with non-null triage. "Untriaged failure" = last result failed/broken AND (no triage OR newest triage note older than that result's run).
@@ -138,10 +147,15 @@ Clean, modern, dense-but-calm "Linear/Vercel" aesthetic; light + dark (system de
 
 - **Overview** (`/`): KPI tiles (Total cases, Automated with %, In progress, Last run pass rate, Untriaged failures); big automation-progress bar (stacked automated / in progress / not automated, not-automatable shown separately); coverage trend line; pass-rate trend per run (stacked bars by status); by-suite table with mini progress bars; triage breakdown; top flaky list; by-owner.
 - **Test Cases** (`/tests`): server-paginated table with search (debounced), filters (suite, automation status, priority, last status, triage, owner, flaky), sortable columns, inline automation-status dropdown, row selection + bulk actions (set status/owner/suite/priority, add note), export CSV, "New test case" dialog. Filters reflected in URL query params (shareable links). Clicking a row opens the detail.
-- **Test Case detail** (`/tests/:id`, drawer or page): metadata (editable), result history strip (colored dots, newest right, tooltips), latest failure message/trace (monospace, collapsible), notes thread with triage badge + ticket link + add/edit/delete.
+- **Test Case detail** (`/tests/:id`, drawer or page): metadata (editable), **history section** (stats row: Failing since / N consecutive failures / Last passed / Pass rate (30) / Avg duration with slower warning; result history strip up to 100 with branch filter; duration trend mini line chart; click a dot → that run's result with message), latest failure message/trace (monospace, collapsible), notes thread with triage badge + ticket link + add/edit/delete.
 - **Pull requests** (`/pulls`): automation PRs linked to cases — columns: PR (repo#number + title, link), author, state (draft/open/merged), review state badge, requested reviewers, 💬 unresolved threads count, CI checks badge, linked cases (chips), updated. Filters: needs attention / review required / changes requested / approved. Default sort: needs attention first. Overview gets a "PR pipeline" card: Draft → Review required → Changes requested → Approved, plus "N unresolved comment threads" and a "Needs attention" callout linking here.
-- **Runs** (`/runs`): list with pass-rate bars, counts, branch, duration; delete with confirm.
-- **Run detail** (`/runs/:id`): header stats + environment; tabs: *Failures (grouped by signature)* — each group expandable, "Triage all" (bulk note to all cases in group); *All results* — filterable table; click result → case detail.
+- **Runs / History** (`/runs`) — tabs: *Runs* | *History matrix* | *Compare*.
+  - **Run group selector** at the top of the Runs/History area (pill tabs or select, "All groups" allowed only on the Runs list); matrix/compare/trends are always scoped to one group. Remembers last choice (localStorage, try/catch). Run group shown as a chip on every run everywhere. Import form has a Run group field with autocomplete from existing groups (blank = auto-detect). Run detail has "Edit" (name/runGroup/branch). Overview pass-rate trend: one series per run group (or group selector). Test case detail history: grouped/filterable by run group, with a row per group in the history strip.
+  - *Runs*: timeline-ish list; each row: name, run group, commit (short), started, duration, pass-rate bar, status counts, and change chips (▲ N new failures in red, ✓ N fixed in green). Filters: branch, date range, search. Select two runs → "Compare".
+  - *History matrix*: heatmap (rows = tests, columns = runs, oldest→newest), compact square cells colored by status with icon-on-hover tooltip (run name, date, status), sticky test-name column and run header (rotated labels or date), filters (branch, suite, search, only unstable, # runs), click a cell → result/case detail. Must stay readable at 60 columns; horizontal scroll inside the card only.
+  - *Compare*: pick base/head runs (default: latest vs its previous), summary chips, sections New failures / Fixed / Still failing / Added / Removed / Slower with tables.
+- **Runs** (`/runs`) list details: list with pass-rate bars, counts, branch, duration; delete with confirm.
+- **Run detail** (`/runs/:id`): header stats + environment + "vs previous run" banner (N new failures, N fixed, link to compare); `change` badge column in results with filter (default view highlights new failures); failure groups show "NEW" tag and "first seen" run; tabs: *Failures (grouped by signature)* — each group expandable, "Triage all" (bulk note to all cases in group); *All results* — filterable table; click result → case detail.
 - **Import** (`/import`): two cards.
   - *Allure results*: drag & drop a folder (use `webkitdirectory` input + DataTransfer items directory traversal) or a `.zip`; client filters to allowed filenames before upload; optional name/branch/commit/build URL; progress bar; result summary.
   - *Spreadsheet*: upload xlsx/csv → pick sheet → column-mapping table with sample data & suggested mapping → status-value mapping → dry-run summary → commit.
