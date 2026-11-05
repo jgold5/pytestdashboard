@@ -102,7 +102,17 @@ pnpm build
 pnpm start          # http://localhost:3000 → log in with DASHBOARD_TOKEN
 ```
 
-Data lives in `apps/server/data/dashboard.db` (SQLite). Back up that folder; delete it to start fresh.
+Data lives in `apps/server/data/dashboard.db` (SQLite). Back up that folder.
+
+To start fresh, empty it with one command. The server can keep running, and you stay
+signed in: tokens and Jira/GitHub settings are in `.env`, not in the database.
+
+```bash
+pnpm reset-data          # lists what it will delete and asks first (--yes skips the question)
+pnpm reset-data --all    # also clears the team name and goal from Settings
+```
+
+Then run a Jira/GitHub sync and scan your branches again.
 
 Optional demo data, to look around before importing your own (stop the server first):
 
