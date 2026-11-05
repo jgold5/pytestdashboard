@@ -1,0 +1,57 @@
+{
+  "uuid": "1d30c3c0-62fd-504c-b9d8-b0b24b95205b",
+  "historyId": "642f68d2ddb755278975aed4b8bc8b0e",
+  "testCaseId": "ce00faba616954ceaf218aab314404d7",
+  "fullName": "tests.routes.test_order_route.TestOrderRoute#test_order_route_publishes_to_queue",
+  "name": "test_order_route_publishes_to_queue",
+  "status": "failed",
+  "stage": "finished",
+  "start": 1793700019361,
+  "stop": 1793700020063,
+  "labels": [
+    {
+      "name": "framework",
+      "value": "pytest"
+    },
+    {
+      "name": "language",
+      "value": "cpython3"
+    },
+    {
+      "name": "package",
+      "value": "tests.routes.test_order_route"
+    },
+    {
+      "name": "parentSuite",
+      "value": "tests.routes"
+    },
+    {
+      "name": "suite",
+      "value": "test_order_route"
+    },
+    {
+      "name": "host",
+      "value": "ci-runner-7"
+    },
+    {
+      "name": "thread",
+      "value": "1234-MainThread"
+    },
+    {
+      "name": "subSuite",
+      "value": "TestOrderRoute"
+    },
+    {
+      "name": "feature",
+      "value": "Order routes"
+    }
+  ],
+  "parameters": [],
+  "links": [],
+  "steps": [],
+  "attachments": [],
+  "statusDetails": {
+    "message": "AssertionError: assert 0 == 1\n +  where 0 = queue_depth('ORDERS.IN')",
+    "trace": "Traceback (most recent call last):\n  File \"tests/routes/test_order_route.py\", line 88, in test_order_route_publishes_to_queue\n    route.run()\nAssertionError: assert 0 == 1"
+  }
+}

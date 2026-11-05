@@ -1,0 +1,56 @@
+{
+  "uuid": "c6dd5638-b6b3-5f75-9233-2160d100b068",
+  "historyId": "7a9653f390605795862454e130ce83d4",
+  "testCaseId": "0798d5dac38b5767a9ce665fbaae92bb",
+  "fullName": "tests.routes.test_dead_letter.TestJmsOutage#test_dead_letter_channel_on_jms_outage",
+  "name": "test_dead_letter_channel_on_jms_outage",
+  "status": "skipped",
+  "stage": "finished",
+  "start": 1793700019360,
+  "stop": 1793700019361,
+  "labels": [
+    {
+      "name": "framework",
+      "value": "pytest"
+    },
+    {
+      "name": "language",
+      "value": "cpython3"
+    },
+    {
+      "name": "package",
+      "value": "tests.routes.test_dead_letter"
+    },
+    {
+      "name": "parentSuite",
+      "value": "tests.routes"
+    },
+    {
+      "name": "suite",
+      "value": "test_dead_letter"
+    },
+    {
+      "name": "host",
+      "value": "ci-runner-7"
+    },
+    {
+      "name": "thread",
+      "value": "1234-MainThread"
+    },
+    {
+      "name": "subSuite",
+      "value": "TestJmsOutage"
+    },
+    {
+      "name": "feature",
+      "value": "Dead letter channel"
+    }
+  ],
+  "parameters": [],
+  "links": [],
+  "steps": [],
+  "attachments": [],
+  "statusDetails": {
+    "message": "Skipped: JMS broker (Artemis) not available in this environment"
+  }
+}

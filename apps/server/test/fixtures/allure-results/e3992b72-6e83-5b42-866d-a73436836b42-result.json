@@ -1,0 +1,53 @@
+{
+  "uuid": "e3992b72-6e83-5b42-866d-a73436836b42",
+  "historyId": "9f647d0f8918520ca1801b265d592342",
+  "testCaseId": "c3c7b291dc7e5cfd9dd1ebeb3b5e120c",
+  "fullName": "tests.routes.test_invoice_route#test_invoice_upsert_merge_into_oracle",
+  "name": "test_invoice_upsert_merge_into_oracle",
+  "status": "failed",
+  "stage": "finished",
+  "start": 1793700002453,
+  "stop": 1793700003333,
+  "labels": [
+    {
+      "name": "framework",
+      "value": "pytest"
+    },
+    {
+      "name": "language",
+      "value": "cpython3"
+    },
+    {
+      "name": "package",
+      "value": "tests.routes.test_invoice_route"
+    },
+    {
+      "name": "parentSuite",
+      "value": "tests.routes"
+    },
+    {
+      "name": "suite",
+      "value": "test_invoice_route"
+    },
+    {
+      "name": "host",
+      "value": "ci-runner-7"
+    },
+    {
+      "name": "thread",
+      "value": "1234-MainThread"
+    },
+    {
+      "name": "feature",
+      "value": "Invoice routes"
+    }
+  ],
+  "parameters": [],
+  "links": [],
+  "steps": [],
+  "attachments": [],
+  "statusDetails": {
+    "message": "org.apache.camel.CamelExecutionException: Exception occurred during execution on the exchange: Exchange[ID-ci-runner-7-41235-1793700000000-0-5]\nCaused by: java.sql.SQLIntegrityConstraintViolationException: ORA-00001: unique constraint (APP.PK_INVOICE) violated",
+    "trace": "Traceback (most recent call last):\n  File \"tests/routes/test_invoice_route.py\", line 88, in test_invoice_upsert_merge_into_oracle\n    route.run()\norg.apache.camel.CamelExecutionException: Exception occurred during execution on the exchange: Exchange[ID-ci-runner-7-41235-1793700000000-0-5]"
+  }
+}

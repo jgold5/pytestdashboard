@@ -1,0 +1,8 @@
+{
+  "name": "GitHub Actions",
+  "type": "github",
+  "buildName": "nightly #482",
+  "buildOrder": 482,
+  "buildUrl": "https://github.com/acme/camel-routes/actions/runs/123456",
+  "reportName": "Allure Report"
+}

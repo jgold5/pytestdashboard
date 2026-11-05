@@ -1,0 +1,53 @@
+{
+  "uuid": "b335bbcc-8052-597a-b4a3-fc5cf958ba77",
+  "historyId": "7679eca5113a52efaf9bd474f0433dbc",
+  "testCaseId": "3afddda5605f57f99aa6f9fa13fd43cb",
+  "fullName": "tests.routes.test_dead_letter#test_dead_letter_channel_on_ora_00001",
+  "name": "test_dead_letter_channel_on_ora_00001",
+  "status": "failed",
+  "stage": "finished",
+  "start": 1793700003333,
+  "stop": 1793700003973,
+  "labels": [
+    {
+      "name": "framework",
+      "value": "pytest"
+    },
+    {
+      "name": "language",
+      "value": "cpython3"
+    },
+    {
+      "name": "package",
+      "value": "tests.routes.test_dead_letter"
+    },
+    {
+      "name": "parentSuite",
+      "value": "tests.routes"
+    },
+    {
+      "name": "suite",
+      "value": "test_dead_letter"
+    },
+    {
+      "name": "host",
+      "value": "ci-runner-7"
+    },
+    {
+      "name": "thread",
+      "value": "1234-MainThread"
+    },
+    {
+      "name": "feature",
+      "value": "Dead letter channel"
+    }
+  ],
+  "parameters": [],
+  "links": [],
+  "steps": [],
+  "attachments": [],
+  "statusDetails": {
+    "message": "oracledb.exceptions.IntegrityError: ORA-00001: unique constraint (APP.PK_INVOICE) violated\nHelp: https://docs.oracle.com/error-help/db/ora-00001/",
+    "trace": "Traceback (most recent call last):\n  File \"tests/routes/test_dead_letter.py\", line 88, in test_dead_letter_channel_on_ora_00001\n    route.run()\noracledb.exceptions.IntegrityError: ORA-00001: unique constraint (APP.PK_INVOICE) violated"
+  }
+}

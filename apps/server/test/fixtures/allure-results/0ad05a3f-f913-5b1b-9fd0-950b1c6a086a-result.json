@@ -1,0 +1,53 @@
+{
+  "uuid": "0ad05a3f-f913-5b1b-9fd0-950b1c6a086a",
+  "historyId": "642f68d2ddb755278975aed4b8bc8b0e",
+  "testCaseId": "ce00faba616954ceaf218aab314404d7",
+  "fullName": "tests.routes.test_order_route.TestOrderRoute#test_order_route_publishes_to_queue",
+  "name": "test_order_route_publishes_to_queue",
+  "status": "passed",
+  "stage": "finished",
+  "start": 1793700020063,
+  "stop": 1793700020751,
+  "labels": [
+    {
+      "name": "framework",
+      "value": "pytest"
+    },
+    {
+      "name": "language",
+      "value": "cpython3"
+    },
+    {
+      "name": "package",
+      "value": "tests.routes.test_order_route"
+    },
+    {
+      "name": "parentSuite",
+      "value": "tests.routes"
+    },
+    {
+      "name": "suite",
+      "value": "test_order_route"
+    },
+    {
+      "name": "host",
+      "value": "ci-runner-7"
+    },
+    {
+      "name": "thread",
+      "value": "1234-MainThread"
+    },
+    {
+      "name": "subSuite",
+      "value": "TestOrderRoute"
+    },
+    {
+      "name": "feature",
+      "value": "Order routes"
+    }
+  ],
+  "parameters": [],
+  "links": [],
+  "steps": [],
+  "attachments": []
+}

@@ -1,0 +1,49 @@
+{
+  "uuid": "5f23bc55-fd70-50e4-b0f3-cd8661726fa2",
+  "historyId": "6da32d531974579f8314c7e8d3f14080",
+  "testCaseId": "ea2e551023075638b9c20e30d6a08d86",
+  "fullName": "tests.routes.test_invoice_route#test_invoice_route_transforms_xml",
+  "name": "test_invoice_route_transforms_xml",
+  "status": "passed",
+  "stage": "finished",
+  "start": 1793700003973,
+  "stop": 1793700004328,
+  "labels": [
+    {
+      "name": "framework",
+      "value": "pytest"
+    },
+    {
+      "name": "language",
+      "value": "cpython3"
+    },
+    {
+      "name": "package",
+      "value": "tests.routes.test_invoice_route"
+    },
+    {
+      "name": "parentSuite",
+      "value": "tests.routes"
+    },
+    {
+      "name": "suite",
+      "value": "test_invoice_route"
+    },
+    {
+      "name": "host",
+      "value": "ci-runner-7"
+    },
+    {
+      "name": "thread",
+      "value": "1234-MainThread"
+    },
+    {
+      "name": "feature",
+      "value": "Invoice routes"
+    }
+  ],
+  "parameters": [],
+  "links": [],
+  "steps": [],
+  "attachments": []
+}

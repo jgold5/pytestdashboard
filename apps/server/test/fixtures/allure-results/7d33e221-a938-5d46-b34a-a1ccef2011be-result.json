@@ -1,0 +1,63 @@
+{
+  "uuid": "7d33e221-a938-5d46-b34a-a1ccef2011be",
+  "historyId": "921ef8ca66165287ba631b7e0fcf0e43",
+  "testCaseId": "f965768f660c5be99239136c0db2b4ab",
+  "fullName": "tests.routes.test_invoice_route.TestInvoiceRetry#test_invoice_route_retries_on_timeout",
+  "name": "test_invoice_route_retries_on_timeout",
+  "status": "passed",
+  "stage": "finished",
+  "start": 1793700001163,
+  "stop": 1793700002453,
+  "labels": [
+    {
+      "name": "framework",
+      "value": "pytest"
+    },
+    {
+      "name": "language",
+      "value": "cpython3"
+    },
+    {
+      "name": "package",
+      "value": "tests.routes.test_invoice_route"
+    },
+    {
+      "name": "parentSuite",
+      "value": "tests.routes"
+    },
+    {
+      "name": "suite",
+      "value": "test_invoice_route"
+    },
+    {
+      "name": "host",
+      "value": "ci-runner-7"
+    },
+    {
+      "name": "thread",
+      "value": "1234-MainThread"
+    },
+    {
+      "name": "subSuite",
+      "value": "TestInvoiceRetry"
+    },
+    {
+      "name": "feature",
+      "value": "Invoice routes"
+    },
+    {
+      "name": "AS_ID",
+      "value": "1042"
+    }
+  ],
+  "parameters": [],
+  "links": [
+    {
+      "name": "QA-101",
+      "url": "https://jira.example.com/browse/QA-101",
+      "type": "tms"
+    }
+  ],
+  "steps": [],
+  "attachments": []
+}

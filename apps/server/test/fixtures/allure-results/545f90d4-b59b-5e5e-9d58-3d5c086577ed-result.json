@@ -1,0 +1,57 @@
+{
+  "uuid": "545f90d4-b59b-5e5e-9d58-3d5c086577ed",
+  "historyId": "83a84c2840875d2ca0d6226f174cc48d",
+  "testCaseId": "e4fba5d5ec99559d91f953448c933b3c",
+  "fullName": "tests.routes.test_payment_route.TestPaymentRoute#test_payment_route_writes_ledger",
+  "name": "test_payment_route_writes_ledger",
+  "status": "broken",
+  "stage": "finished",
+  "start": 1793700004328,
+  "stop": 1793700019360,
+  "labels": [
+    {
+      "name": "framework",
+      "value": "pytest"
+    },
+    {
+      "name": "language",
+      "value": "cpython3"
+    },
+    {
+      "name": "package",
+      "value": "tests.routes.test_payment_route"
+    },
+    {
+      "name": "parentSuite",
+      "value": "tests.routes"
+    },
+    {
+      "name": "suite",
+      "value": "test_payment_route"
+    },
+    {
+      "name": "host",
+      "value": "ci-runner-7"
+    },
+    {
+      "name": "thread",
+      "value": "1234-MainThread"
+    },
+    {
+      "name": "subSuite",
+      "value": "TestPaymentRoute"
+    },
+    {
+      "name": "feature",
+      "value": "Payment routes"
+    }
+  ],
+  "parameters": [],
+  "links": [],
+  "steps": [],
+  "attachments": [],
+  "statusDetails": {
+    "message": "oracledb.exceptions.OperationalError: ORA-12541: TNS:no listener\nHelp: https://docs.oracle.com/error-help/db/ora-12541/",
+    "trace": "Traceback (most recent call last):\n  File \"tests/routes/test_payment_route.py\", line 88, in test_payment_route_writes_ledger\n    route.run()\noracledb.exceptions.OperationalError: ORA-12541: TNS:no listener"
+  }
+}

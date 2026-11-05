@@ -1,0 +1,44 @@
+{
+  "name": "@ptd/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsup",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "seed": "tsx scripts/seed.ts",
+    "fixtures": "tsx scripts/make-fixtures.ts"
+  },
+  "dependencies": {
+    "@fastify/cookie": "11.1.5",
+    "@fastify/cors": "11.4.0",
+    "@fastify/helmet": "13.2.0",
+    "@fastify/multipart": "10.1.7",
+    "@fastify/rate-limit": "11.2.2",
+    "@fastify/static": "10.1.9",
+    "@ptd/shared": "workspace:*",
+    "better-sqlite3": "13.0.3",
+    "csv-parse": "7.0.3",
+    "csv-stringify": "6.9.0",
+    "drizzle-orm": "0.45.4",
+    "fastify": "5.12.8",
+    "read-excel-file": "9.3.14",
+    "yauzl": "3.4.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "9.6.0",
+    "@types/node": "22.20.5",
+    "@types/yauzl": "3.4.0",
+    "drizzle-kit": "0.31.11",
+    "pino-pretty": "13.2.0",
+    "tsup": "9.0.0",
+    "tsx": "4.23.15",
+    "typescript": "6.0.3",
+    "vitest": "5.1.0",
+    "write-excel-file": "4.1.1"
+  }
+}

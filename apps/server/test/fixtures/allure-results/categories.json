@@ -1,0 +1,1 @@
+[{"name": "Infrastructure", "messageRegex": ".*(ORA-12541|TNS-|Connection refused).*", "matchedStatuses": ["broken"]}]
