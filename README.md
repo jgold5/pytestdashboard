@@ -221,6 +221,21 @@ curl --fail-with-body -sS -X POST "$DASHBOARD_URL/api/triggers/scan" \
   triggers it newly automates.
 - Scans of a merged branch can be removed with `DELETE /api/triggers/branches/<branch>`.
 
+To share how your routes and tests are written without sharing the code, run
+[`tools/distill_camel_repo.py`](tools/distill_camel_repo.py) (Python 3.9+, no
+packages):
+
+```bash
+python3 tools/distill_camel_repo.py /path/to/repo -o distilled --zip
+```
+
+It writes a copy with only the route inputs, the properties they use, and the
+tests' decorators. Every name and value is replaced by a generic word, and the
+replacement is the same in every file, so labels still point at their routes.
+Passwords and user names in URIs become `REDACTED`. Share `distilled.zip`, but keep
+`distilled.map.json` (original → generic words) to yourself. The zip can also be
+uploaded to `/api/triggers/scan` as is.
+
 ### Run groups
 
 Every run belongs to a **run group**: a set of tests that are meant to be compared
