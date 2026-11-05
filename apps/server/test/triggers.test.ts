@@ -571,6 +571,8 @@ describe('routes in the source code are the scope', () => {
         await t.app.inject({ method: 'POST', url: '/api/test-cases', payload: { key, title: key, automationStatus: 'automated' } });
       const summary = async () => (await t.app.inject({ url: '/api/summary' })).json<{ coverage: Record<string, unknown> }>().coverage;
       expect(await summary()).toMatchObject({ unit: 'cases', total: 3, automated: 3 });
+      const overview = async (q = '') => (await t.app.inject({ url: `/api/triggers/overview${q}` })).json<Record<string, unknown>>();
+      expect(await overview()).toMatchObject({ branch: null, counts: { tested: 0, branch: 0, none: 0 }, items: [] });
 
       const upload = (fields: Record<string, string>, field: string, filename: string, content: string) => {
         const mp = multipart(fields, [{ field, filename, content }]);
@@ -589,6 +591,19 @@ describe('routes in the source code are the scope', () => {
       const report = (await t.app.inject({ url: '/api/report' })).json<{ coverage: { unit: string }; automationInFlight: { projectedAutomated: number } }>();
       expect(report.coverage.unit).toBe('routes');
       expect(report.automationInFlight.projectedAutomated).toBe(2); // automated + covered on a PR branch
+
+      // the Overview's route table: the untested routes first, one status at a time
+      expect(await overview()).toMatchObject({
+        branch: 'main',
+        counts: { tested: 1, branch: 1, none: 1 },
+        status: 'none',
+        items: [{ routeId: 'purge', status: 'none', firesOn: '0 0 2 * * ?', tests: [], branches: [] }],
+      });
+      expect(await overview('?status=branch')).toMatchObject({ items: [{ routeId: 'credit-load', branches: ['feature/credit'] }] });
+      expect(await overview('?status=tested')).toMatchObject({
+        items: [{ routeId: 'invoice-load', firesOn: 'INV.TXT', tests: [expect.stringContaining('test_invoice')] }],
+      });
+      expect((await t.app.inject({ url: '/api/triggers/overview?limit=0' })).statusCode).toBe(400);
     } finally {
       await t.close();
     }

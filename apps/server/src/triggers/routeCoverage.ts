@@ -7,6 +7,7 @@
  * Reads trigger_scans directly so the coverage module needn't depend on the trigger store.
  */
 import { desc, inArray } from 'drizzle-orm';
+import type { RouteStatus, TriggerOverviewQuery, TriggerOverviewResponse, TriggerOverviewRow } from '@ptd/shared';
 import type { Db } from '../db/client.js';
 import { triggerScans } from '../db/schema.js';
 import { coverTriggers, type StoredTrigger, type TestLabels } from './scan.js';
@@ -23,35 +24,40 @@ export interface RouteCoverage {
   inProgress: number;
   /** Branch whose route scan defines the scope. */
   branch: string;
+  commit: string | null;
+  scannedAt: string;
+  /** Every trigger on that branch with its status, sorted by module then route. */
+  rows: TriggerOverviewRow[];
 }
 
 /** Per database: scan ids only identify a scan within one database. */
 const caches = new WeakMap<Db, { key: string; value: RouteCoverage }>();
 
+const firesOn = (t: StoredTrigger): string => t.filePattern ?? t.schedule ?? t.condition ?? t.resolvedUri;
+
 export function routeCoverage(db: Db): RouteCoverage | null {
   // latest scan per branch, separately for route and test scans (light columns first)
   const rows = db
-    .select({ id: triggerScans.id, branch: triggerScans.branch, files: triggerScans.files })
+    .select({ id: triggerScans.id, branch: triggerScans.branch, files: triggerScans.files, commit: triggerScans.commit, scannedAt: triggerScans.scannedAt })
     .from(triggerScans)
     .orderBy(desc(triggerScans.scannedAt), desc(triggerScans.id))
     .all();
-  const routes = new Map<string, number>();
+  const routes = new Map<string, (typeof rows)[number]>();
   const tests = new Map<string, number>();
   for (const r of rows) {
-    if (r.files.xml > 0 && !routes.has(r.branch)) routes.set(r.branch, r.id);
+    if (r.files.xml > 0 && !routes.has(r.branch)) routes.set(r.branch, r);
     if (r.files.tests > 0 && !tests.has(r.branch)) tests.set(r.branch, r.id);
   }
   if (routes.size === 0) return null;
-  const byRank = (m: Map<string, number>) => [...m].sort((a, b) => rank(a[0]) - rank(b[0]))[0];
-  const [mainBranch, mainRoutesId] = byRank(routes)!;
-  const mainTests = tests.get(mainBranch) ?? byRank(tests)?.[1] ?? null;
-  const otherTests = [...tests].filter(([, id]) => id !== mainTests).map(([, id]) => id);
+  const [mainBranch, mainScan] = [...routes].sort((a, b) => rank(a[0]) - rank(b[0]))[0]!;
+  const mainTests = tests.get(mainBranch) ?? [...tests].sort((a, b) => rank(a[0]) - rank(b[0]))[0]?.[1] ?? null;
+  const otherTests = [...tests].filter(([, id]) => id !== mainTests);
 
-  const key = `${mainRoutesId}:${mainTests}:${otherTests.join(',')}`;
+  const key = `${mainScan.id}:${mainTests}:${otherTests.map(([, id]) => id).join(',')}`;
   const cached = caches.get(db);
   if (cached?.key === key) return cached.value;
 
-  const ids = [mainRoutesId, ...(mainTests ? [mainTests] : []), ...otherTests];
+  const ids = [mainScan.id, ...(mainTests ? [mainTests] : []), ...otherTests.map(([, id]) => id)];
   const full = new Map(
     db
       .select({ id: triggerScans.id, triggers: triggerScans.triggers, tests: triggerScans.tests })
@@ -60,17 +66,56 @@ export function routeCoverage(db: Db): RouteCoverage | null {
       .all()
       .map((r) => [r.id, r] as const),
   );
-  const triggers: StoredTrigger[] = full.get(mainRoutesId)?.triggers ?? [];
+  const triggers: StoredTrigger[] = full.get(mainScan.id)?.triggers ?? [];
   const testsOf = (id: number | null): TestLabels[] => (id ? (full.get(id)?.tests ?? []) : []);
   const onMain = coverTriggers(triggers, testsOf(mainTests));
-  const onBranches = coverTriggers(triggers, otherTests.flatMap(testsOf));
+  const onBranch = otherTests.map(([branch, id]) => [branch, coverTriggers(triggers, testsOf(id))] as const);
+
   let automated = 0;
   let inProgress = 0;
-  for (const t of triggers) {
-    if ((onMain.get(t.key)?.length ?? 0) > 0) automated++;
-    else if ((onBranches.get(t.key)?.length ?? 0) > 0) inProgress++;
-  }
-  const value = { total: triggers.length, automated, inProgress, branch: mainBranch };
+  const out: TriggerOverviewRow[] = triggers.map((t) => {
+    const mainCov = onMain.get(t.key) ?? [];
+    const branches = onBranch.filter(([, cov]) => (cov.get(t.key)?.length ?? 0) > 0).map(([b]) => b);
+    const status: RouteStatus = mainCov.length > 0 ? 'tested' : branches.length > 0 ? 'branch' : 'none';
+    if (status === 'tested') automated++;
+    else if (status === 'branch') inProgress++;
+    return {
+      key: t.key,
+      routeId: t.routeId,
+      module: t.module,
+      kind: t.kind,
+      scheme: t.scheme,
+      firesOn: firesOn(t),
+      status,
+      tests: [...new Set(mainCov.map((c) => c.test))].slice(0, 3),
+      branches,
+    };
+  });
+  out.sort((a, b) => (a.module ?? '').localeCompare(b.module ?? '') || (a.routeId ?? a.key).localeCompare(b.routeId ?? b.key));
+  const value: RouteCoverage = {
+    total: triggers.length,
+    automated,
+    inProgress,
+    branch: mainBranch,
+    commit: mainScan.commit,
+    scannedAt: mainScan.scannedAt,
+    rows: out,
+  };
   caches.set(db, { key, value });
   return value;
+}
+
+/** The Overview's route table: one status at a time, the most urgent first by default. */
+export function routeOverview(db: Db, q: TriggerOverviewQuery): TriggerOverviewResponse {
+  const cov = routeCoverage(db);
+  const counts = { tested: cov?.automated ?? 0, branch: cov?.inProgress ?? 0, none: cov ? cov.total - cov.automated - cov.inProgress : 0 };
+  const status: RouteStatus = q.status ?? (counts.none > 0 ? 'none' : counts.branch > 0 ? 'branch' : 'tested');
+  return {
+    branch: cov?.branch ?? null,
+    commit: cov?.commit ?? null,
+    scannedAt: cov?.scannedAt ?? null,
+    counts,
+    status,
+    items: (cov?.rows ?? []).filter((r) => r.status === status).slice(0, q.limit),
+  };
 }

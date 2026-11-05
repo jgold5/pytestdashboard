@@ -20,6 +20,8 @@ import type {
   TriggerGithubInfo,
   TriggerGithubScanRequest,
   TriggerListResponse,
+  TriggerOverviewResponse,
+  RouteStatus,
   TriggerQuery,
   TriggerScanResponse,
   RunComparison,
@@ -527,6 +529,16 @@ export function useTriggers(q: TriggerQueryInput) {
   return useQuery({
     queryKey: qk.triggers(q),
     queryFn: ({ signal }) => api.get<TriggerListResponse>('/api/triggers', q, signal),
+    placeholderData: keepPreviousData,
+  });
+}
+
+/** The default branch's routes with one status (untested first), for the Overview. */
+export function useTriggerOverview(status: RouteStatus | undefined, limit = 8) {
+  return useQuery({
+    queryKey: ['triggers', 'overview', status ?? null, limit],
+    queryFn: ({ signal }) =>
+      api.get<TriggerOverviewResponse>('/api/triggers/overview', { ...(status ? { status } : {}), limit: String(limit) }, signal),
     placeholderData: keepPreviousData,
   });
 }

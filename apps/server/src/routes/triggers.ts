@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { TriggerGithubScanRequest, TriggerQuery, type TriggerGithubInfo } from '@ptd/shared';
+import { TriggerGithubScanRequest, TriggerOverviewQuery, TriggerQuery, type TriggerGithubInfo } from '@ptd/shared';
 import type { Deps } from '../deps.js';
 import { recordCoverageSnapshot } from '../domain/coverage.js';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -9,6 +9,7 @@ import path from 'node:path';
 import { AppError, parseWith } from '../errors.js';
 import { commitFromTopDir, downloadBranchZip, listBranches } from '../integrations/githubArchive.js';
 import type { ZipLimits } from '../import/zip.js';
+import { routeOverview } from '../triggers/routeCoverage.js';
 import { scanRepository } from '../triggers/scan.js';
 import { deleteBranchScans, listTriggers, saveScan } from '../triggers/store.js';
 import { REPO_ARCHIVE_LIMITS, applyOnly, collectRepoUpload, readRepoZip } from '../triggers/upload.js';
@@ -37,6 +38,7 @@ export function triggerRoutes(app: FastifyInstance, { db, config }: Deps, zipLim
   });
 
   app.get('/api/triggers', async (req) => listTriggers(db, parseWith(TriggerQuery, req.query)));
+  app.get('/api/triggers/overview', async (req) => routeOverview(db, parseWith(TriggerOverviewQuery, req.query)));
 
   // Scan any branch of a configured repo straight from GitHub (editor only: it uses the GitHub token)
   app.get('/api/triggers/github', async (): Promise<TriggerGithubInfo> => ({

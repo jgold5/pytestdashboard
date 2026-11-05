@@ -1315,6 +1315,45 @@ export type TriggerGithubScanRequest = z.infer<typeof TriggerGithubScanRequest>;
 export const TriggerGithubInfo = z.object({ configured: z.boolean(), repos: z.array(z.string()) });
 export type TriggerGithubInfo = z.infer<typeof TriggerGithubInfo>;
 
+/** Where a route on the default branch stands: a test on that branch, a test only on other branches, or none. */
+export const RouteStatus = z.enum(['tested', 'branch', 'none']);
+export type RouteStatus = z.infer<typeof RouteStatus>;
+
+/** `GET /api/triggers/overview`: the default branch's routes with one status, for the Overview table. */
+export const TriggerOverviewQuery = z.object({
+  status: RouteStatus.optional(),
+  limit: z.coerce.number().int().min(1).max(50).default(8),
+});
+export type TriggerOverviewQuery = z.infer<typeof TriggerOverviewQuery>;
+
+export const TriggerOverviewRow = z.object({
+  key: z.string(),
+  routeId: z.string().nullable(),
+  module: z.string().nullable(),
+  kind: TriggerKind,
+  scheme: z.string(),
+  /** File pattern, schedule or file-name condition: what makes the route fire. */
+  firesOn: z.string(),
+  status: RouteStatus,
+  /** Tests on the default branch that cover it (first 3), as pytest node ids. */
+  tests: z.array(z.string()),
+  /** Other branches whose tests cover it. */
+  branches: z.array(z.string()),
+});
+export type TriggerOverviewRow = z.infer<typeof TriggerOverviewRow>;
+
+export const TriggerOverviewResponse = z.object({
+  /** Null until a route scan exists. */
+  branch: z.string().nullable(),
+  commit: z.string().nullable(),
+  scannedAt: z.string().nullable(),
+  counts: z.object({ tested: z.number().int(), branch: z.number().int(), none: z.number().int() }),
+  /** The status listed: the one asked for, else the first of none → branch → tested that has routes. */
+  status: RouteStatus,
+  items: z.array(TriggerOverviewRow),
+});
+export type TriggerOverviewResponse = z.infer<typeof TriggerOverviewResponse>;
+
 export const TriggerChange = z.enum(['added', 'changed', 'removed', 'unchanged']);
 export type TriggerChange = z.infer<typeof TriggerChange>;
 
