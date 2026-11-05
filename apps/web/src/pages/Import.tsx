@@ -229,8 +229,11 @@ function AllureDropZone({
   disabled,
   acceptAttr,
   options,
+  labelPrefix = '',
 }: {
   title: string;
+  /** Prefix for the hidden inputs' labels, so two drop zones on one page stay distinguishable. */
+  labelPrefix?: string;
   hint?: string;
   onFiles: (files: File[]) => void;
   disabled: boolean;
@@ -284,7 +287,7 @@ function AllureDropZone({
         type="file"
         className="sr-only"
         tabIndex={-1}
-        aria-label="Choose allure-results folder"
+        aria-label={`${labelPrefix}Choose allure-results folder`}
         multiple
         {...{ webkitdirectory: '', directory: '' }}
         onChange={(e) => {
@@ -297,7 +300,7 @@ function AllureDropZone({
         type="file"
         className="sr-only"
         tabIndex={-1}
-        aria-label="Choose zip or result files"
+        aria-label={`${labelPrefix}Choose zip or result files`}
         multiple
         accept={acceptAttr}
         onChange={(e) => {
@@ -412,6 +415,7 @@ function HistoryCard() {
           disabled={uploading}
           acceptAttr=".zip,.json,.gz,.properties,application/zip,application/gzip"
           options={HISTORY}
+          labelPrefix="History: "
         />
 
         {plan ? <SelectionSummary plan={plan} onClear={() => setPlan(null)} disabled={uploading} /> : null}
@@ -426,13 +430,13 @@ function HistoryCard() {
         ) : null}
 
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Run group" htmlFor={`${id}-group`} hint="Blank = auto-detect per run" error={errors.runGroup}>
+          <Field label="History run group" htmlFor={`${id}-group`} hint="Blank = auto-detect per run" error={errors.runGroup}>
             <Input id={`${id}-group`} list={`${id}-groups`} value={fields.runGroup} maxLength={LIMITS.shortTextMax} onChange={(e) => setFields({ ...fields, runGroup: e.target.value })} placeholder="auto-detect" className="font-mono" />
             <datalist id={`${id}-groups`}>
               {meta.data?.runGroups.map((g) => <option key={g.name} value={g.name}>{`${g.runs} runs`}</option>)}
             </datalist>
           </Field>
-          <Field label="Branch" htmlFor={`${id}-branch`} hint="Applies to every run" error={errors.branch}>
+          <Field label="History branch" htmlFor={`${id}-branch`} hint="Applies to every run" error={errors.branch}>
             <Input id={`${id}-branch`} list={`${id}-branches`} value={fields.branch} maxLength={LIMITS.shortTextMax} onChange={(e) => setFields({ ...fields, branch: e.target.value })} placeholder="main" className="font-mono" />
             <datalist id={`${id}-branches`}>
               {meta.data?.branches.map((b) => <option key={b} value={b} />)}
