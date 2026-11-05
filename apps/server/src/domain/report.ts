@@ -274,7 +274,9 @@ export function getReport(db: Db, periodDays: number, today: Date = new Date()):
     },
     prPipeline,
     automationInFlight: (() => {
-      const projectedAutomated = countProjectedAutomated(db);
+      // routes: what tests on PR branches already cover lands with those PRs
+      const projectedAutomated =
+        coverage.unit === 'routes' ? coverage.automated + coverage.inProgress : countProjectedAutomated(db);
       return {
         stages: computePipelineCounts(db),
         projectedAutomated,

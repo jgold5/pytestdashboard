@@ -561,6 +561,39 @@ describe('Xray keys in tests', () => {
   });
 });
 
+describe('routes in the source code are the scope', () => {
+  it('headline coverage counts route triggers once the Camel repo is scanned; cases no longer add to it', async () => {
+    const t = await createTestApp();
+    try {
+      // cases from anywhere (spreadsheet, Jira…) count until routes exist
+      for (const key of ['XL-1', 'XL-2', 'XL-3'])
+        await t.app.inject({ method: 'POST', url: '/api/test-cases', payload: { key, title: key, automationStatus: 'automated' } });
+      const summary = async () => (await t.app.inject({ url: '/api/summary' })).json<{ coverage: Record<string, unknown> }>().coverage;
+      expect(await summary()).toMatchObject({ unit: 'cases', total: 3, automated: 3 });
+
+      const upload = (fields: Record<string, string>, field: string, filename: string, content: string) => {
+        const mp = multipart(fields, [{ field, filename, content }]);
+        return t.app.inject({ method: 'POST', url: '/api/triggers/scan', payload: mp.payload, headers: mp.headers });
+      };
+      const routes = '<routes><route id="invoice-load"><from uri="file:/in?fileName=INV.TXT"/></route><route id="credit-load"><from uri="file:/in?fileName=CRN.TXT"/></route><route id="purge"><from uri="quartz://p?cron=0+0+2+*+*+?"/></route></routes>';
+      await upload({ branch: 'main', only: 'routes' }, 'file:camel', 'routes.xml', routes);
+      await upload({ branch: 'main', only: 'tests' }, 'file:src/route_test', 'invoice_route.py', 'def test_invoice():\n    start("invoice-load")\n');
+      // a PR branch in the test repo already covers credit-load
+      await upload({ branch: 'feature/credit', only: 'tests' }, 'file:src/route_test', 'credit_route.py', 'def test_credit():\n    start("credit-load")\n');
+
+      expect(await summary()).toMatchObject({ unit: 'routes', total: 3, automated: 1, inProgress: 1, notAutomated: 1, notAutomatable: 0 });
+      // more cases (e.g. a spreadsheet import) change nothing now
+      await t.app.inject({ method: 'POST', url: '/api/test-cases', payload: { key: 'XL-4', title: 'XL-4', automationStatus: 'automated' } });
+      expect((await summary()).total).toBe(3);
+      const report = (await t.app.inject({ url: '/api/report' })).json<{ coverage: { unit: string }; automationInFlight: { projectedAutomated: number } }>();
+      expect(report.coverage.unit).toBe('routes');
+      expect(report.automationInFlight.projectedAutomated).toBe(2); // automated + covered on a PR branch
+    } finally {
+      await t.close();
+    }
+  });
+});
+
 describe('trigger API auth', () => {
   const INGEST_TOKEN = 'ingest-token-0123456789abcdef0123456789';
   let t: TestApp;

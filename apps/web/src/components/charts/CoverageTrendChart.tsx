@@ -7,7 +7,7 @@ import { ChartTooltipBox, Legend } from './ChartTooltip';
 type Point = Summary['coverageTrend'][number];
 
 /** Total vs automated cases over time (same unit, one axis). */
-export function CoverageTrendChart({ data, height = 220 }: { data: Point[]; height?: number }) {
+export function CoverageTrendChart({ data, height = 220, totalLabel = 'Total cases' }: { data: Point[]; height?: number; totalLabel?: string }) {
   const c = useCssVars(['au-automated', 'fg-3', 'grid', 'axis', 'surface'] as const);
   return (
     <div>
@@ -15,7 +15,7 @@ export function CoverageTrendChart({ data, height = 220 }: { data: Point[]; heig
         <Legend
           items={[
             { label: 'Automated', color: c['au-automated'], shape: 'line' },
-            { label: 'Total cases', color: c['fg-3'], shape: 'line' },
+            { label: totalLabel, color: c['fg-3'], shape: 'line' },
           ]}
         />
       </div>
@@ -49,7 +49,7 @@ export function CoverageTrendChart({ data, height = 220 }: { data: Point[]; heig
                     title={fmtDate(p.date)}
                     rows={[
                       { color: c['au-automated'], label: 'Automated', value: fmtNumber(p.automated) },
-                      { color: c['fg-3'], label: 'Total cases', value: fmtNumber(p.total) },
+                      { color: c['fg-3'], label: totalLabel, value: fmtNumber(p.total) },
                     ]}
                     footer={<>Automation: <b className="text-fg">{fmtPct(p.total ? p.automated / p.total : null, 1)}</b></>}
                   />

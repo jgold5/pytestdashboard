@@ -269,8 +269,14 @@ function Headline({ r, isEditor, onSetGoal }: { r: Report; isEditor: boolean; on
           </p>
         ) : null}
         <p className="mt-3 text-sm text-fg-2">
-          <b className="font-semibold text-fg">{fmtNumber(c.automated)}</b> of {fmtNumber(c.total - c.notAutomatable)} automatable test cases ·{' '}
-          {fmtNumber(c.total)} total
+          <b className="font-semibold text-fg">{fmtNumber(c.automated)}</b> of{' '}
+          {c.unit === 'routes' ? (
+            <>{fmtNumber(c.total)} routes to test (file and schedule triggers in the source code)</>
+          ) : (
+            <>
+              {fmtNumber(c.total - c.notAutomatable)} automatable test cases · {fmtNumber(c.total)} total
+            </>
+          )}
         </p>
         {/* Meter: whole inventory split into parts */}
         <div className="mt-5 flex h-3 w-full gap-[2px] overflow-hidden rounded-full" role="img" aria-label={`Automated ${c.automated}, in progress ${c.inProgress}, not automated ${c.notAutomated}`}>
@@ -429,7 +435,7 @@ function CoverageGoalChart({ r }: { r: Report }) {
                 const rows = [];
                 if (p.automated != null) rows.push({ color: c['au-automated'], label: 'Automated', value: fmtNumber(p.automated) });
                 if (p.automated == null && p.projection != null) rows.push({ color: c['au-automated'], label: 'Projected', value: fmtNumber(p.projection) });
-                if (p.total != null) rows.push({ color: c['fg-3'], label: 'Total cases', value: fmtNumber(p.total) });
+                if (p.total != null) rows.push({ color: c['fg-3'], label: r.coverage.unit === 'routes' ? 'Routes' : 'Total cases', value: fmtNumber(p.total) });
                 return <ChartTooltipBox title={format(p.t, 'MMM d, yyyy')} rows={rows} />;
               }}
             />

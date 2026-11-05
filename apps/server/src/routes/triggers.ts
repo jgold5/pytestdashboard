@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { TriggerQuery } from '@ptd/shared';
 import type { Deps } from '../deps.js';
+import { recordCoverageSnapshot } from '../domain/coverage.js';
 import { AppError, parseWith } from '../errors.js';
 import type { ZipLimits } from '../import/zip.js';
 import { scanRepository } from '../triggers/scan.js';
@@ -27,7 +28,11 @@ export function triggerRoutes(app: FastifyInstance, { db }: Deps, zipLimits?: Zi
     }
     const out = scanRepository(repo.input);
     out.warnings.unshift(...repo.warnings);
-    const result = db.transaction((tx) => saveScan(tx, fields, out, repo.files));
+    const result = db.transaction((tx) => {
+      const saved = saveScan(tx, fields, out, repo.files);
+      recordCoverageSnapshot(tx); // the headline coverage counts routes once the Camel repo is scanned
+      return saved;
+    });
     req.log.info({ branch: result.branch, triggers: result.total, automated: result.automated }, 'trigger scan stored');
     return reply.status(201).send(result);
   });
@@ -36,7 +41,10 @@ export function triggerRoutes(app: FastifyInstance, { db }: Deps, zipLimits?: Zi
 
   app.delete('/api/triggers/branches/:branch', async (req, reply) => {
     const { branch } = parseWith(BranchParam, req.params);
-    db.transaction((tx) => deleteBranchScans(tx, branch));
+    db.transaction((tx) => {
+      deleteBranchScans(tx, branch);
+      recordCoverageSnapshot(tx);
+    });
     return reply.status(204).send();
   });
 }

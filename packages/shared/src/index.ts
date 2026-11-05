@@ -775,6 +775,12 @@ export type ImportStatusValuesResponse = z.infer<typeof ImportStatusValuesRespon
 // ---------------------------------------------------------------------------
 
 export const CoverageTotals = z.object({
+  /**
+   * What is counted: `routes` once the Camel repo has been scanned (route triggers on the default
+   * branch; automated = covered by a test there; inProgress = covered only on another branch),
+   * else `cases` (the test case inventory).
+   */
+  unit: z.enum(['cases', 'routes']),
   total: z.number().int(),
   automated: z.number().int(),
   inProgress: z.number().int(),
