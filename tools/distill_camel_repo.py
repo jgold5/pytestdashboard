@@ -46,7 +46,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-VERSION = "1.5"
+VERSION = "1.6"
 
 SKIP_DIRS = {
     ".git", "node_modules", "target", "build", "dist", "out", ".venv", "venv", "site-packages",
@@ -622,11 +622,14 @@ def distill_tests(source: str, namer: Namer, stats: Counter, decorators: Counter
 # ---------------------------------------------------------------------------
 
 def walk(root: Path):
-    for p in sorted(root.rglob("*")):
-        rel = p.relative_to(root).as_posix()
-        if any(part in SKIP_DIRS for part in rel.split("/")[:-1]) or not p.is_file():
-            continue
-        yield p, rel
+    """Files under root, never entering build output, dependencies or hidden folders (.git…)."""
+    import os
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS and not d.startswith("."))
+        base = Path(dirpath)
+        for name in sorted(filenames):
+            p = base / name
+            yield p, p.relative_to(root).as_posix()
 
 
 def read(p: Path) -> str:
@@ -678,25 +681,39 @@ def glob_match(name: str, patterns: List[str]) -> bool:
 
 
 class NameFinder:
-    """Finds trigger names (route ids, trigger/data file names, file-name conditions) in arbitrary text."""
+    """Finds trigger names (route ids, trigger/data file names, file-name conditions) in arbitrary text.
+
+    Lines are split into words (letters, digits, `_ . -`); every part of a word that starts
+    and ends at a separator is looked up in a dict, so the cost doesn't grow with the
+    number of names (a regex with thousands of alternatives is far too slow here).
+    """
+
+    TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.\-]*")
+    MAX_PARTS = 12
 
     def __init__(self, names: Dict[str, str], prefixes: Dict[str, str]):
         self.names, self.prefixes = names, prefixes
-        alts = sorted({re.escape(n) for n in names}, key=len, reverse=True)
-        palts = sorted({re.escape(n) for n in prefixes}, key=len, reverse=True)
-        self.exact = re.compile(r"(?<![A-Za-z0-9])(" + "|".join(alts) + r")(?![A-Za-z0-9])", re.I) if alts else None
-        self.prefix = re.compile(r"(?<![A-Za-z0-9])(" + "|".join(palts) + r")", re.I) if palts else None
+        self.prefix_lengths = sorted({len(p) for p in prefixes})
 
     def find(self, line: str) -> List[Tuple[str, str]]:
-        hits = []
-        for rx, table in ((self.exact, self.names), (self.prefix, self.prefixes)):
-            if rx is None:
-                continue
-            for m in rx.finditer(line):
-                key = m.group(1).lower()
-                kind = table.get(key)
-                if kind:
-                    hits.append((m.group(1), kind))
+        hits: List[Tuple[str, str]] = []
+        for m in self.TOKEN.finditer(line):
+            tok = m.group(0)
+            low = tok.lower()
+            seps = [i for i, c in enumerate(low) if c in "._-"][: self.MAX_PARTS]
+            starts = [0] + [i + 1 for i in seps]
+            ends = seps + [len(low)]
+            for a in starts:
+                for b in ends:
+                    if b > a:
+                        kind = self.names.get(low[a:b])
+                        if kind:
+                            hits.append((tok[a:b], kind))
+                for n in self.prefix_lengths:
+                    if a + n <= len(low):
+                        kind = self.prefixes.get(low[a:a + n])
+                        if kind:
+                            hits.append((tok[a:a + n], kind))
         return hits
 
 
@@ -811,10 +828,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             name += "_"
         prefixes[repo] = name
 
+    files_list = [(p, f"{prefixes[repo]}/{rel}" if prefixes[repo] else rel) for repo in repos for p, rel in walk(repo)]
+
     def all_files():
-        for repo in repos:
-            for p, rel in walk(repo):
-                yield p, f"{prefixes[repo]}/{rel}" if prefixes[repo] else rel
+        return files_list
 
     configs: Dict[str, Dict[str, List[str]]] = {}
     for p, rel in all_files():
