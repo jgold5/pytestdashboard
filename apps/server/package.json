@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "seed": "tsx scripts/seed.ts",
+    "reset-data": "tsx scripts/reset-data.ts",
     "fixtures": "tsx scripts/make-fixtures.ts"
   },
   "dependencies": {
