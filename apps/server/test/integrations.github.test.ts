@@ -6,6 +6,7 @@ import {
   deriveChecks,
   deriveReviewState,
   graphqlUrl,
+  isMissingScope,
   maxPages,
   prState,
 } from '../src/integrations/github.js';
@@ -647,6 +648,37 @@ describe('GitHub sync', () => {
     expect(s.lastStats?.fetched).toBe(7);
     expect(sleeps[0]).toBe(1000);
     expect(sleeps).toHaveLength(2);
+  });
+
+  it('a token without read:org still syncs: team reviewers are left out', async () => {
+    const inner = githubHandler('acme/api', scenario());
+    mock = await startMockServer(async (req) => {
+      const body = req.body as { query?: string } | undefined;
+      if (req.method === 'POST' && req.path === '/api/graphql' && body?.query?.includes('on Team')) {
+        return {
+          json: {
+            data: null,
+            errors: [
+              {
+                type: 'INSUFFICIENT_SCOPES',
+                message: "Your token has not been granted the required scopes to execute this query. The 'name' field requires one of the following scopes: ['read:org', 'read:discussion'], but your token has only been granted the: ['repo'] scopes.",
+              },
+            ],
+          },
+        };
+      }
+      return inner(req);
+    });
+    t = await createTestApp(env(mock.url));
+    await t.app.inject({ method: 'POST', url: '/api/integrations/github/sync' });
+    await t.runner.waitForIdle();
+    const s = (await t.app.inject({ url: '/api/integrations' })).json<IntegrationStatus[]>()[0]!;
+    expect(s.lastError).toBeNull();
+    expect(s.state).toBe('idle');
+    const queries = mock.requests.filter((r) => r.path === '/api/graphql').map((r) => (r.body as { query: string }).query);
+    expect(queries[0]).toContain('on Team');
+    expect(queries.slice(1).every((q) => !q.includes('on Team'))).toBe(true);
+    expect(isMissingScope([{ message: 'nothing to see' }])).toBe(false);
   });
 
   it('stores sanitized errors (bad credentials) without the token', async () => {

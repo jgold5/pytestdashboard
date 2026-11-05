@@ -174,8 +174,13 @@ export type GqlPr = z.infer<typeof GqlPr>;
 
 const GqlResponse = z.object({
   data: z.object({ repository: z.record(z.string(), GqlPr).nullish() }).nullish(),
-  errors: z.array(z.object({ message: z.string().nullish() })).nullish(),
+  errors: z.array(z.object({ message: z.string().nullish(), type: z.string().nullish() })).nullish(),
 });
+
+/** GitHub rejects a query that reads fields the token's scopes don't cover (e.g. Team.name without read:org). */
+export function isMissingScope(errors: ReadonlyArray<{ message?: string | null; type?: string | null }> | null | undefined): boolean {
+  return (errors ?? []).some((e) => e.type === 'INSUFFICIENT_SCOPES' || /required scopes/i.test(e.message ?? ''));
+}
 
 // ---------------------------------------------------------------------------
 // Derivations (exported for tests)
@@ -253,9 +258,13 @@ function safeHtmlUrl(raw: string | null | undefined, fallback: string): string {
   return fallback;
 }
 
-const PR_FRAGMENT = `fragment PrInfo on PullRequest {
+/**
+ * Team reviewers' names need the `read:org` scope; a token without it gets the whole
+ * query rejected, so the sync retries without them (`withTeams = false`).
+ */
+const prFragment = (withTeams: boolean) => `fragment PrInfo on PullRequest {
   number isDraft reviewDecision
-  reviewRequests(first: 20) { nodes { requestedReviewer { ... on User { login } ... on Team { name slug } ... on Mannequin { login } ... on Bot { login } } } }
+  reviewRequests(first: 20) { nodes { requestedReviewer { ... on User { login }${withTeams ? ' ... on Team { name slug }' : ''} ... on Mannequin { login } ... on Bot { login } } } }
   reviews(last: 50) { nodes { author { login } state submittedAt } }
   reviewThreads(first: 100) { nodes { isResolved } }
   commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
@@ -288,6 +297,8 @@ export function createGithubProvider(
 ): IntegrationProvider {
   const isTestFile = createGlobMatcher(config.testPathGlobs);
   const now = opts.now ?? (() => new Date());
+  /** Reset per sync: a token that gains read:org is used fully again on the next sync. */
+  const teamReviewers = { allowed: true };
 
   async function syncRepo(
     gh: HttpClient,
@@ -429,13 +440,22 @@ export function createGithubProvider(
       const fields = batch
         .map((pr) => `pr${pr.number}: pullRequest(number: ${pr.number}) { ...PrInfo }`)
         .join('\n');
-      const query = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) {\n${fields}\n} }\n${PR_FRAGMENT}`;
-      let res;
-      try {
-        res = await gh.post(gqlEndpoint, {
-          body: { query, variables: { owner, name } },
+      const ask = () =>
+        gh.post(gqlEndpoint, {
+          body: {
+            query: `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) {\n${fields}\n} }\n${prFragment(teamReviewers.allowed)}`,
+            variables: { owner, name },
+          },
           schema: GqlResponse,
         });
+      let res;
+      try {
+        res = await ask();
+        if (!res.data.data?.repository && teamReviewers.allowed && isMissingScope(res.data.errors)) {
+          teamReviewers.allowed = false;
+          ctx.log.warn({ repo }, 'GitHub token lacks read:org: team reviewers are left out (users still shown)');
+          res = await ask();
+        }
       } catch (e) {
         return err(e);
       }
@@ -540,6 +560,7 @@ export function createGithubProvider(
     },
     intervalMinutes: () => config.intervalMinutes,
     sync: async (ctx) => {
+      teamReviewers.allowed = true;
       if (!config.token) throw new Error('GITHUB_TOKEN is not set');
       const gh = new HttpClient({
         label: 'GitHub',
