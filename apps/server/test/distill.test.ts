@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { scanRepository, type ScanInput } from '../src/triggers/scan.js';
+import { scanPytestFile, scanRepository, type ScanInput } from '../src/triggers/scan.js';
 import { classify } from '../src/triggers/upload.js';
 
 const SCRIPT = path.join(import.meta.dirname, '../../../tools/distill_camel_repo.py');
@@ -62,9 +62,11 @@ import pytest
 from acme_helpers import customer_fixture
 
 
+# Xray: ACME-501
 @allure.label("route", "acme-invoice-load")
 @allure.feature("Acme Billing")
 def test_acme_invoice_loads(customer_fixture):
+    """ACME-502 the invoice file is loaded"""
     assert customer_fixture.name == "Jane Doe"
 
 
@@ -166,6 +168,14 @@ describe.skipIf(!hasPython)('distill_camel_repo.py', () => {
       ['regex', 1],
       [null, 0],
     ]);
+  });
+
+  it('keeps the Jira/Xray keys each test names in comments and docstrings', () => {
+    const keysPerTest = (input: ReturnType<typeof load>) =>
+      input.tests.flatMap((f) => scanPytestFile(f.path, f.text)).map((t) => t.keys.length);
+    expect(keysPerTest(original)).toEqual(keysPerTest(distilled));
+    expect(keysPerTest(original)[0]).toBe(2);
+    expect(fs.readFileSync(path.join(tmp, 'out', 'distill-report.md'), 'utf8')).toMatch(/tests naming a Jira\/Xray key: 1/);
   });
 
   it('leaves no original names, secrets or numbers behind', () => {

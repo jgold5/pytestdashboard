@@ -322,7 +322,16 @@ export interface ScannedTest {
    * a trigger file the test drops, a route id it starts).
    */
   strings: string[];
+  /**
+   * Jira/Xray keys (ABC-123) the test names anywhere: its docstring and comments (also the
+   * comment lines just above it), decorators, strings, and the class / module docstring and
+   * comments around it. A test on the default branch naming a case's key marks it automated.
+   */
+  keys: string[];
 }
+
+const JIRA_KEY_G = /\b[A-Z][A-Z0-9_]{1,50}-\d{1,12}\b/g;
+const jiraKeys = (text: string): string[] => [...text.matchAll(JIRA_KEY_G)].map((m) => m[0]);
 
 const STRING_LIT = /[rRbBuUfF]{0,2}("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')/g;
 /** Decorators whose string arguments are not about what is tested. (parametrize counts: a list of route ids is.) */
@@ -386,27 +395,46 @@ export function scanPytestFile(file: string, source: string): ScannedTest[] {
   const lines = source.replace(/\r\n?/g, '\n').split('\n');
   const tests: ScannedTest[] = [];
   let pending: string[] = [];
-  let cls: { name: string; indent: number; strings: string[] } | null = null;
+  /** Keys in the comments and decorators directly above the next def/class. */
+  let pendingKeys: string[] = [];
+  let cls: { name: string; indent: number; strings: string[]; keys: string[] } | null = null;
   const moduleMarks: string[] = [];
   /** Strings in module-level assignments (ROUTE_ID = "invoice-load"), shared by the file's tests. */
   const moduleConsts: string[] = [];
+  /** Keys in the module docstring, module-level comments and constants: shared by the file's tests. */
+  const moduleKeys: string[] = [];
+  /** A comment block or statement that isn't directly above a def belongs to the class or module around it. */
+  const flushPendingKeys = (indent: number) => {
+    if (pendingKeys.length) (cls && indent > cls.indent ? cls.keys : moduleKeys).push(...pendingKeys);
+    pendingKeys = [];
+  };
   let skipIndent = -1;
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i] as string;
     const trimmed = raw.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
+    if (!trimmed) continue;
     const indent = indentOf(raw);
     if (skipIndent >= 0) {
       if (indent > skipIndent) continue; // body of a helper function
       skipIndent = -1;
+    }
+    if (trimmed.startsWith('#')) {
+      pendingKeys.push(...jiraKeys(trimmed));
+      continue;
     }
     if (cls && indent <= cls.indent && !trimmed.startsWith('@')) cls = null;
     if (/^pytestmark\s*=/.test(trimmed)) {
       let text = trimmed;
       while (parenDepth(text) > 0 && i + 1 < lines.length) text += ` ${(lines[++i] as string).trim()}`;
       const marks = pytestmarkStrings(text);
-      if (cls && indent > cls.indent) cls.strings.push(...marks);
-      else if (indent === 0) moduleMarks.push(...marks);
+      if (cls && indent > cls.indent) {
+        cls.strings.push(...marks);
+        cls.keys.push(...jiraKeys(text));
+      } else if (indent === 0) {
+        moduleMarks.push(...marks);
+        moduleKeys.push(...jiraKeys(text));
+      }
+      flushPendingKeys(indent);
       pending = [];
       continue;
     }
@@ -414,26 +442,36 @@ export function scanPytestFile(file: string, source: string): ScannedTest[] {
       let text = trimmed;
       while (parenDepth(text) > 0 && i + 1 < lines.length) text += ` ${(lines[++i] as string).trim()}`;
       pending.push(...decoratorStrings(text));
+      pendingKeys.push(...jiraKeys(text));
       continue;
     }
     const c = /^class\s+(\w+)/.exec(trimmed);
     if (c) {
-      cls = /^Test/.test(c[1] as string) ? { name: c[1] as string, indent, strings: pending } : null;
+      cls = /^Test/.test(c[1] as string) ? { name: c[1] as string, indent, strings: pending, keys: [...pendingKeys] } : null;
+      if (!cls) flushPendingKeys(indent);
       pending = [];
+      pendingKeys = [];
       continue;
     }
     const d = /^(?:async\s+)?def\s+(test\w*)\s*\(/.exec(trimmed);
     if (!d && /^(?:async\s+)?def\s+\w+\s*\(/.test(trimmed)) {
       skipIndent = indent;
       pending = [];
+      pendingKeys = [];
       continue;
     }
     if (/^[A-Za-z_][\w.]*(?:\s*,\s*[A-Za-z_][\w.]*)*\s*(?::[^=]+)?=(?!=)/.test(trimmed) && (indent === 0 || (cls && indent > cls.indent))) {
       let text = trimmed;
       while (parenDepth(text) > 0 && i + 1 < lines.length) text += ` ${(lines[++i] as string).trim()}`;
       const found = bodyStrings(text.slice(text.indexOf('=') + 1));
-      if (indent === 0) moduleConsts.push(...found);
-      else cls?.strings.push(...found);
+      if (indent === 0) {
+        moduleConsts.push(...found);
+        moduleKeys.push(...jiraKeys(text));
+      } else if (cls) {
+        cls.strings.push(...found);
+        cls.keys.push(...jiraKeys(text));
+      }
+      flushPendingKeys(indent);
       pending = [];
       continue;
     }
@@ -447,22 +485,31 @@ export function scanPytestFile(file: string, source: string): ScannedTest[] {
         body.push(l);
       }
       const name = d[1] as string;
+      const bodyText = body.join('\n');
       tests.push({
         id: inClass && cls ? `${file}::${cls.name}::${name}` : `${file}::${name}`,
         file,
         cls: inClass && cls ? cls.name : null,
         name,
-        strings: [...new Set([...pending, ...(inClass && cls ? cls.strings : []), ...bodyStrings(body.join('\n'))])],
+        strings: [...new Set([...pending, ...(inClass && cls ? cls.strings : []), ...bodyStrings(bodyText)])],
+        // the body's raw text includes its docstring and comments
+        keys: [...new Set([...pendingKeys, ...(inClass && cls ? cls.keys : []), ...jiraKeys(trimmed), ...jiraKeys(bodyText)])],
       });
       pending = [];
+      pendingKeys = [];
       i = j - 1;
       continue;
     }
+    // anything else (module/class docstring lines, statements): its keys belong to the module or class
+    (cls && indent > cls.indent ? cls.keys : moduleKeys).push(...jiraKeys(trimmed));
+    flushPendingKeys(indent);
     pending = [];
   }
+  flushPendingKeys(0);
   // module-level pytestmark and constants apply to every test in the file, wherever they are written
   const shared = [...moduleMarks, ...moduleConsts];
   if (shared.length) for (const t of tests) t.strings = [...new Set([...t.strings, ...shared])];
+  if (moduleKeys.length) for (const t of tests) t.keys = [...new Set([...t.keys, ...moduleKeys])];
   return tests;
 }
 
@@ -762,6 +809,8 @@ export function splitFilePatterns(pattern: string, kind: 'regex' | 'glob' | 'nam
 export interface TestLabels {
   id: string;
   strings: string[];
+  /** Jira/Xray keys the test names (absent in scans stored before keys were collected). */
+  keys?: string[];
 }
 
 /** A trigger as stored: the API fields plus its patterns with properties filled in, for matching later. */
@@ -1007,7 +1056,7 @@ export function scanRepository(input: ScanInput): ScanOutput {
     if (!routeHasTrigger) otherRoutes++;
   }
 
-  const tests: TestLabels[] = input.tests.flatMap((f) => scanPytestFile(f.path, f.text)).map((t) => ({ id: t.id, strings: t.strings }));
+  const tests: TestLabels[] = input.tests.flatMap((f) => scanPytestFile(f.path, f.text)).map((t) => ({ id: t.id, strings: t.strings, keys: t.keys }));
   const coverage = coverTriggers(triggers, tests);
   for (const t of triggers) t.coveredBy = coverage.get(t.key) ?? [];
   return { triggers, tests, testsFound: tests.length, otherRoutes, warnings };

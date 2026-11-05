@@ -492,6 +492,75 @@ describe('routes and tests from different repos', () => {
   });
 });
 
+describe('Xray keys in tests', () => {
+  it('reads keys from comments above a test, its docstring, its class and the module', () => {
+    const src = [
+      '"""Invoice routes. Covers QA-1."""',
+      'import pytest',
+      '',
+      '# QA-2: the load test',
+      '@pytest.mark.smoke',
+      'def test_load(camel):',
+      '    """Loads the file (QA-3)."""',
+      '    # see also QA-4',
+      '    camel.drop("INV.TXT")',
+      '',
+      '',
+      'def helper():',
+      '    return "QA-99"  # helpers never count',
+      '',
+      '',
+      '# QA-5',
+      'class TestPurge:',
+      '    """QA-6"""',
+      '',
+      '    def test_purge(self):',
+      '        pass',
+      '',
+      '',
+      'def test_other():',
+      '    pass',
+      '',
+    ].join('\n');
+    const tests = scanPytestFile('src/route_test/invoice_route.py', src);
+    expect(tests.map((t) => [t.name, [...t.keys].sort()])).toEqual([
+      ['test_load', ['QA-1', 'QA-2', 'QA-3', 'QA-4']],
+      ['test_purge', ['QA-1', 'QA-5', 'QA-6']],
+      ['test_other', ['QA-1']],
+    ]);
+  });
+
+  it('a test scan of main marks the named Xray cases automated; other branches do not', async () => {
+    const t = await createTestApp();
+    try {
+      const mk = async (key: string, automationStatus = 'not_automated') =>
+        (await t.app.inject({ method: 'POST', url: '/api/test-cases', payload: { key, title: key, jiraKey: key, automationStatus } })).json<{ id: number }>();
+      const [a, b, c, d] = [await mk('QA-11'), await mk('QA-12'), await mk('QA-13', 'not_automatable'), await mk('QA-14')];
+      const upload = (branch: string, text: string) => {
+        const mp = multipart({ branch, only: 'tests' }, [{ field: 'file:src/route_test', filename: 'invoice_route.py', content: text }]);
+        return t.app.inject({ method: 'POST', url: '/api/triggers/scan', payload: mp.payload, headers: mp.headers });
+      };
+      // a PR branch names QA-14: nothing changes yet
+      const pr = await upload('feature/qa-14', 'def test_x():\n    """QA-14"""\n');
+      expect(pr.json<TriggerScanResponse>().cases).toBeNull();
+      // main names QA-11 (comment), QA-12 (docstring) and QA-13 (not automatable: left alone)
+      const res = await upload('main', '# QA-11\ndef test_a():\n    """QA-12 and QA-13"""\n    pass\n');
+      expect(res.statusCode).toBe(201);
+      expect(res.json<TriggerScanResponse>().cases).toEqual({ referenced: 3, newlyAutomated: 2 });
+      const status = async (id: number) => (await t.app.inject({ url: `/api/test-cases/${id}` })).json<{ automationStatus: string; automatedVia: string | null }>();
+      expect(await status(a.id)).toMatchObject({ automationStatus: 'automated', automatedVia: 'repo_scan' });
+      expect(await status(b.id)).toMatchObject({ automationStatus: 'automated', automatedVia: 'repo_scan' });
+      expect((await status(c.id)).automationStatus).toBe('not_automatable');
+      expect((await status(d.id)).automationStatus).toBe('not_automated');
+      // scanning main again changes nothing (never downgrades either)
+      expect((await upload('main', 'def test_a():\n    pass\n')).json<TriggerScanResponse>().cases).toEqual({ referenced: 0, newlyAutomated: 0 });
+      expect((await status(a.id)).automationStatus).toBe('automated');
+    } finally {
+      await t.close();
+    }
+  });
+});
+
 describe('trigger API auth', () => {
   const INGEST_TOKEN = 'ingest-token-0123456789abcdef0123456789';
   let t: TestApp;

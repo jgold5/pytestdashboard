@@ -13,7 +13,7 @@ export type CaseSource = 'manual' | 'spreadsheet' | 'allure' | 'jira';
 export type PrState = 'open' | 'draft' | 'merged' | 'closed';
 export type ReviewState = 'review_required' | 'changes_requested' | 'approved' | 'none';
 export type ChecksState = 'passing' | 'failing' | 'pending' | 'none';
-export type LinkedBy = 'key_in_title' | 'key_in_body' | 'key_in_branch' | 'marker_in_diff' | 'test_name_in_diff';
+export type LinkedBy = 'key_in_title' | 'key_in_body' | 'key_in_branch' | 'marker_in_diff' | 'test_name_in_diff' | 'key_in_test_diff';
 
 export const testCases = sqliteTable(
   'test_cases',

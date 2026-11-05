@@ -46,7 +46,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-VERSION = "1.6"
+VERSION = "1.7"
 
 SKIP_DIRS = {
     ".git", "node_modules", "target", "build", "dist", "out", ".venv", "venv", "site-packages",
@@ -543,6 +543,35 @@ def distill_tests(source: str, namer: Namer, stats: Counter, decorators: Counter
         return None
     renamer = StringRenamer(namer)
     out: List[str] = ["import allure", "import pytest", ""]
+    src_lines = source.splitlines()
+    JIRA_KEY = re.compile(r"\b[A-Z][A-Z0-9_]{1,50}-\d{1,12}\b")
+    claimed: Set[int] = set()  # 0-based lines whose keys a test or class already took
+
+    def block_start(first: int) -> int:
+        """0-based index of the comment block right above line `first` (1-based), or of `first` itself."""
+        start = first - 1
+        while start - 1 >= 0 and src_lines[start - 1].strip().startswith("#"):
+            start -= 1
+        return start
+
+    def span_keys(first: int, last: int) -> List[str]:
+        """Jira/Xray keys in lines first..last (1-based, inclusive) plus the comment block right above."""
+        start = block_start(first)
+        found: List[str] = []
+        for i in range(start, min(last, len(src_lines))):
+            claimed.add(i)
+            for k in JIRA_KEY.findall(src_lines[i]):
+                v = namer.text(k)
+                if v not in found:
+                    found.append(v)
+        return found
+
+    def node_start(node) -> int:
+        return min([node.lineno] + [d.lineno for d in getattr(node, "decorator_list", [])])
+
+    def skip(node) -> None:
+        """A helper function's keys are not a test's (the dashboard ignores helper bodies too)."""
+        claimed.update(range(block_start(node_start(node)), node.end_lineno or node.lineno))
 
     def deco_lines(decos: List[ast.expr], pad: str) -> List[str]:
         lines = []
@@ -585,6 +614,11 @@ def distill_tests(source: str, namer: Namer, stats: Counter, decorators: Counter
         refs = body_strings(fn)
         if refs:
             body.append(f"_refs = {refs!r}")
+        # Xray/Jira keys in the test's docstring and comments (the distill drops comments otherwise)
+        keys = span_keys(node_start(fn), fn.end_lineno or fn.lineno)
+        if keys:
+            stats["tests naming a Jira/Xray key"] += 1
+            body.append(f"_keys = {keys!r}")
         lines += [f"{pad}    {c}" for c in body] or [f"{pad}    pass"]
         return lines
 
@@ -605,6 +639,9 @@ def distill_tests(source: str, namer: Namer, stats: Counter, decorators: Counter
         out += pytestmark(node, "")
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test"):
             out += function(node, "", False)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and not (
+                isinstance(node, ast.ClassDef) and node.name.startswith("Test")):
+            skip(node)
         elif isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
             stats["test classes"] += 1
             out += [""] + deco_lines(node.decorator_list, "") + [f"class {rename_test(node.name, namer, 'Test')}:"]
@@ -613,7 +650,33 @@ def distill_tests(source: str, namer: Namer, stats: Counter, decorators: Counter
                 body += pytestmark(sub, "    ")
                 if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)) and sub.name.startswith("test"):
                     body += function(sub, "    ", True)
+                elif isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    skip(sub)
+            # keys in the class's own lines (comments above it, decorators, docstring, class-level
+            # comments) apply to all of its tests; lines inside its tests were already taken by them
+            class_level: List[str] = []
+            for i in range(block_start(node_start(node)), min(node.end_lineno or node.lineno, len(src_lines))):
+                if i in claimed:
+                    continue
+                claimed.add(i)
+                for k in JIRA_KEY.findall(src_lines[i]):
+                    v = namer.text(k)
+                    if v not in class_level:
+                        class_level.append(v)
+            if class_level:
+                body.insert(0, f"    _class_keys = {class_level!r}")
             out += body or ["    pass"]
+    # keys anywhere else in the module (module docstring, header comments): they apply to every test in the file
+    module_keys: List[str] = []
+    for i, line in enumerate(src_lines):
+        if i in claimed:
+            continue
+        for k in JIRA_KEY.findall(line):
+            v = namer.text(k)
+            if v not in module_keys:
+                module_keys.append(v)
+    if module_keys:
+        out.insert(3, f"_module_keys = {module_keys!r}")
     return "\n".join(out).rstrip() + "\n"
 
 

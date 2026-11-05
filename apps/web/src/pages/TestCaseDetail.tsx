@@ -712,6 +712,7 @@ const LINKED_BY: Record<PullRequestRef['linkedBy'], string> = {
   key_in_branch: 'Key in branch name',
   marker_in_diff: 'Allure/pytest marker added in the diff',
   test_name_in_diff: 'Test function added in the diff',
+  key_in_test_diff: 'Key added in a test file (comment, docstring…)',
 };
 
 const AUTOMATED_VIA_LABEL: Record<NonNullable<TestCaseDetail['automatedVia']>, string> = {
@@ -720,6 +721,7 @@ const AUTOMATED_VIA_LABEL: Record<NonNullable<TestCaseDetail['automatedVia']>, s
   manual: 'Set manually',
   spreadsheet: 'Spreadsheet import',
   jira: 'Jira sync',
+  repo_scan: 'Named by a test on main (test repo scan)',
 };
 
 /** Pipeline stage + the PR(s) driving it, then the other linked PRs. */

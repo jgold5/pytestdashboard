@@ -6,10 +6,11 @@
  * or both. Coverage is matched when read: the branch's latest route scan (else the
  * default branch's) against its latest test scan (else the default branch's).
  */
-import { and, desc, eq, inArray, lt, notInArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, lt, notInArray, or } from 'drizzle-orm';
 import type { Trigger, TriggerListResponse, TriggerQuery, TriggerRow, TriggerScanFields, TriggerScanResponse, TriggerScanSummary } from '@ptd/shared';
 import type { Db } from '../db/client.js';
 import { testCases, triggerScans } from '../db/schema.js';
+import { recordCoverageSnapshot } from '../domain/coverage.js';
 import { badRequest } from '../errors.js';
 import { coverTriggers, type ScanOutput, type StoredTrigger, type TestLabels } from './scan.js';
 
@@ -67,8 +68,39 @@ export function saveScan(db: Db, fields: TriggerScanFields, out: ScanOutput, fil
   db.delete(triggerScans)
     .where(and(eq(triggerScans.branch, fields.branch), notInArray(triggerScans.id, keep), lt(triggerScans.id, row.id)))
     .run();
+  const cases = files.tests > 0 && rank(fields.branch) < MAIN_BRANCHES.length ? markAutomatedFromRepo(db, out.tests, now) : null;
   const view = listTriggers(db, { branch: fields.branch });
-  return { ...summary(row), automated: view.items.filter((t) => t.coveredBy.length > 0).length, warnings: out.warnings };
+  return { ...summary(row), automated: view.items.filter((t) => t.coveredBy.length > 0).length, cases, warnings: out.warnings };
+}
+
+/**
+ * The test repo's default branch is the source of truth for what is automated: a test that
+ * names a case's Jira/Xray key (in a comment, docstring, marker or string) marks that case
+ * automated. Never downgrades: a case whose key disappears from the repo keeps its status.
+ */
+export function markAutomatedFromRepo(db: Db, tests: readonly TestLabels[], now = new Date()): { referenced: number; newlyAutomated: number } {
+  const keys = [...new Set(tests.flatMap((t) => t.keys ?? []))];
+  if (keys.length === 0) return { referenced: 0, newlyAutomated: 0 };
+  const found = new Map<number, string>();
+  for (let i = 0; i < keys.length; i += 500) {
+    const chunk = keys.slice(i, i + 500);
+    for (const c of db
+      .select({ id: testCases.id, status: testCases.automationStatus })
+      .from(testCases)
+      .where(or(inArray(testCases.jiraKey, chunk), inArray(testCases.key, chunk)))
+      .all())
+      found.set(c.id, c.status);
+  }
+  const promote = [...found].filter(([, st]) => st === 'not_automated' || st === 'in_progress').map(([id]) => id);
+  const at = now.toISOString();
+  for (let i = 0; i < promote.length; i += 500) {
+    db.update(testCases)
+      .set({ automationStatus: 'automated', automatedAt: at, automatedVia: 'repo_scan', updatedAt: at })
+      .where(inArray(testCases.id, promote.slice(i, i + 500)))
+      .run();
+  }
+  if (promote.length > 0) recordCoverageSnapshot(db);
+  return { referenced: found.size, newlyAutomated: promote.length };
 }
 
 const rank = (branch: string): number => {
