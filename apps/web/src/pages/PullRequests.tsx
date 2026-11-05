@@ -44,9 +44,11 @@ export default function PullRequestsPage() {
   const filter = FILTERS.find((f) => f.key === filterKey)!;
   const repo = params.get('repo') || undefined;
   const author = params.get('author') || undefined;
-  const prs = usePullRequests({ ...filter.q, repo, author });
+  // Default: only automation PRs (linked to a test case). ?all=1 shows every synced PR.
+  const showAll = params.get('all') === '1';
+  const prs = usePullRequests({ ...filter.q, repo, author, linkedOnly: !showAll });
   // Options come from the unfiltered list so every repo/author stays selectable.
-  const all = usePullRequests({});
+  const all = usePullRequests({ linkedOnly: false });
   const repos = useMemo(() => [...new Set((all.data ?? []).map((p) => p.repo))].sort(), [all.data]);
   const authors = useMemo(
     () =>
@@ -55,7 +57,8 @@ export default function PullRequestsPage() {
       ),
     [all.data],
   );
-  const setParam = (key: 'repo' | 'author', v: string | null) =>
+  const unlinkedCount = (all.data ?? []).filter((p) => p.testCases.length === 0 && (filterKey !== 'open' || isOpen(p))).length;
+  const setParam = (key: 'repo' | 'author' | 'all', v: string | null) =>
     setParams(
       (p) => {
         const n = new URLSearchParams(p);
@@ -143,6 +146,17 @@ export default function PullRequestsPage() {
         <div className="ml-auto flex flex-wrap gap-1.5">
           <Select
             size="sm"
+            ariaLabel="Which pull requests"
+            value={showAll ? 'all' : 'linked'}
+            onValueChange={(v) => setParam('all', v === 'all' ? '1' : null)}
+            options={[
+              { value: 'linked', label: 'Linked to tests' },
+              { value: 'all', label: 'All synced PRs' },
+            ]}
+            className="w-40"
+          />
+          <Select
+            size="sm"
             ariaLabel="Repository"
             value={repo ?? null}
             onValueChange={(v) => setParam('repo', v)}
@@ -175,7 +189,20 @@ export default function PullRequestsPage() {
         ) : prs.isPending ? (
           <SkeletonRows rows={6} />
         ) : sorted.length === 0 ? (
-          filterKey === 'open' && !repo && !author ? (
+          !showAll && unlinkedCount > 0 ? (
+            <EmptyState
+              icon={<GitPullRequest />}
+              title={`${unlinkedCount} synced ${unlinkedCount === 1 ? 'PR is' : 'PRs are'} not linked to a test case`}
+              actions={
+                <button type="button" className={linkButton('outline')} onClick={() => setParam('all', '1')}>
+                  Show all synced PRs
+                </button>
+              }
+            >
+              A PR is linked when its title, description or branch names a test case (its key or Jira key), or it changes a test file
+              (GITHUB_TEST_PATH_GLOBS) with a test the dashboard knows from an Allure import.
+            </EmptyState>
+          ) : filterKey === 'open' && !repo && !author ? (
             <EmptyState
               icon={<GitPullRequest />}
               title="No open automation PRs"
