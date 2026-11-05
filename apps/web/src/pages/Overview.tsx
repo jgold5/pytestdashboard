@@ -110,11 +110,7 @@ function OverviewSkeleton() {
   return (
     <div className="space-y-4" role="status" aria-label="Loading overview">
       <Skeleton className="h-7 w-40" />
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
-        {Array.from({ length: 5 }, (_, i) => (
-          <Skeleton key={i} className="h-[92px]" />
-        ))}
-      </div>
+      <Skeleton className="h-[92px]" />
       <Skeleton className="h-36" />
       <div className="grid gap-4 xl:grid-cols-2">
         <Skeleton className="h-72" />
@@ -132,27 +128,29 @@ function Kpi({
   sub,
   to,
   tone,
+  className,
 }: {
   label: string;
   value: ReactNode;
   sub?: ReactNode;
   to?: string;
   tone?: 'bad' | 'good';
+  className?: string;
 }) {
   const inner = (
     <>
-      <div className="text-xs font-medium text-fg-2">{label}</div>
-      <div className="mt-1.5 text-[26px] leading-none font-semibold tracking-tight text-fg">{value}</div>
+      <div className="text-[11px] font-semibold tracking-[0.07em] text-fg-3 uppercase">{label}</div>
+      <div className="mt-1.5 font-mono text-[26px] leading-none font-medium tracking-tight text-fg tabular">{value}</div>
       {sub ? (
-        <div className={cn('mt-2 truncate text-xs', tone === 'bad' ? 'text-bad' : tone === 'good' ? 'text-good' : 'text-fg-3')}>
+        <div className={cn('mt-2 truncate text-xs', tone === 'bad' ? 'text-bad' : tone === 'good' ? 'text-good' : 'text-fg-2')}>
           {sub}
         </div>
       ) : null}
     </>
   );
-  const cls = 'block rounded-xl border border-border bg-surface px-4 py-3.5 shadow-sm';
+  const cls = cn('block min-w-0 bg-surface px-4 py-3.5', className);
   return to ? (
-    <Link to={to} className={cn(cls, 'outline-none transition-colors hover:border-border-strong focus-visible:ring-2 focus-visible:ring-ring/50')}>
+    <Link to={to} className={cn(cls, 'outline-none transition-colors hover:bg-surface-2 focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-ring/50')}>
       {inner}
     </Link>
   ) : (
@@ -164,7 +162,7 @@ function KpiRow({ s }: { s: Summary }) {
   const c = s.coverage;
   const lr = s.latestRun;
   return (
-    <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
+    <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border bg-border md:grid-cols-3 xl:grid-cols-5">
       {c.unit === 'routes' ? (
         <Kpi label="Routes to test" value={fmtNumber(c.total)} sub="file and schedule triggers on main" to="/triggers" />
       ) : (
@@ -175,7 +173,7 @@ function KpiRow({ s }: { s: Summary }) {
         value={
           <>
             {fmtPct(c.automationRate, 1)}
-            <span className="ml-1.5 text-sm font-medium text-fg-3">{fmtNumber(c.automated)}</span>
+            <span className="ml-1.5 text-sm text-fg-3">{fmtNumber(c.automated)}</span>
           </>
         }
         sub={c.unit === 'routes' ? 'of routes have a test on main' : 'of automatable cases'}
@@ -214,6 +212,7 @@ function KpiRow({ s }: { s: Summary }) {
         sub={s.untriagedFailures > 0 ? 'Need a note or triage' : 'All failures triaged'}
         tone={s.untriagedFailures > 0 ? 'bad' : 'good'}
         to="/tests?lastStatus=failed"
+        className="col-span-2 xl:col-span-1"
       />
     </div>
   );
@@ -287,7 +286,7 @@ function ReadyToMergeCallout({ s }: { s: Summary }) {
   return (
     <section
       aria-labelledby="ready-to-merge-title"
-      className="rounded-xl border border-[color-mix(in_oklab,var(--st-passed)_40%,transparent)] bg-[color-mix(in_oklab,var(--st-passed)_6%,var(--surface))] shadow-sm"
+      className="rounded-lg border border-[color-mix(in_oklab,var(--st-passed)_40%,transparent)] bg-[color-mix(in_oklab,var(--st-passed)_6%,var(--surface))] shadow-sm"
     >
       <div className="flex flex-wrap items-center gap-3 px-4 py-3">
         <span className="grid size-8 shrink-0 place-items-center rounded-full bg-st-passed text-white">
@@ -399,7 +398,7 @@ function RunTrendCard({ s }: { s: Summary }) {
           <RunTrendChart data={data} />
         ) : (
           <EmptyChart>
-            No runs yet. <Link to="/import#allure" className="text-accent hover:underline">Upload allure-results</Link> to
+            No runs yet. <Link to="/import#allure" className="link">Upload allure-results</Link> to
             see pass rates.
           </EmptyChart>
         )}
@@ -499,7 +498,7 @@ function PrPipelineCard({ s }: { s: Summary }) {
         {p.open === 0 && p.draft === 0 ? (
           <p className="py-6 text-center text-xs text-fg-3">
             No open automation PRs. Connect GitHub on the{' '}
-            <Link to="/integrations" className="text-accent hover:underline">
+            <Link to="/integrations" className="link">
               Integrations
             </Link>{' '}
             page to track them.
@@ -662,7 +661,7 @@ function StillFailingCallout() {
   return (
     <Link
       to="/bugs?bucket=resolved&verification=still_failing"
-      className="flex items-center gap-3 rounded-xl border border-[color-mix(in_oklab,var(--st-failed)_40%,transparent)] bg-[color-mix(in_oklab,var(--st-failed)_7%,var(--surface))] px-4 py-3 shadow-sm outline-none hover:bg-[color-mix(in_oklab,var(--st-failed)_10%,var(--surface))] focus-visible:ring-2 focus-visible:ring-ring/50"
+      className="flex items-center gap-3 rounded-lg border border-[color-mix(in_oklab,var(--st-failed)_40%,transparent)] bg-[color-mix(in_oklab,var(--st-failed)_7%,var(--surface))] px-4 py-3 shadow-sm outline-none hover:bg-[color-mix(in_oklab,var(--st-failed)_10%,var(--surface))] focus-visible:ring-2 focus-visible:ring-ring/50"
     >
       <span className="grid size-8 shrink-0 place-items-center rounded-full bg-st-failed text-white">
         <TriangleAlert className="size-4" aria-hidden />

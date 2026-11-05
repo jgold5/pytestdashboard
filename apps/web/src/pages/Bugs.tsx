@@ -234,7 +234,7 @@ function StatTile({ label, value, tone, onClick, icon }: { label: string; value:
       onClick={onClick}
       disabled={!onClick}
       className={cn(
-        'rounded-xl border bg-surface px-4 py-3 text-left shadow-sm outline-none transition-colors enabled:hover:border-border-strong focus-visible:ring-2 focus-visible:ring-ring/50',
+        'rounded-lg border bg-surface px-4 py-3 text-left shadow-sm outline-none transition-colors enabled:hover:border-border-strong focus-visible:ring-2 focus-visible:ring-ring/50',
         tone === 'bad' ? 'border-[color-mix(in_oklab,var(--st-failed)_40%,var(--border))] bg-[color-mix(in_oklab,var(--st-failed)_5%,var(--surface))]' : 'border-border',
       )}
     >

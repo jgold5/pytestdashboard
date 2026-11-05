@@ -569,7 +569,7 @@ function SuitesSection({ r }: { r: Report }) {
           return (
             <div
               key={s.suite}
-              className="print-avoid-break rounded-xl border bg-surface p-4"
+              className="print-avoid-break rounded-lg border bg-surface p-4"
               style={{ borderColor: `color-mix(in oklab, ${H.color} 35%, var(--border))`, boxShadow: `inset 3px 0 0 ${H.color}` }}
             >
               <div className="flex items-start justify-between gap-2">
@@ -605,7 +605,7 @@ function SuitesSection({ r }: { r: Report }) {
 function MetricTile({ icon: Icon, value, label, tone }: { icon: LucideIcon; value: number; label: string; tone: 'win' | 'risk' }) {
   const color = tone === 'win' ? 'var(--st-passed)' : value > 0 ? 'var(--st-failed)' : 'var(--fg-3)';
   return (
-    <div className="print-avoid-break rounded-xl border border-border bg-surface p-4">
+    <div className="print-avoid-break rounded-lg border border-border bg-surface p-4">
       <Icon className="size-4" style={{ color }} aria-hidden />
       <div className="mt-2 text-3xl font-semibold tracking-tight text-fg tabular">{fmtNumber(value)}</div>
       <div className="mt-0.5 text-xs text-fg-2">{label}</div>
@@ -706,7 +706,7 @@ function InFlightSection({ r }: { r: Report }) {
           {tiles.map(({ stage, note }) => {
             const M = PIPELINE_META[stage];
             return (
-              <div key={stage} className="print-avoid-break rounded-xl border border-border bg-surface p-4">
+              <div key={stage} className="print-avoid-break rounded-lg border border-border bg-surface p-4">
                 <div className="flex items-center gap-1.5 text-xs text-fg-2">
                   <M.icon className="size-3.5" style={{ color: M.color }} aria-hidden />
                   {M.label}
@@ -754,7 +754,7 @@ function PrSection({ r }: { r: Report }) {
     <Section title="Automation in review" subtitle={`${pluralize(p.open, 'open pull request')} adding or changing automated tests.`}>
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         {stages.map((s) => (
-          <div key={s.label} className="print-avoid-break rounded-xl border border-border bg-surface p-4">
+          <div key={s.label} className="print-avoid-break rounded-lg border border-border bg-surface p-4">
             <div className="flex items-center gap-1.5 text-xs text-fg-2">
               <s.icon className="size-3.5" style={{ color: s.color }} aria-hidden />
               {s.label}

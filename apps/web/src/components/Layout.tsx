@@ -10,6 +10,7 @@ import {
   LogOut,
   Menu as MenuIcon,
   Plug,
+  Presentation,
   Search,
   Upload,
   X,
@@ -22,56 +23,99 @@ import { ModeSwitch } from './ModeSwitch';
 import { ThemeToggle } from './ThemeToggle';
 import { Button } from './ui/button';
 import { Kbd } from './ui/misc';
+import { Tooltip } from './ui/tooltip';
 import { CommandPalette, useCommandPaletteHotkey } from './CommandPalette';
 
+/** Day-to-day pages: tabs in the top bar. */
 const NAV = [
   { to: '/', label: 'Overview', icon: LayoutDashboard, end: true },
   { to: '/tests', label: 'Test cases', icon: ListChecks },
-  { to: '/pulls', label: 'Pull requests', icon: GitPullRequest },
   { to: '/triggers', label: 'Triggers', icon: Zap },
-  { to: '/runs', label: 'Runs & history', icon: CirclePlay },
+  { to: '/runs', label: 'Runs', icon: CirclePlay },
   { to: '/bugs', label: 'Bugs', icon: Bug },
+  { to: '/pulls', label: 'Pull requests', icon: GitPullRequest },
+];
+/** Setup pages: icon buttons on the right of the top bar. */
+const SETUP = [
   { to: '/import', label: 'Import', icon: Upload },
   { to: '/integrations', label: 'Integrations', icon: Plug },
 ];
 
-function NavItems({ onNavigate }: { onNavigate?: () => void }) {
-  return (
+function DrawerNav({ onNavigate }: { onNavigate: () => void }) {
+  const item = ({ isActive }: { isActive: boolean }) =>
+    cn(
+      'flex h-9 items-center gap-2.5 rounded-md px-2.5 text-[14px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/50',
+      isActive ? 'bg-surface-3/70 text-fg' : 'text-fg-2 hover:bg-surface-2 hover:text-fg',
+    );
+  const list = (items: typeof NAV) => (
     <ul className="space-y-0.5">
-      {NAV.map((n) => (
+      {items.map((n) => (
         <li key={n.to}>
-          <NavLink
-            to={n.to}
-            end={n.end}
-            onClick={onNavigate}
-            className={({ isActive }) =>
-              cn(
-                'flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/50',
-                isActive ? 'bg-surface-3/70 text-fg' : 'text-fg-2 hover:bg-surface-2 hover:text-fg',
-              )
-            }
-          >
-            {({ isActive }) => (
-              <>
-                <n.icon className={cn('size-4', isActive ? 'text-accent' : 'text-fg-3')} aria-hidden />
-                {n.label}
-              </>
-            )}
+          <NavLink to={n.to} end={'end' in n ? n.end : undefined} onClick={onNavigate} className={item}>
+            <n.icon className="size-4 text-fg-3" aria-hidden />
+            {n.label}
           </NavLink>
         </li>
       ))}
     </ul>
   );
+  return (
+    <>
+      {list(NAV)}
+      <div className="mt-4 mb-1 px-2.5 text-[11px] font-semibold tracking-[0.08em] text-fg-3 uppercase">Setup</div>
+      {list(SETUP)}
+      <div className="mt-4 mb-1 px-2.5 text-[11px] font-semibold tracking-[0.08em] text-fg-3 uppercase">Share</div>
+      <ul>
+        <li>
+          <NavLink to="/report" onClick={onNavigate} className={item}>
+            <Presentation className="size-4 text-fg-3" aria-hidden />
+            Report
+          </NavLink>
+        </li>
+      </ul>
+    </>
+  );
 }
 
-function SignOut({ className }: { className?: string }) {
+function SignOut({ className, iconOnly }: { className?: string; iconOnly?: boolean }) {
   const session = useSession();
   const logout = useLogout();
   if (!session.data?.authRequired) return null;
+  if (iconOnly) {
+    return (
+      <Tooltip content="Sign out" side="bottom">
+        <Button variant="ghost" size="icon" className={className} aria-label="Sign out" onClick={() => logout.mutate()} loading={logout.isPending}>
+          <LogOut />
+        </Button>
+      </Tooltip>
+    );
+  }
   return (
     <Button variant="ghost" size="sm" className={cn('justify-start', className)} onClick={() => logout.mutate()} loading={logout.isPending}>
       <LogOut /> Sign out
     </Button>
+  );
+}
+
+/** Icon-only nav link with a tooltip. Works out its own active state: Radix's asChild would
+ * stringify NavLink's className function. */
+function IconNavLink({ to, label, tip, icon: Icon }: { to: string; label: string; tip?: string; icon: typeof Upload }) {
+  const { pathname } = useLocation();
+  const active = pathname === to || pathname.startsWith(`${to}/`);
+  return (
+    <Tooltip content={tip ?? label} side="bottom">
+      <Link
+        to={to}
+        aria-label={label}
+        aria-current={active ? 'page' : undefined}
+        className={cn(
+          'inline-flex size-8 items-center justify-center rounded-md outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/50 [&_svg]:size-4',
+          active ? 'bg-surface-3 text-fg' : 'text-fg-2 hover:bg-surface-2 hover:text-fg',
+        )}
+      >
+        <Icon aria-hidden />
+      </Link>
+    </Tooltip>
   );
 }
 
@@ -89,75 +133,86 @@ export function WorkspaceLayout() {
       >
         Skip to content
       </a>
-      {/* Desktop sidebar */}
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-56 flex-col border-r border-border bg-surface/60 backdrop-blur lg:flex">
-        <div className="flex h-12 items-center px-4">
-          <Link to="/" className="rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
-            <Brand />
-          </Link>
-        </div>
-        <div className="px-3 pt-1 pb-3">
-          <button
-            type="button"
-            onClick={() => setPaletteOpen(true)}
-            className="flex h-8 w-full items-center gap-2 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg-3 shadow-sm outline-none hover:text-fg-2 focus-visible:ring-2 focus-visible:ring-ring/50"
-          >
-            <Search className="size-3.5" aria-hidden />
-            <span className="flex-1 text-left">Search cases…</span>
-            <Kbd>⌘K</Kbd>
-          </button>
-        </div>
-        <nav aria-label="Main" className="flex-1 overflow-y-auto px-3">
-          <NavItems />
-        </nav>
-        <div className="border-t border-border p-3">
-          <SignOut className="w-full" />
-        </div>
-      </aside>
 
-      {/* Top bar */}
-      <header className="sticky top-0 z-20 flex h-12 items-center gap-2 border-b border-border bg-bg/85 px-3 backdrop-blur sm:px-4 lg:ml-56">
-        <D.Root open={mobileOpen} onOpenChange={setMobileOpen}>
-          <D.Trigger asChild>
-            <Button variant="ghost" size="icon" className="lg:hidden" aria-label="Open navigation">
-              <MenuIcon />
+      <header className="sticky top-0 z-20 border-b border-border bg-surface/90 backdrop-blur">
+        <div className="mx-auto flex h-13 w-full max-w-[1440px] items-center gap-2 px-3 sm:px-6 lg:gap-6">
+          <D.Root open={mobileOpen} onOpenChange={setMobileOpen}>
+            <D.Trigger asChild>
+              <Button variant="ghost" size="icon" className="lg:hidden" aria-label="Open navigation">
+                <MenuIcon />
+              </Button>
+            </D.Trigger>
+            <D.Portal>
+              <D.Overlay className="fixed inset-0 z-40 bg-black/40 lg:hidden" />
+              <D.Content className="fixed inset-y-0 left-0 z-50 flex w-72 max-w-[85vw] flex-col border-r border-border bg-surface shadow-lg outline-none lg:hidden">
+                <D.Title className="sr-only">Navigation</D.Title>
+                <D.Description className="sr-only">Main navigation</D.Description>
+                <div className="flex h-13 items-center justify-between px-4">
+                  <Brand />
+                  <D.Close asChild>
+                    <Button variant="ghost" size="icon" aria-label="Close navigation">
+                      <X />
+                    </Button>
+                  </D.Close>
+                </div>
+                <nav aria-label="Main" className="flex-1 overflow-y-auto px-3 py-2">
+                  <DrawerNav onNavigate={() => setMobileOpen(false)} />
+                </nav>
+                <div className="border-t border-border p-3">
+                  <SignOut className="w-full" />
+                </div>
+              </D.Content>
+            </D.Portal>
+          </D.Root>
+
+          <Link to="/" className="shrink-0 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/50" aria-label="Overview">
+            <Brand className="max-sm:[&>span:last-child]:hidden" />
+          </Link>
+
+          <nav aria-label="Main" className="hidden h-full min-w-0 items-stretch overflow-x-auto lg:flex">
+            {NAV.map((n) => (
+              <NavLink
+                key={n.to}
+                to={n.to}
+                end={n.end}
+                className={({ isActive }) =>
+                  cn(
+                    '-mb-px flex shrink-0 items-center border-b-2 px-3 text-[13.5px] font-medium whitespace-nowrap outline-none transition-colors focus-visible:bg-surface-2',
+                    isActive ? 'border-accent text-fg' : 'border-transparent text-fg-2 hover:text-fg',
+                  )
+                }
+              >
+                {n.label}
+              </NavLink>
+            ))}
+          </nav>
+
+          <div className="ml-auto flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setPaletteOpen(true)}
+              className="hidden h-8 w-60 items-center gap-2 rounded-md border border-border bg-bg px-2.5 text-[13px] text-fg-3 outline-none hover:text-fg-2 focus-visible:ring-2 focus-visible:ring-ring/50 xl:flex"
+            >
+              <Search className="size-3.5" aria-hidden />
+              <span className="flex-1 text-left">Search cases…</span>
+              <Kbd>⌘K</Kbd>
+            </button>
+            <Button variant="ghost" size="icon" className="xl:hidden" aria-label="Search test cases" onClick={() => setPaletteOpen(true)}>
+              <Search />
             </Button>
-          </D.Trigger>
-          <D.Portal>
-            <D.Overlay className="fixed inset-0 z-40 bg-black/40 lg:hidden" />
-            <D.Content className="fixed inset-y-0 left-0 z-50 flex w-72 max-w-[85vw] flex-col border-r border-border bg-surface shadow-lg outline-none lg:hidden">
-              <D.Title className="sr-only">Navigation</D.Title>
-              <D.Description className="sr-only">Main navigation</D.Description>
-              <div className="flex h-12 items-center justify-between px-4">
-                <Brand />
-                <D.Close asChild>
-                  <Button variant="ghost" size="icon" aria-label="Close navigation">
-                    <X />
-                  </Button>
-                </D.Close>
-              </div>
-              <nav aria-label="Main" className="flex-1 overflow-y-auto px-3 py-2">
-                <NavItems onNavigate={() => setMobileOpen(false)} />
-              </nav>
-              <div className="border-t border-border p-3">
-                <SignOut className="w-full" />
-              </div>
-            </D.Content>
-          </D.Portal>
-        </D.Root>
-        <Link to="/" className="lg:hidden" aria-label="Home">
-          <Brand compact />
-        </Link>
-        <ModeSwitch className="ml-1 lg:ml-0" />
-        <div className="ml-auto flex items-center gap-1">
-          <Button variant="ghost" size="icon" className="lg:hidden" aria-label="Search test cases" onClick={() => setPaletteOpen(true)}>
-            <Search />
-          </Button>
-          <ThemeToggle />
+            <div className="hidden items-center gap-1 lg:flex">
+              {SETUP.map((n) => (
+                <IconNavLink key={n.to} to={n.to} label={n.label} icon={n.icon} />
+              ))}
+              <IconNavLink to="/report" label="Report" tip="Report: the read-only page for stakeholders" icon={Presentation} />
+            </div>
+            <ThemeToggle />
+            <SignOut iconOnly className="hidden lg:inline-flex" />
+          </div>
         </div>
       </header>
 
-      <main id="main" className="lg:ml-56" key={location.pathname.split('/')[1]}>
+      <main id="main" key={location.pathname.split('/')[1]}>
         <div className="mx-auto w-full max-w-[1440px] px-4 py-5 sm:px-6 sm:py-6">
           <Outlet />
         </div>

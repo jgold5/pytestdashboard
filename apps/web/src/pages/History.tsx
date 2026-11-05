@@ -152,7 +152,7 @@ export default function HistoryPage() {
         ) : data.rows.length === 0 ? (
           <EmptyState icon={<Grid3x3 />} title={onlyUnstable ? 'Nothing unstable — every test passed in this window' : 'No tests match'}>
             {onlyUnstable ? (
-              <button type="button" className="text-accent hover:underline" onClick={() => set({ all: '1' })}>
+              <button type="button" className="link" onClick={() => set({ all: '1' })}>
                 Show all tests
               </button>
             ) : (

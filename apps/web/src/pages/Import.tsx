@@ -267,7 +267,7 @@ function AllureDropZone({
       onDragLeave={() => setDragging(false)}
       onDrop={(e) => void onDrop(e)}
       className={cn(
-        'flex flex-col items-center justify-center rounded-xl border-2 border-dashed px-4 py-8 text-center transition-colors',
+        'flex flex-col items-center justify-center rounded-lg border-2 border-dashed px-4 py-8 text-center transition-colors',
         dragging ? 'border-accent bg-accent-soft' : 'border-border-strong/60 bg-surface-2/40',
       )}
     >

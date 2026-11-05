@@ -307,7 +307,7 @@ function Totals({ data }: { data: TriggerListResponse }) {
 
 function Tile({ label, value, sub, tone }: { label: string; value: ReactNode; sub?: ReactNode; tone?: 'good' | 'bad' }) {
   return (
-    <div className="rounded-xl border border-border bg-surface px-4 py-3.5 shadow-sm">
+    <div className="rounded-lg border border-border bg-surface px-4 py-3.5 shadow-sm">
       <div className="truncate text-xs font-medium text-fg-2">{label}</div>
       <div className="mt-1.5 text-[26px] leading-none font-semibold tracking-tight text-fg">{value}</div>
       {sub ? <div className={cn('mt-2 truncate text-xs', tone === 'bad' ? 'text-bad' : tone === 'good' ? 'text-good' : 'text-fg-3')}>{sub}</div> : null}

@@ -48,7 +48,7 @@ export function LoginPage() {
         <div className="mb-6 flex justify-center">
           <Brand />
         </div>
-        <form onSubmit={submit} className="rounded-xl border border-border bg-surface p-6 shadow-md" noValidate>
+        <form onSubmit={submit} className="rounded-lg border border-border bg-surface p-6 shadow-md" noValidate>
           <h1 className="text-base font-semibold text-fg">Sign in</h1>
           <p className="mt-1 text-[13px] text-fg-2">Enter the dashboard access token provided by your admin.</p>
           <div className="mt-5">
