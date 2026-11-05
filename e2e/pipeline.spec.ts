@@ -12,11 +12,11 @@ test('overview pipeline funnel → "Ready to merge" → filtered test case list'
   const n = Number((await ready.getAttribute('aria-label'))!.match(/: (\d+)/)![1]);
   expect(n).toBeGreaterThan(1); // the seed has several ready-to-merge cases
 
-  // the prominent "done, awaiting merge" callout lists the approved PRs
-  const callout = page.getByRole('region', { name: `${n} tests done, awaiting merge` });
-  await expect(callout).toBeVisible();
-  await expect(callout.getByRole('link', { name: /acme\/camel-routes-tests#\d+/ }).first()).toBeVisible();
-  await expect(callout.getByText(/approved .* ago/).first()).toBeVisible();
+  // "Needs attention" lists the tests waiting on merge with the approved PRs
+  const attention = page.getByRole('region', { name: 'Needs attention' });
+  await expect(attention.getByRole('link', { name: `${n} tests approved, waiting on merge` })).toBeVisible();
+  await expect(attention.getByRole('link', { name: /acme\/camel-routes-tests#\d+/ }).first()).toBeVisible();
+  await expect(attention.getByText(/approved .* ago/).first()).toBeVisible();
 
   await ready.click();
   await expect(page).toHaveURL(/\/tests\?pipelineStage=ready_to_merge$/);

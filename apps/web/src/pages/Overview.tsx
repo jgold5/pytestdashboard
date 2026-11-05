@@ -2,17 +2,18 @@ import { useMemo, useState, type ReactNode } from 'react';
 import { Link } from 'react-router';
 import {
   ArrowRight,
+  CircleCheck,
   FileSpreadsheet,
   GitPullRequest,
-  GitPullRequestArrow,
   ListChecks,
   MessageSquare,
   Shuffle,
   TriangleAlert,
   Upload,
+  Zap,
 } from 'lucide-react';
-import type { Summary, TriageCategory } from '@ptd/shared';
-import { useBugStats, usePullRequests, useSummary } from '../api/hooks';
+import type { RouteStatus, Summary, TriageCategory } from '@ptd/shared';
+import { useBugStats, useIntegrations, usePullRequests, useSummary, useTriggerOverview } from '../api/hooks';
 import { Card, CardBody, CardHeader } from '../components/ui/card';
 import { Skeleton } from '../components/ui/skeleton';
 import { EmptyState, ErrorState } from '../components/ui/empty-state';
@@ -67,8 +68,10 @@ export function OverviewPage() {
       ) : (
         <div className="space-y-4">
           <KpiRow s={s} />
-          <StillFailingCallout />
-          <ReadyToMergeCallout s={s} />
+          <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+            <RoutesCard />
+            <NeedsAttention s={s} />
+          </div>
           <PipelineCard s={s} />
           <div className="grid gap-4 xl:grid-cols-2">
             <Card>
@@ -228,7 +231,11 @@ function PipelineCard({ s }: { s: Summary }) {
     <Card>
       <CardHeader
         title="Automation progress"
-        description={`${fmtNumber(c.automated)} of ${fmtNumber(automatable)} automatable cases automated · pipeline from GitHub PRs and runs`}
+        description={
+          c.unit === 'routes'
+            ? `${fmtNumber(c.automated)} of ${fmtNumber(automatable)} routes have a test on main · stages below follow the test cases' PRs`
+            : `${fmtNumber(c.automated)} of ${fmtNumber(automatable)} automatable cases automated · pipeline from GitHub PRs and runs`
+        }
         actions={<span className="text-2xl font-semibold tracking-tight text-fg">{fmtPct(c.automationRate, 1)}</span>}
       />
       <CardBody>
@@ -271,88 +278,6 @@ function PipelineCard({ s }: { s: Summary }) {
         </div>
       </CardBody>
     </Card>
-  );
-}
-
-/** "N tests done, awaiting merge": approved PRs with green checks and no open threads. */
-function ReadyToMergeCallout({ s }: { s: Summary }) {
-  const n = s.pipeline.ready_to_merge;
-  const prs = usePullRequests({ readyToMerge: true });
-  if (n === 0) return null;
-  const c = s.coverage;
-  const automatable = c.total - c.notAutomatable;
-  const projected = automatable > 0 ? (c.automated + n) / automatable : null;
-  const list = [...(prs.data ?? [])].sort((a, b) => (a.approvedAt ?? a.updatedAt).localeCompare(b.approvedAt ?? b.updatedAt));
-  return (
-    <section
-      aria-labelledby="ready-to-merge-title"
-      className="rounded-lg border border-[color-mix(in_oklab,var(--st-passed)_40%,transparent)] bg-[color-mix(in_oklab,var(--st-passed)_6%,var(--surface))] shadow-sm"
-    >
-      <div className="flex flex-wrap items-center gap-3 px-4 py-3">
-        <span className="grid size-8 shrink-0 place-items-center rounded-full bg-st-passed text-white">
-          <GitPullRequestArrow className="size-4" aria-hidden />
-        </span>
-        <div className="min-w-0 flex-1">
-          <h2 id="ready-to-merge-title" className="text-[13px] font-semibold text-fg">
-            {pluralize(n, 'test')} done, awaiting merge
-          </h2>
-          <p className="text-xs text-fg-2">
-            {pluralize(s.prPipeline.readyToMerge, 'approved PR')} with green checks and no open threads
-            {projected !== null ? (
-              <>
-                {' '}— merging takes automation from <b className="font-semibold text-fg">{fmtPct(c.automationRate, 1)}</b> to{' '}
-                <b className="font-semibold text-fg">{fmtPct(projected, 1)}</b>
-              </>
-            ) : null}
-            .
-          </p>
-        </div>
-        <div className="flex gap-1.5">
-          <Link to={stageHref('ready_to_merge')} className={linkButton('outline', 'sm')}>
-            Show tests
-          </Link>
-          <Link to="/pulls?filter=ready" className={linkButton('ghost', 'sm')}>
-            All ready PRs <ArrowRight className="size-3.5" aria-hidden />
-          </Link>
-        </div>
-      </div>
-      {list.length > 0 ? (
-        <ul className="border-t border-[color-mix(in_oklab,var(--st-passed)_20%,transparent)] px-2 py-1.5">
-          {list.slice(0, 5).map((p) => (
-            <li key={p.id}>
-              <a
-                href={p.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-3 rounded-md px-2 py-1.5 text-[13px] outline-none hover:bg-surface/70 focus-visible:ring-2 focus-visible:ring-ring/50"
-              >
-                <span className="w-48 shrink-0 truncate font-mono text-[11px] text-fg-3 max-sm:hidden" title={`${p.repo}#${p.number}`}>
-                  {p.repo}#{p.number}
-                </span>
-                <span className="min-w-0 flex-1 truncate text-fg">
-                  <span className="font-mono text-[11px] text-fg-3 sm:hidden">#{p.number} </span>
-                  {p.title}
-                </span>
-                <span className="hidden shrink-0 text-xs text-fg-2 md:inline">{p.author ?? '—'}</span>
-                <span className="hidden shrink-0 text-xs text-fg-3 tabular sm:inline">
-                  {pluralize(p.testCases.length, 'test')}
-                </span>
-                <span className="shrink-0 text-right text-xs whitespace-nowrap text-fg-3 sm:w-36">
-                  {p.approvedAt ? `approved ${fmtRelative(p.approvedAt)}` : `updated ${fmtRelative(p.updatedAt)}`}
-                </span>
-              </a>
-            </li>
-          ))}
-          {list.length > 5 ? (
-            <li className="px-2 py-1 text-xs text-fg-3">
-              <Link to="/pulls?filter=ready" className="hover:text-fg hover:underline">
-                +{list.length - 5} more
-              </Link>
-            </li>
-          ) : null}
-        </ul>
-      ) : null}
-    </section>
   );
 }
 
@@ -654,25 +579,263 @@ function OwnerCard({ s }: { s: Summary }) {
 
 
 /** Prominent callout: bugs marked resolved whose linked tests still fail. */
-function StillFailingCallout() {
-  const stats = useBugStats();
-  const n = stats.data?.stillFailingAfterFix ?? 0;
-  if (n === 0) return null;
+
+// ---------------------------------------------------------------------------
+// Route triggers on the default branch: what still needs a test
+
+const ROUTE_STATUS: Record<RouteStatus, { label: string; tab: string; cls: string }> = {
+  none: { label: 'No test', tab: 'No test', cls: 'text-fg-3' },
+  branch: { label: 'Test on a branch', tab: 'On a branch', cls: 'text-fg' },
+  tested: { label: 'Tested', tab: 'Tested', cls: 'text-st-passed' },
+};
+const shortTest = (nodeId: string) => nodeId.split('::').pop() ?? nodeId;
+
+function RoutesCard() {
+  const [status, setStatus] = useState<RouteStatus | undefined>(undefined);
+  const q = useTriggerOverview(status);
+  const d = q.data;
+  if (q.isPending) return <Skeleton className="h-[360px]" />;
+  if (q.isError || !d) return <Card><ErrorState error={q.error} onRetry={() => void q.refetch()} /></Card>;
+  if (!d.branch) {
+    return (
+      <Card>
+        <EmptyState
+          icon={<Zap />}
+          title="No routes scanned yet"
+          actions={
+            <Link to="/triggers" className={linkButton('primary')}>
+              Scan a branch
+            </Link>
+          }
+        >
+          Scan the Camel repo to list every file and schedule trigger, and see which ones a test covers.
+        </EmptyState>
+      </Card>
+    );
+  }
+  const shown = d.status;
+  const total = d.counts[shown];
+  const allHref = `/triggers?branch=${encodeURIComponent(d.branch)}${shown === 'tested' ? '&status=automated' : shown === 'none' ? '&status=missing' : ''}`;
   return (
-    <Link
-      to="/bugs?bucket=resolved&verification=still_failing"
-      className="flex items-center gap-3 rounded-lg border border-[color-mix(in_oklab,var(--st-failed)_40%,transparent)] bg-[color-mix(in_oklab,var(--st-failed)_7%,var(--surface))] px-4 py-3 shadow-sm outline-none hover:bg-[color-mix(in_oklab,var(--st-failed)_10%,var(--surface))] focus-visible:ring-2 focus-visible:ring-ring/50"
-    >
-      <span className="grid size-8 shrink-0 place-items-center rounded-full bg-st-failed text-white">
-        <TriangleAlert className="size-4" aria-hidden />
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="block text-[13px] font-semibold text-fg">
-          {n} bug{n === 1 ? ' is' : 's are'} marked resolved but still failing
-        </span>
-        <span className="block text-xs text-fg-2">Linked tests failed in runs after the fix — reopen or investigate.</span>
-      </span>
-      <ArrowRight className="size-4 text-fg-3" aria-hidden />
-    </Link>
+    <Card>
+      <CardHeader
+        title={<>Route triggers on <span className="font-mono">{d.branch}</span></>}
+        description={
+          <>
+            {d.commit ? <span className="font-mono">{d.commit.slice(0, 7)} · </span> : null}scanned {fmtRelative(d.scannedAt)}
+          </>
+        }
+        actions={
+          <div role="group" aria-label="Route status" className="inline-flex rounded-md border border-border bg-surface-2 p-0.5">
+            {(['none', 'branch', 'tested'] as const).map((k) => (
+              <button
+                key={k}
+                type="button"
+                aria-pressed={shown === k}
+                onClick={() => setStatus(k)}
+                className={cn(
+                  'inline-flex h-6 items-center gap-1.5 rounded-[5px] px-2.5 text-xs font-medium whitespace-nowrap outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/50',
+                  shown === k ? 'bg-surface text-fg shadow-sm' : 'text-fg-2 hover:text-fg',
+                )}
+              >
+                {ROUTE_STATUS[k].tab}
+                <span className="font-mono text-[11px] text-fg-3 tabular">{fmtNumber(d.counts[k])}</span>
+              </button>
+            ))}
+          </div>
+        }
+      />
+      {d.items.length === 0 ? (
+        <p className="px-4 pt-2 pb-5 text-[13px] text-fg-3">
+          {shown === 'none' ? 'Every route on this branch has a test.' : shown === 'branch' ? 'No route is covered only by a branch.' : 'No route has a test yet.'}
+        </p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-[13px]">
+            <thead>
+              <tr className="border-y border-border text-left text-[11px] font-semibold tracking-[0.06em] text-fg-3 uppercase">
+                <th scope="col" className="px-4 py-2 font-semibold">Route</th>
+                <th scope="col" className="px-3 py-2 font-semibold">Kind</th>
+                <th scope="col" className="px-3 py-2 font-semibold">Fires on</th>
+                <th scope="col" className="px-3 py-2 font-semibold">{shown === 'branch' ? 'Branch' : 'Test'}</th>
+                <th scope="col" className="px-4 py-2 font-semibold">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {d.items.map((r) => {
+                const name = r.routeId ?? r.key;
+                return (
+                  <tr key={r.key} className="border-b border-border last:border-b-0 hover:bg-surface-2/60">
+                    <td className="max-w-64 px-4 py-2">
+                      <Link
+                        to={`/triggers?branch=${encodeURIComponent(d.branch!)}&q=${encodeURIComponent(name)}`}
+                        className="block truncate font-mono font-medium text-fg outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring/50"
+                        title={name}
+                      >
+                        {name}
+                      </Link>
+                      {r.module ? <div className="truncate text-[11px] text-fg-3">{r.module}</div> : null}
+                    </td>
+                    <td className="px-3 py-2 font-mono text-xs text-fg-2">{r.scheme}</td>
+                    <td className="max-w-56 truncate px-3 py-2 font-mono text-xs text-fg-2" title={r.firesOn}>
+                      {r.firesOn}
+                    </td>
+                    <td className="max-w-56 truncate px-3 py-2 font-mono text-xs text-fg-2" title={(r.status === 'branch' ? r.branches : r.tests).join('\n')}>
+                      {r.status === 'branch'
+                        ? r.branches.join(', ')
+                        : r.tests.length > 0
+                          ? shortTest(r.tests[0]!) + (r.tests.length > 1 ? ` +${r.tests.length - 1}` : '')
+                          : '—'}
+                    </td>
+                    <td className="px-4 py-2 whitespace-nowrap">
+                      <span className={cn('inline-flex items-center gap-1.5 text-xs font-medium', ROUTE_STATUS[r.status].cls)}>
+                        <span className="size-1.5 rounded-full bg-current" aria-hidden />
+                        {ROUTE_STATUS[r.status].label}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {total > d.items.length ? (
+        <div className="border-t border-border px-4 py-2.5 text-xs">
+          <Link to={allHref} className="link">
+            All {fmtNumber(total)} on Triggers
+          </Link>
+        </div>
+      ) : null}
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Needs attention: everything someone should act on, most urgent first
+
+type Severity = 'bad' | 'warn' | 'info';
+interface AttentionItem {
+  id: string;
+  severity: Severity;
+  title: string;
+  detail?: ReactNode;
+  to: string;
+  children?: ReactNode;
+}
+const STRIPE: Record<Severity, string> = { bad: 'bg-st-failed', warn: 'bg-warn', info: 'bg-fg-3' };
+
+function NeedsAttention({ s }: { s: Summary }) {
+  const bugs = useBugStats();
+  const integrations = useIntegrations();
+  const ready = s.pipeline.ready_to_merge;
+  const prs = usePullRequests({ readyToMerge: true });
+  const items: AttentionItem[] = [];
+
+  const stillFailing = bugs.data?.stillFailingAfterFix ?? 0;
+  if (stillFailing > 0)
+    items.push({
+      id: 'still-failing',
+      severity: 'bad',
+      title: `${pluralize(stillFailing, 'bug')} resolved but still failing`,
+      detail: 'Linked tests failed in runs after the fix',
+      to: '/bugs?bucket=resolved&verification=still_failing',
+    });
+  const lr = s.latestRun;
+  if (lr && lr.changes.newFailures > 0)
+    items.push({
+      id: 'new-failures',
+      severity: 'bad',
+      title: `${pluralize(lr.changes.newFailures, 'new failure')} in the last run`,
+      detail: <>{lr.name} · {fmtRelative(lr.startedAt ?? lr.importedAt)}</>,
+      to: `/runs/${lr.id}`,
+    });
+  for (const i of integrations.data ?? []) {
+    if (i.configured && i.state === 'error')
+      items.push({
+        id: `sync-${i.name}`,
+        severity: 'bad',
+        title: `${i.name === 'jira' ? 'Jira' : 'GitHub'} sync failed`,
+        detail: i.lastError ?? undefined,
+        to: '/integrations',
+      });
+  }
+  if (s.untriagedFailures > 0)
+    items.push({
+      id: 'untriaged',
+      severity: 'warn',
+      title: `${pluralize(s.untriagedFailures, 'failure')} without triage`,
+      detail: 'Add a note or a triage category',
+      to: '/tests?lastStatus=failed',
+    });
+  if (ready > 0) {
+    const c = s.coverage;
+    const automatable = c.total - c.notAutomatable;
+    const projected = c.unit === 'cases' && automatable > 0 ? (c.automated + ready) / automatable : null;
+    const list = [...(prs.data ?? [])].sort((a, b) => (a.approvedAt ?? a.updatedAt).localeCompare(b.approvedAt ?? b.updatedAt));
+    items.push({
+      id: 'ready',
+      severity: 'info',
+      title: `${pluralize(ready, 'test')} approved, waiting on merge`,
+      detail:
+        projected !== null ? (
+          <>
+            Merging takes automation from {fmtPct(c.automationRate, 1)} to {fmtPct(projected, 1)}
+          </>
+        ) : (
+          `${pluralize(s.prPipeline.readyToMerge, 'approved PR')} with green checks`
+        ),
+      to: '/pulls?filter=ready',
+      children:
+        list.length > 0 ? (
+          <ul className="mt-1.5 space-y-0.5">
+            {list.slice(0, 3).map((p) => (
+              <li key={p.id}>
+                <a href={p.url} target="_blank" rel="noopener noreferrer" className="group block rounded px-1 py-0.5 -mx-1 outline-none hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-ring/50">
+                  <span className="block truncate text-xs text-fg group-hover:underline">{p.title}</span>
+                  <span className="block truncate font-mono text-[11px] text-fg-3">
+                    {p.repo}#{p.number} · {p.approvedAt ? `approved ${fmtRelative(p.approvedAt)}` : `updated ${fmtRelative(p.updatedAt)}`}
+                  </span>
+                </a>
+              </li>
+            ))}
+            {list.length > 3 ? (
+              <li>
+                <Link to="/pulls?filter=ready" className="link text-[11px] text-fg-3">
+                  +{list.length - 3} more
+                </Link>
+              </li>
+            ) : null}
+          </ul>
+        ) : null,
+    });
+  }
+
+  return (
+    <Card>
+      <section aria-labelledby="attention-title">
+        <CardHeader title={<span id="attention-title">Needs attention</span>} />
+        {items.length === 0 ? (
+          <p className="flex items-center gap-2 px-4 pt-1 pb-4 text-[13px] text-fg-2">
+            <CircleCheck className="size-4 text-st-passed" aria-hidden /> Nothing needs attention right now.
+          </p>
+        ) : (
+          <ul className="pb-2">
+            {items.map((it) => (
+              <li key={it.id} className="flex gap-3 px-4 py-2">
+                <span className={cn('w-[3px] shrink-0 self-stretch rounded-full', STRIPE[it.severity])} aria-hidden />
+                <div className="min-w-0 flex-1">
+                  <Link to={it.to} className="text-[13px] font-medium text-fg outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring/50">
+                    {it.title}
+                  </Link>
+                  {it.detail ? <div className="truncate text-xs text-fg-3">{it.detail}</div> : null}
+                  {it.children}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </Card>
   );
 }
