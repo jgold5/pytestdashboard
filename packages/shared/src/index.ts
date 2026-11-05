@@ -67,7 +67,8 @@ export const PipelineStage = z.enum([
 export type PipelineStage = z.infer<typeof PipelineStage>;
 
 /** What last moved a case to `automated` (audit only; null when never automated or unknown/legacy). */
-export const AutomatedVia = z.enum(['allure', 'pr_merge', 'manual', 'spreadsheet', 'jira']);
+/** repo_scan: a test on the default branch of the test repo names the case's Jira/Xray key (comment, docstring, marker…). */
+export const AutomatedVia = z.enum(['allure', 'pr_merge', 'manual', 'spreadsheet', 'jira', 'repo_scan']);
 export type AutomatedVia = z.infer<typeof AutomatedVia>;
 
 // ---------------------------------------------------------------------------
@@ -167,7 +168,7 @@ export const PullRequestRef = z.object({
   author: z.string().nullable(),
   updatedAt: z.string(),
   /** How the link was made — shown as a tooltip. */
-  linkedBy: z.enum(['key_in_title', 'key_in_body', 'key_in_branch', 'marker_in_diff', 'test_name_in_diff']),
+  linkedBy: z.enum(['key_in_title', 'key_in_body', 'key_in_branch', 'marker_in_diff', 'test_name_in_diff', 'key_in_test_diff']),
   /**
    * Review state derived from latest review per reviewer (GitHub reviewDecision when available):
    * review_required = no approving review yet / reviewers requested; changes_requested; approved;
@@ -1280,6 +1281,12 @@ export type TriggerScanSummary = z.infer<typeof TriggerScanSummary>;
 export const TriggerScanResponse = TriggerScanSummary.extend({
   /** Triggers covered on this branch right after the scan (tests from this or the default branch's test scan). */
   automated: z.number().int(),
+  /**
+   * Test scans of the default branch (main/master/develop): test cases whose Jira/Xray key a test
+   * names (comment, docstring, marker…), and how many of them this scan newly marked automated.
+   * Null for other branches and for routes-only scans.
+   */
+  cases: z.object({ referenced: z.number().int(), newlyAutomated: z.number().int() }).nullable(),
   warnings: z.array(z.string()),
 });
 export type TriggerScanResponse = z.infer<typeof TriggerScanResponse>;

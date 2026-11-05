@@ -191,6 +191,30 @@ curl --fail-with-body -sS -X POST "$DASHBOARD_URL/api/runs/import-history" \
   -F "files=@history.zip;type=application/zip"
 ```
 
+### Xray cases automated by tests in the repo
+
+With Jira/Xray synced (your Xray tests become test cases), the test repo itself can decide
+what is automated. A test names the case it automates by its Xray key, anywhere in the test:
+a comment above it, its docstring, a marker or a string:
+
+```python
+# Xray: ABC-123
+def test_invoice_file_is_loaded(camel):
+    """ABC-124: the INV file is picked up"""
+```
+
+Keys in a class docstring or a module docstring or comment apply to every test in that class
+or file.
+
+- **Main:** when the test repo's scan for `main` (or `master`/`develop`) is uploaded
+  (`POST /api/triggers/scan` with `only=tests`, see below), every case whose key a test names
+  is marked **automated**, and its detail page shows "Automated via: named by a test on main".
+  The scan never downgrades a case, and leaves cases marked *not automatable* alone.
+- **PRs:** the GitHub sync links a PR to a case when an added line in a test file names the
+  case's key (`key_in_test_diff`). The case then moves through the pipeline (PR draft → In
+  review → Ready to merge) and is promoted to automated when the PR merges. Add your test
+  folders to `GITHUB_TEST_PATH_GLOBS` (e.g. `**/route_test/**`).
+
 ### Camel route triggers
 
 **Triggers** lists every Camel route that starts from a load file (`file:`, `ftp:`,

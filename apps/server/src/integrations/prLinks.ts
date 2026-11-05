@@ -8,6 +8,8 @@
  * 3. Added `def test_<name>(` where <name> is the last segment of a case's
  *    allureFullName/key, in a file whose path matches the case's module when
  *    that is determinable → test_name_in_diff.
+ * 4. Any other added line in a test file (comment, docstring, string) that
+ *    names a case's jiraKey/key, e.g. `# Xray: ABC-123` → key_in_test_diff.
  */
 import type { LinkedBy } from '../db/schema.js';
 
@@ -71,6 +73,7 @@ const MARKER_PREFIXES = [
 export const LINK_STRENGTH: readonly LinkedBy[] = [
   'marker_in_diff',
   'test_name_in_diff',
+  'key_in_test_diff',
   'key_in_branch',
   'key_in_title',
   'key_in_body',
@@ -286,6 +289,8 @@ export function linkPullRequest(
         for (const m of line.matchAll(DEF_TEST_G))
           push(index.testNameMatches(m[1]!, f.filename), 'test_name_in_diff');
       }
+      // only test files reach here (GITHUB_TEST_PATH_GLOBS): a key in a comment or docstring links too
+      if (line.includes('-')) push(index.keyMatches(line), 'key_in_test_diff');
     }
   }
 

@@ -205,6 +205,38 @@ describe('GitHub derivations', () => {
     );
   });
 
+  it('links a key written in a comment or docstring of a test file (key_in_test_diff)', () => {
+    const index = new CaseIndex([
+      { id: 1, key: 'k1', jiraKey: 'QA-101', allureId: null, allureFullName: null },
+      { id: 2, key: 'k2', jiraKey: 'QA-102', allureId: null, allureFullName: null },
+      { id: 3, key: 'k3', jiraKey: 'QA-103', allureId: null, allureFullName: null },
+    ]);
+    const links = linkPullRequest(
+      {
+        title: 'Automate invoice load',
+        body: null,
+        headBranch: 'feature/invoice',
+        files: [
+          {
+            filename: 'src/route_test/invoice_load_route.py',
+            patch: [
+              '@@ -1,2 +1,8 @@',
+              '+# Xray: QA-101',
+              '+def test_invoice_file_is_loaded(camel):',
+              '+    """QA-102 – loads the INV file"""',
+              '-    # QA-103 (removed lines never link)',
+            ].join('\n'),
+          },
+        ],
+      },
+      index,
+    );
+    expect(links.links).toEqual([
+      { testCaseId: 1, linkedBy: 'key_in_test_diff' },
+      { testCaseId: 2, linkedBy: 'key_in_test_diff' },
+    ]);
+  });
+
   it('links by each rule kind', () => {
     const index = new CaseIndex([
       { id: 1, key: 'PAY-1', jiraKey: 'PAY-1', allureId: null, allureFullName: null },
