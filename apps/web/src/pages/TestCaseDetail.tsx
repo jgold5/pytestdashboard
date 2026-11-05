@@ -75,7 +75,7 @@ export default function TestCaseDetailPage() {
   if (q.isError) {
     if (q.error instanceof ApiError && q.error.status === 404)
       return (
-        <EmptyState title="Test case not found" actions={<Link to="/tests" className="text-accent hover:underline">Back to test cases</Link>}>
+        <EmptyState title="Test case not found" actions={<Link to="/tests" className="link">Back to test cases</Link>}>
           It may have been deleted.
         </EmptyState>
       );
@@ -359,7 +359,7 @@ function HistorySection({ t }: { t: TestCaseDetail }) {
                 <div className="flex flex-wrap items-center gap-2 text-xs">
                   <ResultBadge status={selected.status} />
                   <ChangeBadge change={selected.change} />
-                  <Link to={`/runs/${selected.runId}`} className="font-medium text-accent hover:underline">
+                  <Link to={`/runs/${selected.runId}`} className="font-medium link">
                     {selected.runName}
                   </Link>
                   <span className="text-fg-3">

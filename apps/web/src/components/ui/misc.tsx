@@ -37,7 +37,7 @@ export function ExternalLink({
       href={safe}
       target="_blank"
       rel="noopener noreferrer"
-      className={cn('inline-flex items-center gap-1 text-accent hover:underline underline-offset-2', className)}
+      className={cn('link inline-flex items-center gap-1', className)}
     >
       {children}
       {showIcon ? <ExternalIcon className="size-3 shrink-0 opacity-70" aria-hidden /> : null}

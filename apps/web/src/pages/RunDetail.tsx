@@ -73,7 +73,7 @@ export default function RunDetailPage() {
 
 function Tile({ label, value, icon, sub }: { label: string; value: ReactNode; icon?: ReactNode; sub?: ReactNode }) {
   return (
-    <div className="rounded-xl border border-border bg-surface px-4 py-3 shadow-sm">
+    <div className="rounded-lg border border-border bg-surface px-4 py-3 shadow-sm">
       <div className="flex items-center gap-1.5 text-xs text-fg-2">
         {icon}
         {label}
@@ -120,7 +120,7 @@ function RunView({ r }: { r: Run }) {
             <span title={fmtDateTime(r.startedAt ?? r.importedAt)}>Started {fmtRelative(r.startedAt ?? r.importedAt)}</span>
             <span>Duration {fmtDuration(r.durationMs)}</span>
             {buildUrl ? (
-              <a href={buildUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-accent hover:underline">
+              <a href={buildUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 link">
                 Build <ExternalIcon className="size-3" aria-hidden />
               </a>
             ) : null}
@@ -148,7 +148,7 @@ function RunView({ r }: { r: Run }) {
       <PreviousBanner r={r} />
 
       <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-        <div className="col-span-2 rounded-xl border border-border bg-surface px-4 py-3 shadow-sm sm:col-span-3 lg:col-span-2">
+        <div className="col-span-2 rounded-lg border border-border bg-surface px-4 py-3 shadow-sm sm:col-span-3 lg:col-span-2">
           <div className="text-xs text-fg-2">Pass rate</div>
           <div className="mt-1 flex items-center gap-3">
             <span className="text-2xl font-semibold tracking-tight text-fg">{fmtPct(r.passRate, 1)}</span>
@@ -163,7 +163,7 @@ function RunView({ r }: { r: Run }) {
       </div>
 
       {env.length > 0 ? (
-        <details className="group mb-4 rounded-xl border border-border bg-surface shadow-sm">
+        <details className="group mb-4 rounded-lg border border-border bg-surface shadow-sm">
           <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-2.5 text-[13px] font-medium text-fg outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
             <Server className="size-4 text-fg-3" aria-hidden />
             Environment
@@ -553,7 +553,7 @@ function ResultsTab({ r }: { r: Run }) {
       ) : items.length === 0 ? (
         <EmptyState icon={<ListChecks />} title="No results match">
           {change ? (
-            <button type="button" onClick={() => setChange(null)} className="text-accent hover:underline">
+            <button type="button" onClick={() => setChange(null)} className="link">
               Show all changes
             </button>
           ) : (

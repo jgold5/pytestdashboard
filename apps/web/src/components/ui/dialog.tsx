@@ -31,7 +31,7 @@ export function Dialog({
         <D.Content
           className={cn(
             'fixed top-[8vh] left-1/2 z-50 flex max-h-[84vh] w-[calc(100vw-24px)] max-w-lg -translate-x-1/2 flex-col',
-            'rounded-xl border border-border bg-surface shadow-lg outline-none',
+            'rounded-lg border border-border bg-surface shadow-lg outline-none',
             className,
           )}
         >

@@ -180,7 +180,7 @@ export function SpreadsheetWizard() {
         </ol>
 
         {step === 'upload' ? (
-          <div className="flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-border-strong/60 bg-surface-2/40 px-4 py-8 text-center">
+          <div className="flex flex-col items-center justify-center rounded-lg border-2 border-dashed border-border-strong/60 bg-surface-2/40 px-4 py-8 text-center">
             <FileSpreadsheet className="mb-2 size-6 text-fg-3" aria-hidden />
             <p className="text-[13px] font-medium text-fg">Upload your tracker (.xlsx, .csv or .tsv)</p>
             <p className="mt-0.5 text-xs text-fg-3">Formulas are not evaluated — cached values are used. Max 50,000 rows per sheet.</p>
