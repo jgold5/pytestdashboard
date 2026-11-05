@@ -46,7 +46,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-VERSION = "1.4"
+VERSION = "1.5"
 
 SKIP_DIRS = {
     ".git", "node_modules", "target", "build", "dist", "out", ".venv", "venv", "site-packages",
@@ -493,6 +493,11 @@ def is_test_file(rel: str) -> bool:
     return bool(re.search(r"(^|/)(test_[^/]*|[^/]*_test)\.py$", rel))
 
 
+def has_tests(source: str) -> bool:
+    """Any Python file with test functions: pytest collects a file given by path whatever its name."""
+    return re.search(r"^\s*(?:async\s+)?def\s+test\w*\s*\(", source, re.M) is not None
+
+
 class StringRenamer(ast.NodeTransformer):
     def __init__(self, namer: Namer) -> None:
         self.namer = namer
@@ -587,6 +592,13 @@ def distill_tests(source: str, namer: Namer, stats: Counter, decorators: Counter
         if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "pytestmark" for t in node.targets):
             stats["pytestmark assignments"] += 1
             return [f"{pad}pytestmark = {ast.unparse(renamer.visit(copy.deepcopy(node.value)))}"]
+        # constants (ROUTE_ID = "invoice-load", ROUTES = [...]) used by the tests: keep their strings
+        if isinstance(node, (ast.Assign, ast.AnnAssign)) and getattr(node, "value", None) is not None:
+            found = [namer.text(n.value.strip()) for n in ast.walk(node.value)
+                     if isinstance(n, ast.Constant) and isinstance(n.value, str) and n.value.strip() and len(n.value) <= 120 and "\n" not in n.value]
+            if found:
+                stats["string constants kept from module/class level"] += len(found)
+                return [f"{pad}_const_refs = {list(dict.fromkeys(found))!r}"]
         return []
 
     for node in tree.body:
@@ -828,7 +840,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 xml_items[rel] = items
         elif low.endswith(".properties"):
             prop_files[rel] = parse_properties(read(p))
-        elif is_test_file(rel) or (low.endswith(".py") and python_files and glob_match(p.name, python_files)):
+        elif low.endswith(".py") and (is_test_file(rel) or glob_match(p.name, python_files) or has_tests(read(p))):
             test_sources[rel] = read(p)
         elif low.endswith((".java", ".kt", ".groovy")):
             n = len(re.findall(r"\bfrom[F]?\s*\(\s*\"", read(p)))

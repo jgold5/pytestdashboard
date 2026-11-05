@@ -64,7 +64,7 @@ def test_invoice_file_is_loaded(camel):
 
 
 @pytest.mark.parametrize("route", ["nightly-purge", "statements"])
-def test_parametrized_strings_do_not_count(route):
+def test_parametrized_routes(route):
     pass
 
 
@@ -151,7 +151,8 @@ describe('pytest labels', () => {
     const tests = scanPytestFile('tests/routes/test_billing.py', TESTS_PY);
     expect(tests.map((t) => [t.id, t.strings])).toEqual([
       ['tests/routes/test_billing.py::test_invoice_file_is_loaded', ['route', 'invoice-load', 'Billing', 'INV_1.csv']],
-      ['tests/routes/test_billing.py::test_parametrized_strings_do_not_count', []],
+      // a parametrize list of route ids says which routes the test covers
+      ['tests/routes/test_billing.py::test_parametrized_routes', ['route', 'nightly-purge', 'statements']],
       ['tests/routes/test_billing.py::TestSchedules::test_purge_runs', ['nightlyPurge', 'camel_route', 'Billing']],
       ['tests/routes/test_billing.py::TestSchedules::test_orders', ['Billing', 'trigger', 'ORD_20260101.xml']],
     ]);
@@ -160,7 +161,8 @@ describe('pytest labels', () => {
   it('only reads test files and skips build output', () => {
     expect(classify('tests/test_a.py')).toBe('tests');
     expect(classify('tests/a_test.py')).toBe('tests');
-    expect(classify('tests/conftest.py')).toBeNull();
+    // any .py can hold tests (files run by path, python_files); only def test… functions are read
+    expect(classify('src/route_test/invoice_checks.py')).toBe('tests');
     expect(classify('src/main/resources/routes.xml')).toBe('xml');
     expect(classify('target/classes/routes.xml')).toBeNull();
     expect(classify('properties/prod.properties')).toBe('properties');
@@ -189,9 +191,9 @@ describe('scanRepository', () => {
 
     const cover = (id: string) => byId[id]!.coveredBy.map((c) => `${c.test.split('::').pop()} via ${c.via}`);
     expect(cover('invoice-load')).toEqual(['test_invoice_file_is_loaded via invoice-load']);
-    expect(cover('nightly-purge')).toEqual(['test_purge_runs via nightlyPurge']);
+    expect(cover('nightly-purge')).toEqual(['test_parametrized_routes via nightly-purge', 'test_purge_runs via nightlyPurge']);
     expect(cover('orders-load')).toEqual(['test_orders via ORD_20260101.xml']);
-    expect(cover('statements')).toEqual([]); // only named in a parametrize list
+    expect(cover('statements')).toEqual(['test_parametrized_routes via statements']);
   });
 
   it('a label that is a file name the route would pick up counts as coverage', () => {
@@ -397,7 +399,7 @@ describe('trigger API', () => {
   it('stores a scan per branch and compares a PR branch with main', async () => {
     const main = await scan('main', repoZip());
     expect(main.statusCode).toBe(201);
-    expect(main.json<TriggerScanResponse>()).toMatchObject({ branch: 'main', total: 4, automated: 3, files: { xml: 2, properties: 2, tests: 1 }, otherRoutes: 1 });
+    expect(main.json<TriggerScanResponse>()).toMatchObject({ branch: 'main', total: 4, automated: 4, files: { xml: 2, properties: 2, tests: 1 }, otherRoutes: 1 });
 
     const newRoute = `<route id="payments-load"><from uri="file:/data/payments?include=PAY_.*\\.csv"/><to uri="direct:pay"/></route>`;
     const newTest = `\n\n@allure.label("route", "payments-load")\ndef test_payment_file_is_loaded():\n    pass\n\n\n@allure.label("route", "statements")\ndef test_statements_run():\n    pass\n`;
@@ -407,9 +409,10 @@ describe('trigger API', () => {
     const rows = Object.fromEntries(pr.items.map((r) => [r.routeId, r]));
     expect(rows['payments-load']).toMatchObject({ change: 'added', automatedBefore: false, branches: ['feature/payments'] });
     expect(rows['payments-load']!.coveredBy).toHaveLength(1);
-    // newly automated on the branch
-    expect(rows['statements']).toMatchObject({ change: 'unchanged', automatedBefore: false });
-    expect(rows['statements']!.coveredBy).toHaveLength(1);
+    // already covered on main by the parametrize list; the branch adds a second test
+    // (newly automated unchanged triggers are covered by 'routes and tests from different repos')
+    expect(rows['statements']).toMatchObject({ change: 'unchanged', automatedBefore: true });
+    expect(rows['statements']!.coveredBy).toHaveLength(2);
     expect(rows['invoice-load']!.branches.sort()).toEqual(['feature/payments', 'main']);
 
     // all branches merged: the union of triggers

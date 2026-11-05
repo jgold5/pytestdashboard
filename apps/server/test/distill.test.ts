@@ -158,7 +158,7 @@ describe.skipIf(!hasPython)('distill_camel_repo.py', () => {
     // the fixture really exercises every shape: 3 plain triggers, 2 file-name branches, 2 patterns + a schedule in one route
     expect(a.triggers.map((t) => [t.patternKind, t.coveredBy.length])).toEqual([
       ['regex', 1],
-      [null, 1],
+      [null, 2], // a marker and a parametrize list both name acme-purge
       ['glob', 1],
       ['condition', 1],
       ['condition', 1],

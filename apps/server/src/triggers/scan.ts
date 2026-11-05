@@ -325,8 +325,8 @@ export interface ScannedTest {
 }
 
 const STRING_LIT = /[rRbBuUfF]{0,2}("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')/g;
-/** Decorators whose string arguments are data, not labels. */
-const IGNORED_DECORATORS = /^@pytest\.mark\.(parametrize|usefixtures|skip|skipif|xfail|filterwarnings|timeout|flaky|order|dependency)\b|^@pytest\.fixture\b|^@(staticmethod|classmethod|property)\b/;
+/** Decorators whose string arguments are not about what is tested. (parametrize counts: a list of route ids is.) */
+const IGNORED_DECORATORS = /^@pytest\.mark\.(usefixtures|skip|skipif|xfail|filterwarnings|timeout|flaky|order|dependency)\b|^@pytest\.fixture\b|^@(staticmethod|classmethod|property)\b/;
 
 function strings(code: string): string[] {
   const out: string[] = [];
@@ -347,7 +347,7 @@ function decoratorStrings(text: string): string[] {
   const out = strings(text);
   // a bare marker (`@pytest.mark.invoice_load`) names something by itself
   const marker = /^@pytest\.mark\.(\w+)/.exec(text);
-  if (marker) out.push(marker[1] as string);
+  if (marker && marker[1] !== 'parametrize') out.push(marker[1] as string);
   return out;
 }
 
@@ -374,7 +374,12 @@ const parenDepth = (s: string): number => {
   return d;
 };
 
-export const isPytestFile = (path: string): boolean => /(^|\/)(test_[^/]*|[^/]*_test)\.py$/.test(path);
+/**
+ * Any Python file can hold tests: pytest's default names are test_*.py and *_test.py, but
+ * python_files can change them and a file passed on the command line is collected whatever
+ * its name. Only `def test…` functions are read from them.
+ */
+export const isPytestFile = (path: string): boolean => /\.py$/.test(path);
 
 /** Test functions and the strings that could label them (indentation-based; no Python parser needed). */
 export function scanPytestFile(file: string, source: string): ScannedTest[] {
@@ -383,11 +388,18 @@ export function scanPytestFile(file: string, source: string): ScannedTest[] {
   let pending: string[] = [];
   let cls: { name: string; indent: number; strings: string[] } | null = null;
   const moduleMarks: string[] = [];
+  /** Strings in module-level assignments (ROUTE_ID = "invoice-load"), shared by the file's tests. */
+  const moduleConsts: string[] = [];
+  let skipIndent = -1;
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i] as string;
     const trimmed = raw.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
     const indent = indentOf(raw);
+    if (skipIndent >= 0) {
+      if (indent > skipIndent) continue; // body of a helper function
+      skipIndent = -1;
+    }
     if (cls && indent <= cls.indent && !trimmed.startsWith('@')) cls = null;
     if (/^pytestmark\s*=/.test(trimmed)) {
       let text = trimmed;
@@ -411,6 +423,20 @@ export function scanPytestFile(file: string, source: string): ScannedTest[] {
       continue;
     }
     const d = /^(?:async\s+)?def\s+(test\w*)\s*\(/.exec(trimmed);
+    if (!d && /^(?:async\s+)?def\s+\w+\s*\(/.test(trimmed)) {
+      skipIndent = indent;
+      pending = [];
+      continue;
+    }
+    if (/^[A-Za-z_][\w.]*(?:\s*,\s*[A-Za-z_][\w.]*)*\s*(?::[^=]+)?=(?!=)/.test(trimmed) && (indent === 0 || (cls && indent > cls.indent))) {
+      let text = trimmed;
+      while (parenDepth(text) > 0 && i + 1 < lines.length) text += ` ${(lines[++i] as string).trim()}`;
+      const found = bodyStrings(text.slice(text.indexOf('=') + 1));
+      if (indent === 0) moduleConsts.push(...found);
+      else cls?.strings.push(...found);
+      pending = [];
+      continue;
+    }
     if (d) {
       const inClass = cls !== null && indent > cls.indent;
       const body: string[] = [];
@@ -434,8 +460,9 @@ export function scanPytestFile(file: string, source: string): ScannedTest[] {
     }
     pending = [];
   }
-  // module-level pytestmark applies to every test in the file, wherever it is written
-  if (moduleMarks.length) for (const t of tests) t.strings = [...new Set([...t.strings, ...moduleMarks])];
+  // module-level pytestmark and constants apply to every test in the file, wherever they are written
+  const shared = [...moduleMarks, ...moduleConsts];
+  if (shared.length) for (const t of tests) t.strings = [...new Set([...t.strings, ...shared])];
   return tests;
 }
 
