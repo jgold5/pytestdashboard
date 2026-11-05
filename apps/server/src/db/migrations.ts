@@ -220,7 +220,8 @@ CREATE TABLE "trigger_scans" (
 	"triggers" text DEFAULT '[]' NOT NULL,
 	"tests_found" integer DEFAULT 0 NOT NULL,
 	"other_routes" integer DEFAULT 0 NOT NULL,
-	"files" text DEFAULT '{}' NOT NULL
+	"files" text DEFAULT '{}' NOT NULL,
+	"tests" text DEFAULT '[]' NOT NULL
 );
 CREATE INDEX "trigger_scans_branch_idx" ON "trigger_scans" ("branch","scanned_at");
 `,

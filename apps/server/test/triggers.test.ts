@@ -130,7 +130,7 @@ describe('properties and placeholders', () => {
 describe('Camel XML', () => {
   it('finds route inputs with line numbers, skipping comments', () => {
     const { routes, endpoints } = scanCamelXml('r.xml', ROUTES_XML);
-    expect(routes.map((r) => [r.routeId, r.uri ?? `ref:${r.ref}`, r.line])).toEqual([
+    expect(routes.map((r) => [r.routeId, r.inputs[0]!.uri ?? `ref:${r.inputs[0]!.ref}`, r.inputs[0]!.line])).toEqual([
       ['invoice-load', 'file:{{invoice.in.dir}}?include={{invoice.pattern}}&move=.done', 7],
       ['nightly-purge', 'quartz://billing/nightlyPurge?cron=0+0+2+*+*+?', 12],
       ['statements', 'cron:statements?schedule={{statement.cron}}', 19],
@@ -142,7 +142,7 @@ describe('Camel XML', () => {
 
   it('handles namespace prefixes and single-quoted attributes', () => {
     const xml = `<camel:routes xmlns:camel="x"><camel:route id='a'><camel:from uri='timer:tick?period=5000'/></camel:route></camel:routes>`;
-    expect(scanCamelXml('a.xml', xml).routes).toMatchObject([{ routeId: 'a', uri: 'timer:tick?period=5000', line: 1 }]);
+    expect(scanCamelXml('a.xml', xml).routes).toMatchObject([{ routeId: 'a', inputs: [{ uri: 'timer:tick?period=5000', line: 1 }] }]);
   });
 });
 
@@ -150,7 +150,7 @@ describe('pytest labels', () => {
   it('collects decorator strings, class labels and allure.dynamic calls per test', () => {
     const tests = scanPytestFile('tests/routes/test_billing.py', TESTS_PY);
     expect(tests.map((t) => [t.id, t.strings])).toEqual([
-      ['tests/routes/test_billing.py::test_invoice_file_is_loaded', ['route', 'invoice-load', 'Billing']],
+      ['tests/routes/test_billing.py::test_invoice_file_is_loaded', ['route', 'invoice-load', 'Billing', 'INV_1.csv']],
       ['tests/routes/test_billing.py::test_parametrized_strings_do_not_count', []],
       ['tests/routes/test_billing.py::TestSchedules::test_purge_runs', ['nightlyPurge', 'camel_route', 'Billing']],
       ['tests/routes/test_billing.py::TestSchedules::test_orders', ['Billing', 'trigger', 'ORD_20260101.xml']],
@@ -209,6 +209,127 @@ describe('scanRepository', () => {
     const out = scanRepository({ xml: [{ path: 'r.xml', text: xml }], properties: [], tests });
     expect(Date.now() - started).toBeLessThan(1000);
     expect(out.triggers[0]!.coveredBy).toEqual([]);
+  });
+});
+
+describe('repo layout seen in practice', () => {
+  it('reads module-level and class-level pytestmark markers, and body strings', () => {
+    const src = [
+      'import pytest',
+      '',
+      'pytestmark = [pytest.mark.billing, pytest.mark.route("invoice-load")]',
+      '',
+      '',
+      'class TestJobs:',
+      '    pytestmark = pytest.mark.nightly',
+      '',
+      '    def test_purge(self):',
+      '        drop_trigger_file("OSCAR150")',
+      '',
+      '',
+      'def test_other():',
+      '    assert run_route("orders-load") == "ok"',
+      '    log("a long message\\nover two lines")',
+      '',
+    ].join('\n');
+    const tests = scanPytestFile('tests/test_jobs.py', src);
+    expect(tests.map((t) => [t.name, t.strings])).toEqual([
+      ['test_purge', ['nightly', 'OSCAR150', 'billing', 'route', 'invoice-load']],
+      ['test_other', ['orders-load', 'ok', 'billing', 'route', 'invoice-load']],
+    ]);
+  });
+
+  it('resolves properties per module, scopes route ids per module, and matches trigger files', () => {
+    const route = (id: string, dir: string) =>
+      `<routes><route id="${id}"><from uri="file:{{inbound}}/${dir}?fileName={{${id}.file}}&amp;doneFileName={{${id}.trigger.name}}"/></route></routes>`;
+    const out = scanRepository({
+      xml: [
+        { path: 'src/main/resources/east/routes/a.xml', text: route('load', 'east') },
+        { path: 'src/main/resources/west/routes/a.xml', text: route('load', 'west') },
+        {
+          path: 'src/main/resources/west/routes/b.xml',
+          text: '<routes><route id="tick"><from uri="timer://t?period=5m"/></route><route id="once"><from uri="quartz2://g?trigger.repeatCount=0"/></route></routes>',
+        },
+      ],
+      properties: [
+        { path: 'src/main/resources/application.properties', text: 'inbound=/data/in\n' },
+        { path: 'src/main/resources/east/config/application-east.properties', text: 'load.file=EAST.TXT\nload.trigger.name=EAST_GO\n' },
+        { path: 'src/main/resources/west/config/application-west.properties', text: 'load.file=WEST.TXT\nload.trigger.name=WEST_GO\n' },
+      ],
+      tests: [{ path: 'tests/test_x.py', text: 'def test_west():\n    drop("WEST_GO")\n' }],
+    });
+    expect(out.warnings).toEqual([]);
+    expect(out.triggers.map((t) => [t.key, t.module, t.directory, t.filePattern, t.doneFile, t.unresolved.length, t.coveredBy.length])).toEqual([
+      ['east/load', 'east', '/data/in/east', 'EAST.TXT', 'EAST_GO', 0, 0],
+      ['west/load', 'west', '/data/in/west', 'WEST.TXT', 'WEST_GO', 0, 1],
+      ['west/tick', 'west', null, null, null, 0, 0],
+      ['west/once', 'west', null, null, null, 0, 0],
+    ]);
+    expect(out.triggers.slice(2).map((t) => t.schedule)).toEqual(['every 5m', 'once, at start-up']);
+  });
+});
+
+describe('several triggers in one route', () => {
+  const scan = (xml: string, tests = '') =>
+    scanRepository({ xml: [{ path: 'r.xml', text: xml }], properties: [], tests: tests ? [{ path: 'tests/test_r.py', text: tests }] : [] });
+
+  it('one trigger per <from> when a route has several inputs', () => {
+    const out = scan(`<routes><route id="inbox">
+      <from uri="file:/in/invoices?include=INV_.*"/>
+      <from uri="quartz://jobs/inboxSweep?cron=0+0+*+*+*+?"/>
+      <to uri="direct:x"/></route></routes>`);
+    expect(out.triggers.map((t) => [t.key, t.kind, t.input])).toEqual([
+      ['inbox#1', 'file', 1],
+      ['inbox#2', 'schedule', 2],
+    ]);
+    expect(out.warnings).toEqual([]);
+  });
+
+  it('one trigger per file pattern when include/antInclude lists several', () => {
+    const out = scan(
+      `<routes>
+        <route id="billing-load"><from uri="file:/in?include=(INV|CRN|PAY)_.*\\.csv"/></route>
+        <route id="orders-load"><from uri="file:/in/orders?antInclude=ORD_*.xml, RET_*.xml"/></route>
+        <route id="plain"><from uri="file:/in/x?include=RAW(X_(\\d+)\\.csv)"/></route>
+      </routes>`,
+      `@allure.label("file", "CRN_20260101.csv")\ndef test_credit():\n    pass\n\n@allure.label("route", "orders-load")\ndef test_orders():\n    pass\n`,
+    );
+    expect(out.triggers.map((t) => [t.key, t.filePattern, t.coveredBy.length])).toEqual([
+      ['billing-load::INV_.*\\.csv', 'INV_.*\\.csv', 0],
+      ['billing-load::CRN_.*\\.csv', 'CRN_.*\\.csv', 1],
+      ['billing-load::PAY_.*\\.csv', 'PAY_.*\\.csv', 0],
+      // a label naming the route covers each of its patterns
+      ['orders-load::ORD_*.xml', 'ORD_*.xml', 1],
+      ['orders-load::RET_*.xml', 'RET_*.xml', 1],
+      ['plain', 'X_(\\d+)\\.csv', 0],
+    ]);
+  });
+
+  it('one trigger per <when>/<filter> on the file name, with the job it goes to', () => {
+    const xml = `<routes><route id="inbox">
+      <from uri="file:/data/in"/>
+      <choice>
+        <when><simple>\${file:name} starts with 'INV_' &amp;&amp; \${file:name} ends with '.csv'</simple>
+          <to uri="direct:invoiceJob"/></when>
+        <when><simple>\${header.CamelFileName} regex 'CRN_\\d{8}\\.csv'</simple>
+          <to uri="direct:creditJob"/><to uri="log:x"/></when>
+        <when><simple><![CDATA[\${file:onlyname.noext} in 'PAY_DAILY,PAY_WEEKLY']]></simple>
+          <to uri="direct:paymentJob"/></when>
+        <when><simple>\${header.type} == 'urgent'</simple><to uri="direct:urgent"/></when>
+        <otherwise><to uri="direct:unknownFile"/></otherwise>
+      </choice></route>
+      <route id="ext-filter"><from uri="file:/data/ext"/><filter><simple>\${file:ext} == 'xml'</simple><to uri="direct:xmlJob"/></filter></route>
+      </routes>`;
+    const tests = `@allure.label("job", "creditJob")\ndef test_credit():\n    pass\n\n@allure.label("file", "INV_1.csv")\ndef test_invoice():\n    pass\n\n@allure.label("file", "PAY_DAILY.txt")\ndef test_pay():\n    pass\n`;
+    const out = scan(xml, tests);
+    expect(out.triggers.map((t) => [t.filePattern, t.patternKind, t.target, t.coveredBy.map((c) => c.test.split('::').pop())])).toEqual([
+      ['INV_*.csv', 'condition', 'direct:invoiceJob', ['test_invoice']],
+      ['/CRN_\\d{8}\\.csv/', 'condition', 'direct:creditJob', ['test_credit']],
+      ['PAY_DAILY | PAY_WEEKLY', 'condition', 'direct:paymentJob', ['test_pay']],
+      ['*.xml', 'condition', 'direct:xmlJob', []],
+    ]);
+    expect(out.triggers[0]!.key).toBe('inbox::INV_*.csv');
+    expect(out.triggers[1]!.line).toBe(6);
   });
 });
 
@@ -275,8 +396,58 @@ describe('trigger API', () => {
   it('rejects uploads without route XML and unknown branches', async () => {
     const res = await scan('main', makeZip([{ name: 'README.md', data: 'x' }]));
     expect(res.statusCode).toBe(400);
-    expect(res.json().error).toBe('no_routes');
+    expect(res.json().error).toBe('nothing_to_scan');
     expect((await t.app.inject({ url: '/api/triggers?branch=nope' })).statusCode).toBe(400);
+  });
+});
+
+describe('routes and tests from different repos', () => {
+  let t: TestApp;
+  beforeEach(async () => {
+    t = await createTestApp();
+  });
+  afterEach(async () => t.close());
+
+  const upload = (fields: Record<string, string>, files: Array<{ field: string; filename: string; content: string }>) => {
+    const mp = multipart(fields, files);
+    return t.app.inject({ method: 'POST', url: '/api/triggers/scan', payload: mp.payload, headers: mp.headers });
+  };
+  const ROUTES = (extra = '') =>
+    `<routes><route id="invoice-load"><from uri="file:/in?include=INV_.*"/></route><route id="purge"><from uri="quartz://p?cron=0+0+2+*+*+?"/></route>${extra}</routes>`;
+  const INVOICE_TEST = '@allure.label("route", "invoice-load")\ndef test_invoice():\n    pass\n';
+
+  it('a test-repo PR is shown against main routes; a route-repo PR against main tests', async () => {
+    expect((await upload({ branch: 'main', only: 'routes' }, [{ field: 'file:camel', filename: 'routes.xml', content: ROUTES() }])).statusCode).toBe(201);
+    // the test repo keeps a copy of a route as test data: with only=tests it must not count as routes
+    const mainTests = await upload({ branch: 'main', only: 'tests' }, [
+      { field: 'file:tests', filename: 'test_invoice.py', content: INVOICE_TEST },
+      { field: 'file:test_data/routes', filename: 'copy.xml', content: '<routes><route id="fake"><from uri="file:/x"/></route></routes>' },
+    ]);
+    expect(mainTests.json<TriggerScanResponse>()).toMatchObject({ total: 0, automated: 1, files: { xml: 0, tests: 1 } });
+
+    // a PR in the test repo adds a test for purge
+    await upload({ branch: 'feature/purge-test', only: 'tests' }, [
+      { field: 'file:tests', filename: 'test_invoice.py', content: `${INVOICE_TEST}\n@pytest.mark.route("purge")\ndef test_purge():\n    pass\n` },
+    ]);
+    const pr = (await t.app.inject({ url: '/api/triggers?branch=feature%2Fpurge-test&compare=main' })).json<TriggerListResponse>();
+    expect(pr).toMatchObject({ routesFrom: 'main', testsFrom: 'feature/purge-test', compareRoutesFrom: 'main', compareTestsFrom: 'main' });
+    expect(pr.items.map((r) => [r.routeId, r.change, r.coveredBy.length, r.automatedBefore])).toEqual([
+      ['invoice-load', 'unchanged', 1, true],
+      ['purge', 'unchanged', 1, false],
+    ]);
+
+    // a PR in the route repo adds a route; tests come from main
+    await upload({ branch: 'feature/refunds', only: 'routes' }, [
+      { field: 'file:camel', filename: 'routes.xml', content: ROUTES('<route id="refund-load"><from uri="file:/in?include=RFD_.*"/></route>') },
+    ]);
+    const rpr = (await t.app.inject({ url: '/api/triggers?branch=feature%2Frefunds&compare=main' })).json<TriggerListResponse>();
+    expect(rpr).toMatchObject({ routesFrom: 'feature/refunds', testsFrom: 'main' });
+    expect(rpr.items.map((r) => [r.routeId, r.change, r.coveredBy.length])).toEqual([
+      ['invoice-load', 'unchanged', 1],
+      ['purge', 'unchanged', 0],
+      ['refund-load', 'added', 0],
+    ]);
+    expect(JSON.stringify(rpr)).not.toContain('"match"');
   });
 });
 

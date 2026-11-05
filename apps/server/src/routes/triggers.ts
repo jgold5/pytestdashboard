@@ -14,8 +14,16 @@ export function triggerRoutes(app: FastifyInstance, { db }: Deps, zipLimits?: Zi
   // 'ingest': CI scans every branch / PR with the upload-only token
   app.post('/api/triggers/scan', { config: { access: 'ingest', rateLimit: { max: 20, timeWindow: '1 minute' } } }, async (req, reply) => {
     const { repo, fields } = await collectRepoUpload(req, zipLimits);
-    if (repo.files.xml === 0) {
-      throw new AppError(400, 'no_routes', 'No .xml files found in the upload — include the Camel route XML', { warnings: repo.warnings });
+    if (fields.only === 'tests') {
+      repo.input.xml.length = 0;
+      repo.input.properties.length = 0;
+      repo.files.xml = repo.files.properties = 0;
+    } else if (fields.only === 'routes') {
+      repo.input.tests.length = 0;
+      repo.files.tests = 0;
+    }
+    if (repo.files.xml === 0 && repo.files.tests === 0) {
+      throw new AppError(400, 'nothing_to_scan', 'No Camel route XML or pytest test files found in the upload', { warnings: repo.warnings });
     }
     const out = scanRepository(repo.input);
     out.warnings.unshift(...repo.warnings);

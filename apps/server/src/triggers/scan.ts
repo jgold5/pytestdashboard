@@ -83,8 +83,28 @@ export interface Resolved {
   unresolved: Trigger['unresolved'];
 }
 
-/** Fill in placeholders (values may reference other keys; ≤ 5 rounds). */
-export function resolvePlaceholders(input: string, props: PropertyIndex): Resolved {
+/**
+ * The definitions of a key that apply to a file: those in the properties files
+ * nearest to it (longest shared folder path). A repo with one properties file per
+ * module (`<module>/config/application-<module>.properties`) resolves each module's
+ * routes from its own file, falling back to shared ones higher up.
+ */
+function nearest(values: Array<{ file: string; value: string }> | undefined, near: string | undefined) {
+  if (!values || !near || values.length < 2) return values;
+  const dir = near.split('/').slice(0, -1);
+  let best = -1;
+  const scored = values.map((v) => {
+    const d = v.file.split('/').slice(0, -1);
+    let n = 0;
+    while (n < d.length && n < dir.length && d[n] === dir[n]) n++;
+    best = Math.max(best, n);
+    return { v, n };
+  });
+  return scored.filter((x) => x.n === best).map((x) => x.v);
+}
+
+/** Fill in placeholders (values may reference other keys; ≤ 5 rounds). `near` = the file being resolved, for module-scoped properties. */
+export function resolvePlaceholders(input: string, props: PropertyIndex, near?: string): Resolved {
   const unresolved = new Map<string, Trigger['unresolved'][number]>();
   const fill = (text: string, pickFirst: boolean): string => {
     let out = text;
@@ -96,7 +116,7 @@ export function resolvePlaceholders(input: string, props: PropertyIndex): Resolv
         // `{{env:NAME}}`-style functions and `${date:now:yyyyMMdd}` (Camel file language) are not property keys
         const key = colon >= 0 ? body.slice(0, colon) : body;
         const fallback = colon >= 0 ? body.slice(colon + 1) : null;
-        const values = props.get(key);
+        const values = nearest(props.get(key), near);
         const distinct = [...new Set((values ?? []).map((v) => v.value))];
         if (distinct.length === 1) {
           changed = true;
@@ -172,12 +192,27 @@ export function parseEndpoint(uri: string): Endpoint | null {
 // Camel XML
 // ---------------------------------------------------------------------------
 
-export interface RawRoute {
-  routeId: string | null;
+export interface RawInput {
   uri: string | null;
   ref: string | null;
+  line: number;
+}
+
+/** A `<when>` / `<filter>` branch in a route: its simple expression and where it sends the message. */
+export interface RawCondition {
+  kind: 'when' | 'filter';
+  expr: string;
+  target: string | null;
+  line: number;
+}
+
+export interface RawRoute {
+  routeId: string | null;
   file: string;
   line: number;
+  /** `<from>`s in order (usually one). */
+  inputs: RawInput[];
+  conditions: RawCondition[];
 }
 
 const XML_ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
@@ -204,12 +239,15 @@ function attrs(text: string): Record<string, string> {
   return out;
 }
 
-/** Routes (`<route>` … `<from>`) and named endpoints (`<endpoint id uri>`) in one XML file. */
+/** Routes (`<route>` with its `<from>`s and `<when>`/`<filter>` branches) and named endpoints (`<endpoint id uri>`) in one XML file. */
 export function scanCamelXml(file: string, xml: string): { routes: RawRoute[]; endpoints: Map<string, string> } {
   const text = xml.replace(/<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<\?[\s\S]*?\?>|<!DOCTYPE[\s\S]*?>/g, blank);
+  // CDATA is blanked for tag scanning but its text still matters inside <simple>
+  const original = xml;
   const routes: RawRoute[] = [];
   const endpoints = new Map<string, string>();
-  const stack: Array<{ id: string | null; from: boolean }> = [];
+  const stack: RawRoute[] = [];
+  const branches: RawCondition[] = [];
   let lineAt = 0;
   let line = 1;
   const lineOf = (offset: number): number => {
@@ -220,12 +258,23 @@ export function scanCamelXml(file: string, xml: string): { routes: RawRoute[]; e
     const closing = m[1] === '/';
     const name = m[2] as string;
     const selfClosing = m[4] === '/';
+    const route = stack[stack.length - 1];
     if (name === 'route') {
       if (closing) stack.pop();
       else if (!selfClosing) {
         const a = attrs(m[3] ?? '');
-        stack.push({ id: a.id ?? a.routeId ?? null, from: false });
+        const r: RawRoute = { routeId: a.id ?? a.routeId ?? null, file, line: lineOf(m.index ?? 0), inputs: [], conditions: [] };
+        routes.push(r);
+        stack.push(r);
       }
+      continue;
+    }
+    if (name === 'when' || name === 'filter') {
+      if (!route) continue;
+      if (closing) {
+        const b = branches.pop();
+        if (b?.expr) route.conditions.push(b);
+      } else if (!selfClosing) branches.push({ kind: name, expr: '', target: null, line: lineOf(m.index ?? 0) });
       continue;
     }
     if (closing) continue;
@@ -234,13 +283,24 @@ export function scanCamelXml(file: string, xml: string): { routes: RawRoute[]; e
       if (a.id && a.uri) endpoints.set(a.id, a.uri);
       continue;
     }
+    if (!route) continue; // a <from> outside a <route> is not a route input
     if (name === 'from') {
-      const route = stack[stack.length - 1];
-      if (!route) continue; // a <from> outside a <route> is not a route input
       const a = attrs(m[3] ?? '');
-      // only the first <from> starts the route in Camel 3+; older XML allowed several inputs, keep them all
-      routes.push({ routeId: route.id, uri: a.uri ?? null, ref: a.ref ?? null, file, line: lineOf(m.index ?? 0) });
-      route.from = true;
+      route.inputs.push({ uri: a.uri ?? null, ref: a.ref ?? null, line: lineOf(m.index ?? 0) });
+    } else if (name === 'simple' && !selfClosing) {
+      const branch = branches[branches.length - 1];
+      const start = (m.index ?? 0) + m[0].length;
+      const close = /<\s*\/\s*(?:[A-Za-z_][\w.-]*:)?simple\s*>/g;
+      close.lastIndex = start;
+      const end = close.exec(text);
+      if (branch && !branch.expr && end) {
+        const body = original.slice(start, end.index).replace(/^\s*<!\[CDATA\[|\]\]>\s*$/g, '');
+        branch.expr = decodeXml(body).trim().slice(0, 1000);
+      }
+    } else if (name === 'to' || name === 'toD') {
+      const branch = branches[branches.length - 1];
+      const a = attrs(m[3] ?? '');
+      if (branch && !branch.target && a.uri) branch.target = a.uri;
     }
   }
   return { routes, endpoints };
@@ -256,7 +316,11 @@ export interface ScannedTest {
   file: string;
   cls: string | null;
   name: string;
-  /** Candidate strings: decorator string arguments, marker names, allure.dynamic.* arguments. */
+  /**
+   * Candidate strings: decorator string arguments and marker names (also from
+   * `pytestmark`), and the string literals in the test body (allure.dynamic.* labels,
+   * a trigger file the test drops, a route id it starts).
+   */
   strings: string[];
 }
 
@@ -269,7 +333,10 @@ function strings(code: string): string[] {
   for (const m of code.matchAll(STRING_LIT)) {
     const lit = m[1] as string;
     const q = lit.startsWith('"""') || lit.startsWith("'''") ? 3 : 1;
-    const v = lit.slice(q, -q).replace(/\\(.)/g, '$1').trim();
+    const v = lit
+      .slice(q, -q)
+      .replace(/\\(.)/g, (_, c: string) => (c === 'n' ? '\n' : c === 't' ? '\t' : c))
+      .trim();
     if (v && v.length <= 300) out.push(v);
   }
   return out;
@@ -283,6 +350,19 @@ function decoratorStrings(text: string): string[] {
   if (marker) out.push(marker[1] as string);
   return out;
 }
+
+/** `pytestmark = pytest.mark.x` / `[pytest.mark.x, pytest.mark.y("z")]`: marker names and their string arguments. */
+function pytestmarkStrings(text: string): string[] {
+  const out: string[] = [];
+  for (const m of text.matchAll(/pytest\.mark\.(\w+)\s*(\((?:[^()]|\([^()]*\))*\))?/g)) {
+    if (IGNORED_DECORATORS.test(`@pytest.mark.${m[1]}`)) continue;
+    out.push(m[1] as string, ...strings(m[2] ?? ''));
+  }
+  return out;
+}
+
+/** Body string literals worth matching: short, single-line values (not docstrings or SQL). */
+const bodyStrings = (body: string): string[] => strings(body).filter((v) => v.length <= 120 && !v.includes('\n'));
 
 const indentOf = (s: string): number => s.length - s.trimStart().length;
 const parenDepth = (s: string): number => {
@@ -302,12 +382,22 @@ export function scanPytestFile(file: string, source: string): ScannedTest[] {
   const tests: ScannedTest[] = [];
   let pending: string[] = [];
   let cls: { name: string; indent: number; strings: string[] } | null = null;
+  const moduleMarks: string[] = [];
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i] as string;
     const trimmed = raw.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
     const indent = indentOf(raw);
     if (cls && indent <= cls.indent && !trimmed.startsWith('@')) cls = null;
+    if (/^pytestmark\s*=/.test(trimmed)) {
+      let text = trimmed;
+      while (parenDepth(text) > 0 && i + 1 < lines.length) text += ` ${(lines[++i] as string).trim()}`;
+      const marks = pytestmarkStrings(text);
+      if (cls && indent > cls.indent) cls.strings.push(...marks);
+      else if (indent === 0) moduleMarks.push(...marks);
+      pending = [];
+      continue;
+    }
     if (trimmed.startsWith('@')) {
       let text = trimmed;
       while (parenDepth(text) > 0 && i + 1 < lines.length) text += ` ${(lines[++i] as string).trim()}`;
@@ -330,24 +420,13 @@ export function scanPytestFile(file: string, source: string): ScannedTest[] {
         if (l.trim() && indentOf(l) <= indent) break;
         body.push(l);
       }
-      const dynamic: string[] = [];
-      const bodyText = body.join('\n');
-      for (const m of bodyText.matchAll(/allure\.dynamic\.\w+\s*\(/g)) {
-        let k = (m.index ?? 0) + m[0].length;
-        let depth = 1;
-        for (; k < bodyText.length && depth > 0; k++) {
-          if (bodyText[k] === '(') depth++;
-          else if (bodyText[k] === ')') depth--;
-        }
-        dynamic.push(...strings(bodyText.slice((m.index ?? 0) + m[0].length, k - 1)));
-      }
       const name = d[1] as string;
       tests.push({
         id: inClass && cls ? `${file}::${cls.name}::${name}` : `${file}::${name}`,
         file,
         cls: inClass && cls ? cls.name : null,
         name,
-        strings: [...new Set([...pending, ...(inClass && cls ? cls.strings : []), ...dynamic])],
+        strings: [...new Set([...pending, ...(inClass && cls ? cls.strings : []), ...bodyStrings(body.join('\n'))])],
       });
       pending = [];
       i = j - 1;
@@ -355,6 +434,8 @@ export function scanPytestFile(file: string, source: string): ScannedTest[] {
     }
     pending = [];
   }
+  // module-level pytestmark applies to every test in the file, wherever it is written
+  if (moduleMarks.length) for (const t of tests) t.strings = [...new Set([...t.strings, ...moduleMarks])];
   return tests;
 }
 
@@ -398,22 +479,303 @@ function antRegex(glob: string): RegExp {
   return new RegExp(`^(?:${re})$`, 'i');
 }
 
-/** Can `candidate` (a label value) name this trigger? Returns why, or null. */
-function matches(t: Trigger, candidate: string, filePatternRe: RegExp | null): boolean {
-  const c = norm(candidate);
-  if (!c) return false;
-  if (t.routeId && norm(t.routeId) === c) return true;
+// ---------------------------------------------------------------------------
+// Conditions on the file name (<choice><when><simple>${file:name} starts with 'INV_'</simple>…)
+// ---------------------------------------------------------------------------
+
+type NamePart = 'name' | 'onlyname' | 'noext' | 'ext';
+interface Atom {
+  part: NamePart;
+  op: 'starts' | 'ends' | 'contains' | 'regex' | 'eq' | 'eqi' | 'in';
+  value: string;
+  negate: boolean;
+}
+export interface FileCondition {
+  /** OR of AND-groups. */
+  groups: Atom[][];
+  display: string;
+}
+
+const FILE_REF =
+  /\$\{\s*(?:file:(name|onlyname)(\.noext)?|file:(ext|name\.ext)|(?:in\.)?headers?(?:\.|\[\s*['"]?)CamelFileName(Only)?(?:['"]?\s*\])?)\s*\}/i;
+const ATOM = new RegExp(
+  `${FILE_REF.source}\\s*(not\\s+starts\\s+with|starts\\s+with|startsWith|not\\s+ends\\s+with|ends\\s+with|endsWith|not\\s+contains|contains|not\\s+regex|regex|=~|==|!=|not\\s+in|in)\\s*(?:'([^']*)'|"([^"]*)")`,
+  'gi',
+);
+
+function atomPart(m: RegExpMatchArray): NamePart {
+  if (m[3]) return 'ext';
+  if (m[2]) return 'noext';
+  if (m[1]?.toLowerCase() === 'onlyname' || m[4]) return 'onlyname';
+  return 'name';
+}
+
+/** A Camel simple expression that tests the file name, or null when it tests something else. */
+export function parseFileCondition(expr: string): FileCondition | null {
+  const groups: Atom[][] = [];
+  for (const orPart of expr.split(/\|\||\s+or\s+/i)) {
+    const atoms: Atom[] = [];
+    for (const andPart of orPart.split(/&&|\s+and\s+/i)) {
+      for (const m of andPart.matchAll(ATOM)) {
+        const rawOp = (m[5] as string).toLowerCase().replace(/\s+/g, ' ');
+        const negate = rawOp.startsWith('not ') || rawOp === '!=';
+        const base = rawOp.replace(/^not /, '');
+        const op: Atom['op'] =
+          base === 'starts with' || base === 'startswith'
+            ? 'starts'
+            : base === 'ends with' || base === 'endswith'
+              ? 'ends'
+              : base === 'contains'
+                ? 'contains'
+                : base === 'regex'
+                  ? 'regex'
+                  : base === '=~'
+                    ? 'eqi'
+                    : base === 'in'
+                      ? 'in'
+                      : 'eq';
+        atoms.push({ part: atomPart(m), op, value: m[6] ?? m[7] ?? '', negate });
+      }
+    }
+    if (atoms.length > 0) groups.push(atoms);
+  }
+  if (groups.length === 0) return null;
+  return { groups, display: groups.map(displayGroup).join(' or ') };
+}
+
+function displayGroup(atoms: Atom[]): string {
+  const pos = atoms.filter((a) => !a.negate && (a.part === 'name' || a.part === 'onlyname'));
+  const start = pos.find((a) => a.op === 'starts');
+  const end = pos.find((a) => a.op === 'ends') ?? atoms.find((a) => !a.negate && a.part === 'ext' && (a.op === 'eq' || a.op === 'eqi'));
+  const endText = end ? (end.part === 'ext' ? `.${end.value.replace(/^\./, '')}` : end.value) : '';
+  const rest = atoms.filter((a) => a !== start && a !== end);
+  const parts: string[] = [];
+  if (start || end) parts.push(`${start?.value ?? ''}*${endText}`);
+  for (const a of rest) {
+    const v =
+      a.op === 'starts'
+        ? `${a.value}*`
+        : a.op === 'ends'
+          ? `*${a.value}`
+          : a.op === 'contains'
+            ? `*${a.value}*`
+            : a.op === 'regex'
+              ? `/${a.value}/`
+              : a.op === 'in'
+                ? a.value.split(',').map((x) => x.trim()).join(' | ')
+                : a.part === 'ext'
+                  ? `*.${a.value.replace(/^\./, '')}`
+                  : a.value;
+    parts.push(a.negate ? `not ${v}` : v);
+  }
+  return parts.join(' and ');
+}
+
+function namePart(file: string, part: NamePart): string {
+  const only = file.slice(file.lastIndexOf('/') + 1);
+  const dot = only.lastIndexOf('.');
+  if (part === 'ext') return dot > 0 ? only.slice(dot + 1) : '';
+  if (part === 'noext') return dot > 0 ? only.slice(0, dot) : only;
+  return part === 'onlyname' ? only : file;
+}
+
+export function conditionMatches(cond: FileCondition, fileName: string): boolean {
+  return cond.groups.some((atoms) =>
+    atoms.every((a) => {
+      const v = namePart(fileName, a.part).toLowerCase();
+      const x = a.value.toLowerCase();
+      const hit =
+        a.op === 'starts'
+          ? v.startsWith(x)
+          : a.op === 'ends'
+            ? v.endsWith(x)
+            : a.op === 'contains'
+              ? v.includes(x)
+              : a.op === 'regex'
+                ? (safeRegex(a.value)?.test(namePart(fileName, a.part)) ?? false)
+                : a.op === 'in'
+                  ? x.split(',').some((y) => y.trim() === v)
+                  : v === x.replace(a.part === 'ext' ? /^\./ : /$^/, '');
+      return a.negate ? !hit : hit;
+    }),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// One <from> listing several file patterns: include=(INV|CRN)_.*\.csv, antInclude=INV_*.csv,CRN_*.csv
+// ---------------------------------------------------------------------------
+
+const MAX_ALTERNATIVES = 20;
+
+/** Split a regex on `|` outside groups and classes. */
+function topLevelSplit(re: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let cls = false;
+  let cur = '';
+  for (let i = 0; i < re.length; i++) {
+    const c = re[i] as string;
+    if (c === '\\') {
+      cur += c + (re[i + 1] ?? '');
+      i++;
+      continue;
+    }
+    if (cls) cls = c !== ']';
+    else if (c === '[') cls = true;
+    else if (c === '(') depth++;
+    else if (c === ')') depth--;
+    else if (c === '|' && depth === 0) {
+      out.push(cur);
+      cur = '';
+      continue;
+    }
+    cur += c;
+  }
+  out.push(cur);
+  return out;
+}
+
+function expandRegex(re: string, budget: { n: number }): string[] {
+  if (--budget.n < 0) return [re];
+  const parts = topLevelSplit(re);
+  if (parts.length > 1) return parts.flatMap((p) => expandRegex(p, budget));
+  // expand the first plain group of alternatives, e.g. (INV|CRN) or (?:INV|CRN), when it is not repeated
+  let cls = false;
+  for (let i = 0; i < re.length; i++) {
+    const c = re[i] as string;
+    if (c === '\\') {
+      i++;
+      continue;
+    }
+    if (cls) {
+      cls = c !== ']';
+      continue;
+    }
+    if (c === '[') cls = true;
+    if (c !== '(') continue;
+    const open = re.startsWith('(?:', i) ? i + 3 : re[i + 1] === '?' ? -1 : i + 1;
+    if (open < 0) continue;
+    let j = open;
+    let ok = true;
+    let inCls = false;
+    for (; j < re.length; j++) {
+      const d = re[j] as string;
+      if (d === '\\') {
+        j++;
+        continue;
+      }
+      if (inCls) inCls = d !== ']';
+      else if (d === '[') inCls = true;
+      else if (d === '(') {
+        ok = false;
+        break;
+      } else if (d === ')') break;
+    }
+    if (!ok || j >= re.length) continue;
+    const alts = topLevelSplit(re.slice(open, j));
+    if (alts.length < 2 || /[*+?{]/.test(re[j + 1] ?? '')) continue;
+    return alts.flatMap((a) => expandRegex(re.slice(0, i) + a + re.slice(j + 1), budget));
+  }
+  return [re];
+}
+
+/** The separate file patterns in one include/antInclude value (one element when it isn't a list). */
+export function splitFilePatterns(pattern: string, kind: 'regex' | 'glob' | 'name'): string[] {
+  if (kind === 'name' || /\{\{|\$\{/.test(pattern)) return [pattern];
+  const parts = kind === 'glob' ? pattern.split(',').map((p) => p.trim()) : expandRegex(pattern, { n: MAX_ALTERNATIVES * 2 });
+  const unique = [...new Set(parts.filter(Boolean))];
+  return unique.length > 1 && unique.length <= MAX_ALTERNATIVES ? unique : [pattern];
+}
+
+// ---------------------------------------------------------------------------
+// Coverage
+// ---------------------------------------------------------------------------
+
+/** What a test contributes to coverage: its node id and the strings that may name a trigger. */
+export interface TestLabels {
+  id: string;
+  strings: string[];
+}
+
+/** A trigger as stored: the API fields plus its patterns with properties filled in, for matching later. */
+export type StoredTrigger = Trigger & {
+  match?: { pattern: string | null; condition: string | null; doneFile: string | null };
+};
+
+const escapeRe = (s: string): string => s.replace(/[.*+?^$()|[\]{}\\]/g, '\\$&');
+/** fileName / doneFileName may use the file language (INV_${date:now:yyyyMMdd}.csv, ${file:name}.done): any value there. */
+const fileLanguageRegex = (pattern: string): RegExp | null => safeRegex(pattern.split(/\$\{[^}]*\}/).map(escapeRe).join('.*'));
+
+/** Does a file name (a label like INV_20260101.csv) start this file trigger? */
+function fileTester(t: StoredTrigger): ((fileName: string) => boolean) | null {
+  if (t.kind !== 'file') return null;
+  const m = t.match;
+  const testers: Array<(f: string) => boolean> = [];
+  if (t.patternKind === 'condition' && (m?.condition ?? t.condition)) {
+    const cond = parseFileCondition(m?.condition ?? (t.condition as string));
+    if (cond) testers.push((f) => conditionMatches(cond, f));
+  } else if (m?.pattern ?? t.filePattern) {
+    const pattern = (m?.pattern ?? t.filePattern) as string;
+    const re = t.patternKind === 'regex' ? safeRegex(pattern) : t.patternKind === 'glob' ? antRegex(pattern) : fileLanguageRegex(pattern);
+    if (re) testers.push((f) => re.test(f));
+  }
+  const done = m?.doneFile ?? t.doneFile;
+  if (done) {
+    const re = fileLanguageRegex(done);
+    if (re) testers.push((f) => re.test(f));
+  }
+  return testers.length ? (f) => testers.some((x) => x(f)) : null;
+}
+
+/** Names a label can use for a trigger: route id, schedule name, the job a branch sends files to, file/trigger-file name. */
+function triggerNames(t: StoredTrigger): string[] {
+  const names: string[] = [];
+  if (t.routeId) names.push(t.routeId);
   if (t.kind === 'schedule') {
-    const p = parseEndpoint(t.resolvedUri);
-    const name = p?.path.split('/').filter(Boolean).pop();
-    if (name && norm(name) === c) return true;
+    const name = parseEndpoint(t.resolvedUri)?.path.split('/').filter(Boolean).pop();
+    if (name) names.push(name);
   }
-  if (t.kind === 'file' && t.filePattern) {
-    if (norm(t.filePattern) === c) return true;
-    // a label that is a file name the route would pick up, e.g. INV_20260101.csv
-    if (/^[\w.-]+\.\w+$/.test(candidate.trim()) && filePatternRe?.test(candidate.trim())) return true;
+  // a <choice> branch's job: direct:invoiceJob ↔ label "invoiceJob"
+  const job = t.target ? parseEndpoint(t.target)?.path.split(/[/?]/).filter(Boolean).pop() : null;
+  if (job) names.push(job);
+  if (t.kind === 'file') {
+    for (const v of [t.filePattern, t.match?.pattern, t.doneFile, t.match?.doneFile]) if (v) names.push(v);
   }
-  return false;
+  return [...new Set(names.map(norm).filter(Boolean))];
+}
+
+const FILE_NAME_LIKE = /^[\w.-]+\.\w+$/;
+
+/**
+ * Which tests cover which triggers (by trigger key). Exact names go through an
+ * index; only labels that look like file names (INV_20260101.csv) are tested
+ * against each file trigger's patterns.
+ */
+export function coverTriggers(triggers: readonly StoredTrigger[], tests: readonly TestLabels[]): Map<string, TriggerCoverage[]> {
+  const byName = new Map<string, Array<{ test: string; via: string }>>();
+  const fileLabels: Array<{ test: string; via: string }> = [];
+  for (const t of tests) {
+    for (const s of t.strings) {
+      const n = norm(s);
+      if (!n) continue;
+      const list = byName.get(n) ?? [];
+      list.push({ test: t.id, via: s });
+      byName.set(n, list);
+      if (FILE_NAME_LIKE.test(s.trim())) fileLabels.push({ test: t.id, via: s.trim() });
+    }
+  }
+  const out = new Map<string, TriggerCoverage[]>();
+  for (const t of triggers) {
+    const hits = new Map<string, string>();
+    for (const n of triggerNames(t)) for (const h of byName.get(n) ?? []) if (!hits.has(h.test)) hits.set(h.test, h.via);
+    const tester = fileLabels.length ? fileTester(t) : null;
+    if (tester) for (const f of fileLabels) if (!hits.has(f.test) && tester(f.via)) hits.set(f.test, f.via);
+    out.set(
+      t.key,
+      [...hits].map(([test, via]) => ({ test, via, testCaseId: null })),
+    );
+  }
+  return out;
 }
 
 export interface ScanInput {
@@ -423,10 +785,38 @@ export interface ScanInput {
 }
 
 export interface ScanOutput {
-  triggers: Trigger[];
+  triggers: StoredTrigger[];
+  /** Tests found in the uploaded pytest files, for matching against any branch's triggers later. */
+  tests: TestLabels[];
   testsFound: number;
   otherRoutes: number;
   warnings: string[];
+}
+
+/**
+ * The module a route file belongs to: the folder under `resources/` in a multi-module
+ * layout (`src/main/resources/<module>/routes/x.xml`), else the file's folder. Route ids
+ * only have to be unique within a Camel context, so the same id in two modules is two routes.
+ */
+export function moduleOf(file: string): string | null {
+  const segs = file.split('/');
+  const r = segs.lastIndexOf('resources');
+  if (r >= 0) return r + 2 < segs.length ? (segs[r + 1] as string) : null;
+  return segs.length > 1 ? segs.slice(0, -1).join('/') : null;
+}
+
+const ms = (v: string): string => (/^\d+$/.test(v) ? `${v} ms` : v);
+
+function describeSchedule(scheme: string, p: Record<string, string>): string | null {
+  if (p.cron) return p.cron;
+  if (p.schedule) return p.schedule;
+  const every = p.period ?? p.delay ?? p['trigger.repeatInterval'];
+  if (every) return `every ${ms(every)}`;
+  if ((scheme === 'quartz' || scheme === 'quartz2') && p['trigger.repeatCount'] === '0') return 'once, at start-up';
+  if (scheme === 'timer' && p.repeatCount === '1') return 'once, at start-up';
+  if (scheme === 'timer') return 'every 1000 ms';
+  if (scheme === 'scheduler') return 'every 500 ms';
+  return null;
 }
 
 export function scanRepository(input: ScanInput): ScanOutput {
@@ -440,63 +830,112 @@ export function scanRepository(input: ScanInput): ScanOutput {
     for (const [id, uri] of r.endpoints) endpoints.set(id, uri);
   }
 
-  const triggers: Trigger[] = [];
-  const seenKeys = new Map<string, number>();
+  const triggers: StoredTrigger[] = [];
+  const usedKeys = new Set<string>();
+  const routeIds = new Map<string, string>();
+  const uniqueKey = (key: string): string => {
+    let k = key;
+    for (let n = 2; usedKeys.has(k); n++) k = `${key}~${n}`;
+    usedKeys.add(k);
+    return k;
+  };
   let otherRoutes = 0;
   for (const r of raw) {
-    const uri = r.uri ?? (r.ref ? endpoints.get(r.ref) : undefined);
-    if (!uri) {
-      warnings.push(`${r.file}:${r.line}: <from> without a uri${r.ref ? ` (endpoint "${r.ref}" not found)` : ''}`);
-      continue;
+    const module = moduleOf(r.file);
+    if (r.routeId) {
+      const id = `${module ?? ''}\0${r.routeId}`;
+      const first = routeIds.get(id);
+      if (first) warnings.push(`route id "${r.routeId}" is defined more than once${module ? ` in ${module}` : ''} (${r.file}:${r.line}, first at ${first})`);
+      else routeIds.set(id, `${r.file}:${r.line}`);
     }
-    const resolved = resolvePlaceholders(uri, props);
-    const ep = parseEndpoint(resolved.firstVariant);
-    const kind = ep && FILE_SCHEMES.has(ep.scheme) ? 'file' : ep && SCHEDULE_SCHEMES.has(ep.scheme) ? 'schedule' : null;
-    if (!ep || !kind) {
-      otherRoutes++;
-      continue;
-    }
-    // fields shown to people come from the single-valued resolution, so per-environment values stay visible as placeholders
-    const shown = parseEndpoint(resolved.text) ?? ep;
-    const p = shown.params;
-    const schedule =
-      kind === 'schedule'
-        ? (p.cron ?? p.schedule ?? (p.period ? `every ${p.period} ms` : null) ?? (p.delay ? `every ${p.delay} ms` : null) ?? (p['trigger.repeatInterval'] ? `every ${p['trigger.repeatInterval']} ms` : null))
-        : null;
-    let key = r.routeId ?? `${r.file}#${uri}`;
-    const n = (seenKeys.get(key) ?? 0) + 1;
-    seenKeys.set(key, n);
-    if (n > 1) {
-      if (r.routeId) warnings.push(`route id "${r.routeId}" is defined more than once (${r.file}:${r.line})`);
-      key = `${key}#${n}`;
-    }
-    triggers.push({
-      key,
-      routeId: r.routeId,
-      kind,
-      scheme: ep.scheme,
-      uri,
-      resolvedUri: resolved.text,
-      directory: kind === 'file' ? shown.path || null : null,
-      filePattern: kind === 'file' ? (p.include ?? p.antInclude ?? p.fileName ?? null) : null,
-      schedule,
-      sourceFile: r.file,
-      line: r.line,
-      unresolved: resolved.unresolved,
-      coveredBy: [],
+    if (r.inputs.length === 0) continue;
+    const conditions = r.conditions
+      .map((c) => ({ c, resolved: resolvePlaceholders(c.expr, props, r.file) }))
+      .map((x) => ({ ...x, parsed: parseFileCondition(x.resolved.firstVariant) }))
+      .filter((x): x is { c: RawCondition; resolved: Resolved; parsed: FileCondition } => x.parsed !== null);
+    let routeHasTrigger = false;
+    r.inputs.forEach((inp, idx) => {
+      const uri = inp.uri ?? (inp.ref ? endpoints.get(inp.ref) : undefined);
+      if (!uri) {
+        warnings.push(`${r.file}:${inp.line}: <from> without a uri${inp.ref ? ` (endpoint "${inp.ref}" not found)` : ''}`);
+        return;
+      }
+      const resolved = resolvePlaceholders(uri, props, r.file);
+      const ep = parseEndpoint(resolved.firstVariant);
+      const kind = ep && FILE_SCHEMES.has(ep.scheme) ? 'file' : ep && SCHEDULE_SCHEMES.has(ep.scheme) ? 'schedule' : null;
+      if (!ep || !kind) return;
+      routeHasTrigger = true;
+      // fields shown to people come from the single-valued resolution, so per-environment values stay visible as placeholders
+      const shown = parseEndpoint(resolved.text) ?? ep;
+      const p = shown.params;
+      const id = r.routeId ?? `${r.file}#${uri}`;
+      const baseKey = `${module && r.routeId ? `${module}/` : ''}${id}${r.inputs.length > 1 ? `#${idx + 1}` : ''}`;
+      const base: StoredTrigger = {
+        key: baseKey,
+        routeId: r.routeId,
+        module,
+        kind,
+        scheme: ep.scheme,
+        uri,
+        resolvedUri: resolved.text,
+        directory: kind === 'file' ? shown.path || null : null,
+        filePattern: null,
+        patternKind: null,
+        condition: null,
+        target: null,
+        doneFile: kind === 'file' ? (p.doneFileName ?? null) : null,
+        input: idx + 1,
+        schedule: kind === 'schedule' ? describeSchedule(ep.scheme, p) : null,
+        sourceFile: r.file,
+        line: inp.line,
+        unresolved: resolved.unresolved,
+        coveredBy: [],
+        match: { pattern: null, condition: null, doneFile: kind === 'file' ? (ep.params.doneFileName ?? null) : null },
+      };
+      if (kind !== 'file') {
+        triggers.push({ ...base, key: uniqueKey(baseKey) });
+        return;
+      }
+      // one file route that hands each file name to its own job: one trigger per branch
+      if (conditions.length > 0) {
+        for (const { c, resolved: rc, parsed } of conditions) {
+          triggers.push({
+            ...base,
+            key: uniqueKey(`${baseKey}::${parsed.display}`),
+            filePattern: parsed.display,
+            patternKind: 'condition',
+            condition: c.expr,
+            target: c.target,
+            line: c.line,
+            unresolved: [...base.unresolved, ...rc.unresolved.filter((u) => !base.unresolved.some((b) => b.key === u.key))],
+            match: { ...base.match!, condition: rc.firstVariant },
+          });
+        }
+        return;
+      }
+      const which = p.include !== undefined ? 'include' : p.antInclude !== undefined ? 'antInclude' : p.fileName !== undefined ? 'fileName' : null;
+      if (which === null) {
+        triggers.push({ ...base, key: uniqueKey(baseKey) });
+        return;
+      }
+      const patternKind = which === 'include' ? 'regex' : which === 'antInclude' ? 'glob' : 'name';
+      const parts = splitFilePatterns(p[which] as string, patternKind);
+      for (const part of parts) {
+        triggers.push({
+          ...base,
+          key: uniqueKey(parts.length > 1 ? `${baseKey}::${part}` : baseKey),
+          filePattern: part,
+          patternKind,
+          // split parts have no placeholders, so they already are the resolved pattern
+          match: { ...base.match!, pattern: parts.length > 1 ? part : (ep.params[which] ?? part) },
+        });
+      }
     });
+    if (!routeHasTrigger) otherRoutes++;
   }
 
-  const tests = input.tests.flatMap((f) => scanPytestFile(f.path, f.text));
-  for (const t of triggers) {
-    const pattern = t.kind === 'file' ? (parseEndpoint(resolvePlaceholders(t.uri, props).firstVariant)?.params ?? {}) : {};
-    const re = pattern.include ? safeRegex(pattern.include) : pattern.antInclude ? antRegex(pattern.antInclude) : null;
-    const covered: TriggerCoverage[] = [];
-    for (const test of tests) {
-      const via = test.strings.find((s) => matches(t, s, re));
-      if (via) covered.push({ test: test.id, via, testCaseId: null });
-    }
-    t.coveredBy = covered;
-  }
-  return { triggers, testsFound: tests.length, otherRoutes, warnings };
+  const tests: TestLabels[] = input.tests.flatMap((f) => scanPytestFile(f.path, f.text)).map((t) => ({ id: t.id, strings: t.strings }));
+  const coverage = coverTriggers(triggers, tests);
+  for (const t of triggers) t.coveredBy = coverage.get(t.key) ?? [];
+  return { triggers, tests, testsFound: tests.length, otherRoutes, warnings };
 }

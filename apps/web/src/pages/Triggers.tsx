@@ -31,6 +31,8 @@ const CHANGE_META: Record<TriggerChange, { label: string; cls: string }> = {
 const CHANGE_ORDER: Record<TriggerChange, number> = { added: 0, changed: 1, removed: 2, unchanged: 3 };
 
 const automated = (r: TriggerRow) => r.coveredBy.length > 0;
+/** Rows rendered at a time: a big repo has thousands of triggers. */
+const PAGE = 200;
 /** Covered on this branch but not on the compare branch. */
 const newlyAutomated = (r: TriggerRow) => r.change !== 'removed' && automated(r) && r.automatedBefore === false;
 
@@ -39,6 +41,8 @@ export default function TriggersPage() {
   const branch = params.get('branch') || undefined;
   const compare = (branch && params.get('compare')) || undefined;
   const kind = params.get('kind') || null;
+  const module = params.get('module') || null;
+  const [limit, setLimit] = useState(PAGE);
   const status = (STATUS_FILTERS.find((f) => f.key === params.get('status'))?.key ?? 'all') as StatusKey;
   const [search, setSearch] = useState(params.get('q') ?? '');
   const res = useTriggers({ branch, compare });
@@ -61,6 +65,7 @@ export default function TriggersPage() {
     const q = search.trim().toLowerCase();
     return (data?.items ?? [])
       .filter((r) => !kind || r.kind === kind)
+      .filter((r) => !module || r.module === module)
       .filter((r) =>
         status === 'automated'
           ? automated(r) && r.change !== 'removed'
@@ -70,9 +75,10 @@ export default function TriggersPage() {
               ? r.change !== 'unchanged' || newlyAutomated(r)
               : true,
       )
-      .filter((r) => !q || [r.routeId, r.resolvedUri, r.sourceFile, r.filePattern, r.schedule].some((v) => v?.toLowerCase().includes(q)))
+      .filter((r) => !q || [r.routeId, r.resolvedUri, r.sourceFile, r.filePattern, r.schedule, r.target, r.doneFile].some((v) => v?.toLowerCase().includes(q)))
       .sort((a, b) => (compare ? CHANGE_ORDER[a.change ?? 'unchanged'] - CHANGE_ORDER[b.change ?? 'unchanged'] : 0));
-  }, [data, kind, status, search, compare]);
+  }, [data, kind, module, status, search, compare]);
+  const modules = useMemo(() => [...new Set((data?.items ?? []).map((r) => r.module).filter((m): m is string => !!m))].sort(), [data]);
 
   const branchOptions = (data?.branches ?? []).map((b) => ({ value: b.branch, label: b.branch }));
 
@@ -123,6 +129,7 @@ export default function TriggersPage() {
       ) : data ? (
         <>
           <Totals data={data} />
+          <Sources data={data} />
           <div className="mt-4 mb-3 flex flex-wrap items-center gap-2">
             <div role="tablist" aria-label="Filter triggers" className="flex flex-wrap gap-1.5">
               {STATUS_FILTERS.filter((f) => !('compareOnly' in f) || compare).map((f) => (
@@ -142,6 +149,18 @@ export default function TriggersPage() {
               ))}
             </div>
             <div className="ml-auto flex flex-wrap gap-1.5">
+              {modules.length > 1 ? (
+                <Select
+                  size="sm"
+                  ariaLabel="Module"
+                  value={module}
+                  onValueChange={(v) => set({ module: v })}
+                  options={modules.map((m) => ({ value: m, label: m }))}
+                  allowNone
+                  noneLabel="All modules"
+                  className="w-40"
+                />
+              ) : null}
               <Select
                 size="sm"
                 ariaLabel="Trigger type"
@@ -174,15 +193,52 @@ export default function TriggersPage() {
             {rows.length === 0 ? (
               <EmptyState icon={<Zap />} title="No triggers match these filters" />
             ) : (
-              <TriggerTable rows={rows} showBranches={!branch} compare={compare ?? null} />
+              <>
+                <TriggerTable rows={rows.slice(0, limit)} showBranches={!branch} compare={compare ?? null} />
+                {rows.length > limit ? (
+                  <div className="border-t border-border p-2 text-center">
+                    <Button size="sm" variant="ghost" onClick={() => setLimit(limit + PAGE * 5)}>
+                      Show more ({fmtNumber(rows.length - limit)} not shown)
+                    </Button>
+                  </div>
+                ) : null}
+              </>
             )}
           </Card>
           <p className="mt-2 text-xs text-fg-3">
-            {pluralize(rows.length, 'trigger')} shown. A test covers a trigger when one of its Allure labels or pytest markers names the route id, the schedule, or a load file the route picks up.
+            {pluralize(rows.length, 'trigger')} shown. A route with several inputs, several file patterns, or a choice on the file name counts each one as its own trigger. A test covers a trigger when one of its Allure labels or pytest markers names the route id, the schedule, the job a file is sent to, or a load file the trigger picks up.
           </p>
         </>
       ) : null}
     </>
+  );
+}
+
+/** Where the routes and the tests come from (they can be different repos, scanned per branch). */
+function Sources({ data }: { data: TriggerListResponse }) {
+  if (!data.branch) return null;
+  const part = (label: string, from: string | null, own: string) =>
+    from === null ? (
+      <span>
+        no {label} scanned yet
+      </span>
+    ) : (
+      <span>
+        {label} from <span className={cn('font-mono', from === own ? 'text-fg' : 'text-fg-2')}>{from}</span>
+        {from !== own ? ' (no scan on this branch)' : ''}
+      </span>
+    );
+  return (
+    <p className="mt-2 text-xs text-fg-3">
+      {part('Routes', data.routesFrom, data.branch)} · {part('tests', data.testsFrom, data.branch)}
+      {data.compare ? (
+        <>
+          {' '}
+          — compared with routes from <span className="font-mono">{data.compareRoutesFrom ?? '—'}</span>, tests from{' '}
+          <span className="font-mono">{data.compareTestsFrom ?? '—'}</span>
+        </>
+      ) : null}
+    </p>
   );
 }
 
@@ -262,7 +318,9 @@ function TriggerTable({ rows, showBranches, compare }: { rows: TriggerRow[]; sho
               <td className="max-w-[260px] px-4 py-2.5">
                 <div className="truncate font-medium text-fg">{r.routeId ?? <span className="text-fg-3 italic">no route id</span>}</div>
                 <div className="truncate font-mono text-[11px] text-fg-3" title={`${r.sourceFile}:${r.line}`}>
+                  {r.module ? <span className="font-sans text-fg-2">{r.module} · </span> : null}
                   {r.sourceFile.split('/').pop()}:{r.line}
+                  {r.input > 1 ? <span className="ml-1.5 font-sans">· input {r.input}</span> : null}
                 </div>
               </td>
               <td className="max-w-[360px] px-2 py-2.5">
@@ -306,13 +364,23 @@ function TriggerSpec({ r }: { r: TriggerRow }) {
       <div className="min-w-0">
         {r.kind === 'file' ? (
           <>
-            <div className="truncate font-mono text-xs text-fg" title={r.filePattern ?? undefined}>
+            <div className="truncate font-mono text-xs text-fg" title={r.condition ?? r.filePattern ?? undefined}>
               {r.filePattern ?? <span className="text-fg-3">any file</span>}
             </div>
             <div className="truncate font-mono text-[11px] text-fg-3" title={r.directory ?? undefined}>
               {r.scheme !== 'file' ? `${r.scheme}: ` : ''}
               {r.directory}
             </div>
+            {r.doneFile ? (
+              <div className="truncate text-[11px] text-fg-2" title="Camel doneFileName: the data file is picked up once this trigger file exists">
+                trigger file <span className="font-mono text-fg">{r.doneFile}</span>
+              </div>
+            ) : null}
+            {r.target ? (
+              <div className="truncate text-[11px] text-fg-2" title={r.condition ? `when ${r.condition}` : undefined}>
+                → <span className="font-mono">{r.target}</span>
+              </div>
+            ) : null}
           </>
         ) : (
           <>
@@ -381,14 +449,18 @@ function Coverage({ r }: { r: TriggerRow }) {
 
 function NoScans() {
   const origin = typeof window !== 'undefined' ? window.location.origin : 'https://dashboard.example.com';
-  const snippet = `# In the CI job of the repo with the Camel routes — run it on main and on every PR branch.
-# Sends only route XML, .properties and pytest files (git ls-files keeps build output out).
-git ls-files '*.xml' '*.properties' '*test_*.py' '*_test.py' | zip -q -@ repo-scan.zip
-curl -fsS -X POST "${origin}/api/triggers/scan" \\
-  -H "Authorization: Bearer $PTD_INGEST_TOKEN" \\
-  --form-string "branch=$GIT_BRANCH" \\
-  --form-string "commit=$GIT_COMMIT" \\
-  -F "file=@repo-scan.zip;type=application/zip"`;
+  const snippet = `# Run on main and on every PR branch, in each repo. Use the upload-only INGEST token.
+# Camel repo: route XML and properties
+git ls-files '*.xml' '*.properties' | zip -q -@ scan.zip
+curl -fsS -X POST "${origin}/api/triggers/scan" -H "Authorization: Bearer $PTD_INGEST_TOKEN" \\
+  --form-string "branch=$GIT_BRANCH" --form-string "commit=$GIT_COMMIT" --form-string "only=routes" \\
+  -F "file=@scan.zip;type=application/zip"
+
+# Test repo: pytest files
+git ls-files '*test_*.py' '*_test.py' | zip -q -@ scan.zip
+curl -fsS -X POST "${origin}/api/triggers/scan" -H "Authorization: Bearer $PTD_INGEST_TOKEN" \\
+  --form-string "branch=$GIT_BRANCH" --form-string "commit=$GIT_COMMIT" --form-string "only=tests" \\
+  -F "file=@scan.zip;type=application/zip"`;
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(snippet);

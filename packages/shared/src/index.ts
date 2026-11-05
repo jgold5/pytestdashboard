@@ -1210,6 +1210,8 @@ export const Trigger = z.object({
   /** Stable identity across branches: the route id, else source file + endpoint. */
   key: z.string(),
   routeId: z.string().nullable(),
+  /** Module the route belongs to (folder under `resources/`), when the repo has several. */
+  module: z.string().nullable(),
   kind: TriggerKind,
   /** Endpoint scheme: file, sftp, quartz, cron, … */
   scheme: z.string(),
@@ -1219,8 +1221,18 @@ export const Trigger = z.object({
   resolvedUri: z.string(),
   /** file triggers: folder being watched. */
   directory: z.string().nullable(),
-  /** file triggers: the file name pattern (`include`, `antInclude` or `fileName`). */
+  /** file triggers: the file name pattern (`include`, `antInclude`, `fileName`, or a readable form of `condition`). */
   filePattern: z.string().nullable(),
+  /** How `filePattern` matches: include regex, antInclude glob, fileName, or a `<choice>`/`<filter>` condition on the file name. */
+  patternKind: z.enum(['regex', 'glob', 'name', 'condition']).nullable(),
+  /** `<choice>`/`<filter>` triggers: the Camel simple expression on the file name, as written. */
+  condition: z.string().nullable(),
+  /** `<choice>`/`<filter>` triggers: where matching files go (the branch's first `<to>`), e.g. `direct:invoiceJob`. */
+  target: z.string().nullable(),
+  /** file triggers: Camel `doneFileName` — the trigger file that has to exist before the data file is picked up. */
+  doneFile: z.string().nullable(),
+  /** 1-based position of the `<from>` in its route (older Camel XML allows several inputs per route). */
+  input: z.number().int(),
   /** schedule triggers: cron expression, or period / delay for timer and scheduler. */
   schedule: z.string().nullable(),
   sourceFile: z.string(),
@@ -1239,6 +1251,12 @@ export const TriggerScanFields = z.object({
   commit: nullableShort.optional(),
   /** Free text shown with the scan, e.g. `PR #123`. */
   label: nullableShort.optional(),
+  /**
+   * Which part of the upload to use: `routes` (route XML + properties) for the Camel repo,
+   * `tests` (pytest files) for the test repo — so route copies kept as test data in the
+   * test repo never replace the real routes. Default: everything found.
+   */
+  only: z.enum(['routes', 'tests']).optional(),
 });
 export type TriggerScanFields = z.infer<typeof TriggerScanFields>;
 
@@ -1248,8 +1266,8 @@ export const TriggerScanSummary = z.object({
   commit: z.string().nullable(),
   label: z.string().nullable(),
   scannedAt: z.string(),
+  /** Triggers found (0 for a tests-only scan of the test repo). */
   total: z.number().int(),
-  automated: z.number().int(),
   /** Route XML / properties / pytest files read. */
   files: z.object({ xml: z.number().int(), properties: z.number().int(), tests: z.number().int() }),
   /** Tests found in the pytest files (whether or not they cover a trigger). */
@@ -1259,7 +1277,11 @@ export const TriggerScanSummary = z.object({
 });
 export type TriggerScanSummary = z.infer<typeof TriggerScanSummary>;
 
-export const TriggerScanResponse = TriggerScanSummary.extend({ warnings: z.array(z.string()) });
+export const TriggerScanResponse = TriggerScanSummary.extend({
+  /** Triggers covered on this branch right after the scan (tests from this or the default branch's test scan). */
+  automated: z.number().int(),
+  warnings: z.array(z.string()),
+});
 export type TriggerScanResponse = z.infer<typeof TriggerScanResponse>;
 
 export const TriggerChange = z.enum(['added', 'changed', 'removed', 'unchanged']);
@@ -1275,7 +1297,7 @@ export const TriggerRow = Trigger.extend({
 });
 export type TriggerRow = z.infer<typeof TriggerRow>;
 
-/** `GET /api/triggers` — `branch` omitted ⇒ every branch's latest scan merged. */
+/** `GET /api/triggers` — `branch` omitted ⇒ every branch's latest route scan merged, covered by any branch's tests. */
 export const TriggerQuery = z.object({
   branch: trimmed(LIMITS.shortTextMax).min(1).optional(),
   compare: trimmed(LIMITS.shortTextMax).min(1).optional(),
@@ -1287,6 +1309,15 @@ export const TriggerListResponse = z.object({
   branches: z.array(TriggerScanSummary),
   branch: z.string().nullable(),
   compare: z.string().nullable(),
+  /**
+   * Routes and tests can come from different repos, each scanned per branch. A branch
+   * without its own route (or test) scan uses the default branch's: a PR in the test
+   * repo is shown against main's routes, and a PR in the route repo against main's tests.
+   */
+  routesFrom: z.string().nullable(),
+  testsFrom: z.string().nullable(),
+  compareRoutesFrom: z.string().nullable(),
+  compareTestsFrom: z.string().nullable(),
   items: z.array(TriggerRow),
 });
 export type TriggerListResponse = z.infer<typeof TriggerListResponse>;

@@ -18,7 +18,7 @@ import { DEFAULT_ZIP_LIMITS, baseName, readZip, type ZipLimits } from '../import
 import { isPytestFile, type ScanInput } from './scan.js';
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
-const FIELDS = new Set(['branch', 'commit', 'label']);
+const FIELDS = new Set(['branch', 'commit', 'label', 'only']);
 /** Build output, dependencies and VCS folders never hold the routes we want (and can be huge). */
 const SKIP_DIR = /(^|\/)(\.git|node_modules|target|build|dist|out|\.venv|venv|site-packages|__pycache__|\.idea|\.gradle|\.mvn)(\/|$)/;
 
@@ -26,7 +26,8 @@ export type FileClass = 'xml' | 'properties' | 'tests';
 
 export function classify(filePath: string): FileClass | null {
   if (SKIP_DIR.test(filePath)) return null;
-  if (/\.xml$/i.test(filePath)) return 'xml';
+  // Camel XML under src/test is test fixtures (copies of routes for unit tests), not scope
+  if (/\.xml$/i.test(filePath)) return /(^|\/)src\/test\//.test(filePath) ? null : 'xml';
   if (/\.properties$/i.test(filePath)) return 'properties';
   if (isPytestFile(filePath)) return 'tests';
   return null;

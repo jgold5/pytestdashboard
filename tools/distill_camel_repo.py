@@ -18,7 +18,11 @@ Passwords and user names in endpoint URIs are replaced with REDACTED, and long
 digit runs become zeros of the same length.
 
 Usage:
-    python3 distill_camel_repo.py /path/to/repo -o distilled --zip
+    python3 distill_camel_repo.py /path/to/camel-repo /path/to/test-repo -o distilled --zip
+
+Give every repo that matters in one run (routes repo and test repo): the renaming is
+shared, so test labels still line up with routes. A later run can reuse the renaming
+with --map distilled.map.json.
 
 Writes:
     distilled/               the anonymized copy (also uploadable to /api/triggers/scan)
@@ -42,7 +46,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-VERSION = "1.0"
+VERSION = "1.2"
 
 SKIP_DIRS = {
     ".git", "node_modules", "target", "build", "dist", "out", ".venv", "venv", "site-packages",
@@ -71,6 +75,9 @@ mon tue wed thu fri sat sun jan feb mar apr may jun jul aug sep oct nov dec
 src main resources java kotlin groovy python spring blueprint config conf etc meta inf
 dev test qa uat sit prod production stage staging preprod local default common application
 com net org www localhost
+starts with ends contains regex not and or range is camelfilename camelfilenameonly camelfilepath
+camelfileparent camelfilerelativepath onlyname noext choice when otherwise
+changed markerfile rename filelock idempotent always never
 """.split())
 
 # Camel file-language date patterns (yyyyMMdd, HHmmss…) are formats, not names.
@@ -97,8 +104,22 @@ STANDARD_NS = ("camel.apache.org", "springframework.org", "w3.org", "osgi.org", 
 class Namer:
     """Consistent original -> generic word mapping."""
 
-    def __init__(self) -> None:
-        self.words: Dict[str, str] = {}
+    def __init__(self, words: Optional[Dict[str, str]] = None, numbers: Optional[Dict[str, str]] = None) -> None:
+        self.words: Dict[str, str] = dict(words or {})
+        # long numbers get a stand-in of the same length, the same one everywhere: ids that differ
+        # only by a number stay different, and INV_20260101.csv still matches INV_\d{8}.csv
+        self.numbers: Dict[str, str] = dict(numbers or {})
+        self._next_number: Counter = Counter(len(v) for v in self.numbers.values())
+
+    def number(self, run: str) -> str:
+        if len(run) < 4:
+            return run
+        got = self.numbers.get(run)
+        if got is None:
+            self._next_number[len(run)] += 1
+            got = str(self._next_number[len(run)]).zfill(len(run))[-len(run):]
+            self.numbers[run] = got
+        return got
 
     def word(self, w: str) -> str:
         low = w.lower()
@@ -140,7 +161,7 @@ class Namer:
                 while j < len(s) and s[j].isdigit():
                     j += 1
                 run = s[i:j]
-                out.append("0" * len(run) if len(run) >= 4 else run)
+                out.append(self.number(run))
                 i = j
                 continue
             out.append(c)
@@ -209,42 +230,153 @@ def local(qname: str) -> str:
     return qname.split(":")[-1]
 
 
+class Node:
+    """A kept element inside a route: <from>, <choice>/<when>/<otherwise>/<filter>, <simple> (with its text), and the first <to> of a branch."""
+
+    def __init__(self, qname: str, attrs: List[Tuple[str, str]]):
+        self.qname, self.attrs = qname, attrs
+        self.children: List["Node"] = []
+        self.text: Optional[str] = None
+
+    def walk(self):
+        yield self
+        for c in self.children:
+            yield from c.walk()
+
+
 class XmlItem:
-    def __init__(self, path: Tuple[Tuple[str, Tuple[Tuple[str, str], ...]], ...], qname: str, attrs: List[Tuple[str, str]], children: List[Tuple[str, List[Tuple[str, str]]]]):
-        self.path, self.qname, self.attrs, self.children = path, qname, attrs, children
+    def __init__(self, path: Tuple[Tuple[str, Tuple[Tuple[str, str], ...]], ...], node: Node):
+        self.path, self.node = path, node
+
+    @property
+    def qname(self) -> str:
+        return self.node.qname
+
+    @property
+    def attrs(self) -> List[Tuple[str, str]]:
+        return self.node.attrs
 
 
-def scan_xml(text: str):
-    """Routes (with their <from>s) and <endpoint>s, each with its ancestor elements."""
-    text = re.sub(r"<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<\?[\s\S]*?\?>|<!DOCTYPE[\s\S]*?>", " ", text)
-    stack: List[Tuple[str, List[Tuple[str, str]]]] = []
+BRANCHES = ("when", "otherwise", "filter")
+FILE_REF = re.compile(r"\$\{\s*(file:(name|onlyname|ext)|(in\.)?headers?(\.|\[\s*['\"]?)CamelFileName)", re.I)
+
+
+def scan_xml(text: str, stats: Counter):
+    """Routes (with their inputs and file-name branches) and <endpoint>s, each with its ancestor elements."""
+    original = text
+    text = re.sub(r"<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<\?[\s\S]*?\?>|<!DOCTYPE[\s\S]*?>",
+                  lambda m: re.sub(r"[^\n]", " ", m.group(0)), text)
+    stack: List[Tuple[str, List[Tuple[str, str]], bool]] = []
     items: List[XmlItem] = []
-    route: Optional[XmlItem] = None
-    stray_from = 0
+    route: Optional[Node] = None
+    kept: List[Node] = []
     for m in TAG.finditer(text):
         closing, qname, rawattrs, selfclosing = m.group(1), m.group(2), m.group(3) or "", m.group(4)
         attrs = [(a.group(1), xml_unescape(a.group(2) if a.group(2) is not None else a.group(3))) for a in ATTR.finditer(rawattrs)]
         name = local(qname)
         if closing:
             if stack and stack[-1][0] == qname:
-                stack.pop()
+                _, _, was_kept = stack.pop()
+                if was_kept and kept:
+                    kept.pop()
             if name in ("route", "routeTemplate"):
-                route = None
+                route, kept = None, []
             continue
-        ancestors = tuple((q, tuple(a)) for q, a in stack)
-        if name in ("route", "routeTemplate"):
-            route = XmlItem(ancestors, qname, attrs, [])
-            items.append(route)
-        elif name == "from":
-            if route is not None:
-                route.children.append((qname, attrs))
-            else:
-                stray_from += 1
-        elif name == "endpoint":
-            items.append(XmlItem(ancestors, qname, attrs, []))
+        if name in ("route", "routeTemplate") and route is None:
+            route = Node(qname, attrs)
+            items.append(XmlItem(tuple((q, tuple(a)) for q, a, _ in stack), route))
+            if not selfclosing:
+                stack.append((qname, attrs, False))
+            continue
+        if route is None:
+            if name == "from":
+                stats["<from> outside a <route>"] += 1
+            elif name == "endpoint":
+                items.append(XmlItem(tuple((q, tuple(a)) for q, a, _ in stack), Node(qname, attrs)))
+            if not selfclosing:
+                stack.append((qname, attrs, False))
+            continue
+        parent = kept[-1] if kept else route
+        keep = name in ("from", "choice", "simple") + BRANCHES or (
+            name in ("to", "toD") and local(parent.qname) in BRANCHES
+            and not any(local(c.qname) in ("to", "toD") for c in parent.children))
+        if name in ("toD", "recipientList", "routingSlip", "dynamicRouter"):
+            body = dict(attrs).get("uri", "")
+            if name != "toD":
+                end = re.search(r"<\s*/\s*(?:[\w.-]+:)?%s\s*>" % name, text[m.end():])
+                body = original[m.end():m.end() + end.start()] if end else ""
+            if FILE_REF.search(body):
+                stats["dynamic routing on the file name (toD/recipientList…)"] += 1
+        if keep:
+            node = Node(qname, attrs)
+            parent.children.append(node)
+            if name == "simple" and not selfclosing:
+                end = re.search(r"<\s*/\s*(?:[\w.-]+:)?simple\s*>", text[m.end():])
+                if end:
+                    raw = original[m.end():m.end() + end.start()]
+                    node.text = xml_unescape(re.sub(r"^\s*<!\[CDATA\[|\]\]>\s*$", "", raw)).strip()
         if not selfclosing:
-            stack.append((qname, attrs))
-    return items, stray_from
+            stack.append((qname, attrs, keep))
+            if keep:
+                kept.append(node)
+    return items
+
+
+def several_patterns(uri: str) -> bool:
+    _, _, query = uri.partition("?")
+    for part in query.split("&"):
+        k, _, v = part.partition("=")
+        k = k.lower()
+        v = re.sub(r"^RAW\((.*)\)$", r"\1", v)
+        if k == "antinclude" and "," in v:
+            return True
+        if k == "include" and re.search(r"(^|[^\\])\|", re.sub(r"\[[^\]]*\]", "", v)):
+            return True
+    return False
+
+
+def route_shapes(items: List[XmlItem], stats: Counter, operators: Counter) -> None:
+    for it in items:
+        if local(it.qname) not in ("route", "routeTemplate"):
+            continue
+        nodes = list(it.node.walk())
+        froms = [n for n in nodes if local(n.qname) == "from"]
+        if len(froms) > 1:
+            stats["routes with several <from>"] += 1
+        if any(several_patterns(dict(f.attrs).get("uri", "")) for f in froms):
+            stats["<from> listing several file patterns"] += 1
+        on_name = 0
+        for b in nodes:
+            if local(b.qname) not in ("when", "filter"):
+                continue
+            expr = " ".join(c.text or "" for c in b.children if local(c.qname) == "simple")
+            if FILE_REF.search(expr):
+                on_name += 1
+                for op in re.findall(r"(not\s+)?(starts\s+with|startsWith|ends\s+with|endsWith|contains|regex|=~|==|!=|\bin\b)", expr):
+                    operators[(op[0] + op[1]).lower().strip()] += 1
+            elif expr:
+                stats["<when>/<filter> on something other than the file name"] += 1
+            else:
+                stats["<when>/<filter> without a <simple> expression"] += 1
+        if on_name:
+            stats["routes with <choice>/<filter> on the file name"] += 1
+            stats["  file-name branches in them"] += on_name
+
+
+def simple_expr(expr: str, namer: Namer) -> str:
+    """Rename a Camel simple expression; quoted values after `regex` keep their regex syntax."""
+    out = []
+    pos = 0
+    for m in re.finditer(r"'([^']*)'|\"([^\"]*)\"", expr):
+        before = expr[pos:m.start()]
+        out.append(namer.text(before))
+        lit = m.group(1) if m.group(1) is not None else m.group(2)
+        quote = "'" if m.group(1) is not None else '"'
+        is_regex = re.search(r"regex\s*$", before, re.I) is not None
+        out.append(quote + namer.text(lit, regex=is_regex) + quote)
+        pos = m.end()
+    out.append(namer.text(expr[pos:]))
+    return "".join(out)
 
 
 def distill_xml(items: List[XmlItem], namer: Namer) -> str:
@@ -262,7 +394,6 @@ def distill_xml(items: List[XmlItem], namer: Namer) -> str:
             out.append(f' {k}="{xml_escape(val)}"')
         return "".join(out)
 
-    # rebuild the nesting: a tree keyed by each ancestor element
     tree: Dict = {}
     for it in items:
         node = tree
@@ -272,16 +403,24 @@ def distill_xml(items: List[XmlItem], namer: Namer) -> str:
 
     lines = ['<?xml version="1.0" encoding="UTF-8"?>']
 
+    def emit_node(n: Node, pad: str) -> None:
+        if local(n.qname) == "simple":
+            lines.append(f"{pad}<{n.qname}{attrs_out(n.attrs, False)}>{xml_escape(simple_expr(n.text or '', namer))}</{n.qname}>")
+        elif n.children:
+            lines.append(f"{pad}<{n.qname}{attrs_out(n.attrs, False)}>")
+            for c in n.children:
+                emit_node(c, pad + "  ")
+            lines.append(f"{pad}</{n.qname}>")
+        else:
+            lines.append(f"{pad}<{n.qname}{attrs_out(n.attrs, False)}/>")
+
     def emit(node: Dict, depth: int) -> None:
         pad = "  " * depth
         for it in node.get("__items__", []):
             if local(it.qname) == "endpoint":
                 lines.append(f"{pad}<{it.qname}{attrs_out(it.attrs, False)}/>")
-                continue
-            lines.append(f"{pad}<{it.qname}{attrs_out(it.attrs, False)}>")
-            for cq, ca in it.children:
-                lines.append(f"{pad}  <{cq}{attrs_out(ca, False)}/>")
-            lines.append(f"{pad}</{it.qname}>")
+            else:
+                emit_node(it.node, pad)
         for key, child in node.items():
             if key == "__items__":
                 continue
@@ -338,8 +477,8 @@ def placeholder_keys(s: str) -> List[str]:
     for m in PLACEHOLDER.finditer(s):
         body = (m.group(1) or m.group(2) or "").strip()
         key = body.split(":", 1)[0]
-        if m.group(2) is not None and CAMEL_LANGUAGE.match(key) and ":" in body:
-            continue
+        if m.group(2) is not None and CAMEL_LANGUAGE.match(key):
+            continue  # Camel simple/file language (${file:name}, ${header.CamelFileName}), not a property
         keys.append(key)
     return keys
 
@@ -413,6 +552,21 @@ def distill_tests(source: str, namer: Namer, stats: Counter, decorators: Counter
         stats["allure.dynamic calls"] += len(calls)
         return calls
 
+    def body_strings(fn) -> List[str]:
+        """Short string literals in the test body (a trigger file it drops, a route id it starts), renamed."""
+        found: List[str] = []
+        body = fn.body[1:] if fn.body and isinstance(fn.body[0], ast.Expr) and isinstance(getattr(fn.body[0], "value", None), ast.Constant) else fn.body
+        for stmt in body:
+            for n in ast.walk(stmt):
+                if isinstance(n, ast.Call) and dotted(n).startswith("allure.dynamic."):
+                    continue
+                if isinstance(n, ast.Constant) and isinstance(n.value, str) and n.value.strip() and len(n.value) <= 120 and "\n" not in n.value:
+                    v = namer.text(n.value.strip())
+                    if v not in found:
+                        found.append(v)
+        stats["string literals kept from test bodies"] += len(found)
+        return found
+
     def function(fn, pad: str, method: bool) -> List[str]:
         stats["tests"] += 1
         if fn.decorator_list:
@@ -421,6 +575,9 @@ def distill_tests(source: str, namer: Namer, stats: Counter, decorators: Counter
         kw = "async def" if isinstance(fn, ast.AsyncFunctionDef) else "def"
         lines.append(f"{pad}{kw} {rename_test(fn.name, namer, 'test')}({'self' if method else ''}):")
         body = dynamic_calls(fn)
+        refs = body_strings(fn)
+        if refs:
+            body.append(f"_refs = {refs!r}")
         lines += [f"{pad}    {c}" for c in body] or [f"{pad}    pass"]
         return lines
 
@@ -467,26 +624,35 @@ def read(p: Path) -> str:
 
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("repo", type=Path, help="repository root")
+    ap.add_argument("repos", type=Path, nargs="+", help="repository root(s): the Camel repo and the test repo")
     ap.add_argument("-o", "--out", type=Path, default=Path("distilled"), help="output folder (default: ./distilled)")
     ap.add_argument("--zip", action="store_true", help="also write <out>.zip, ready to send")
     ap.add_argument("--force", action="store_true", help="write into a non-empty output folder")
+    ap.add_argument("--map", type=Path, help="reuse the renaming from an earlier run's .map.json (so a later run lines up with it)")
     args = ap.parse_args(argv)
     if sys.version_info < (3, 9):
         print("Python 3.9 or newer is needed", file=sys.stderr)
         return 2
-    repo, out = args.repo.resolve(), args.out.resolve()
-    if not repo.is_dir():
-        print(f"{repo} is not a folder", file=sys.stderr)
-        return 2
-    if out == repo or repo in out.parents and not args.force:
-        print("choose an output folder outside the repo (or pass --force)", file=sys.stderr)
-        return 2
+    repos, out = [r.resolve() for r in args.repos], args.out.resolve()
+    for repo in repos:
+        if not repo.is_dir():
+            print(f"{repo} is not a folder", file=sys.stderr)
+            return 2
+        if (out == repo or repo in out.parents) and not args.force:
+            print("choose an output folder outside the repos (or pass --force)", file=sys.stderr)
+            return 2
     if out.exists() and any(out.iterdir()) and not args.force:
         print(f"{out} is not empty (pass --force to write into it)", file=sys.stderr)
         return 2
 
-    namer = Namer()
+    previous: Dict = {}
+    if args.map:
+        try:
+            previous = json.loads(args.map.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            print(f"cannot read {args.map}: {e}", file=sys.stderr)
+            return 2
+    namer = Namer(previous.get("words"), previous.get("numbers"))
     stats: Counter = Counter()
     schemes: Counter = Counter()
     shapes: Counter = Counter()
@@ -497,12 +663,24 @@ def main(argv: Optional[List[str]] = None) -> int:
     prop_files: Dict[str, List[Tuple[str, str]]] = {}
     test_sources: Dict[str, str] = {}
 
-    for p, rel in walk(repo):
+    # several repos: each goes in its own (renamed) top folder
+    prefixes: Dict[Path, str] = {}
+    for repo in repos:
+        name = repo.name if len(repos) > 1 else ""
+        while name and name in prefixes.values():
+            name += "_"
+        prefixes[repo] = name
+
+    def all_files():
+        for repo in repos:
+            for p, rel in walk(repo):
+                yield p, f"{prefixes[repo]}/{rel}" if prefixes[repo] else rel
+
+    for p, rel in all_files():
         low = rel.lower()
         if low.endswith(".xml"):
             stats["xml files read"] += 1
-            items, stray = scan_xml(read(p))
-            stats["<from> outside a <route>"] += stray
+            items = scan_xml(read(p), stats)
             if items:
                 xml_items[rel] = items
         elif low.endswith(".properties"):
@@ -521,6 +699,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     # which property keys the route inputs use (and keys those values use), with their option context
     used: Dict[str, str] = {}
     endpoint_uris = []
+    operators: Counter = Counter()
+    for items in xml_items.values():
+        route_shapes(items, stats, operators)
     for items in xml_items.values():
         for it in items:
             if local(it.qname) == "route":
@@ -528,12 +709,15 @@ def main(argv: Optional[List[str]] = None) -> int:
                 if not dict(it.attrs).get("id"):
                     stats["routes without an id"] += 1
                 shapes[" > ".join(local(q) for q, _ in it.path) + " > " + local(it.qname)] += 1
-                for _, ca in it.children:
-                    d = dict(ca)
-                    if "uri" in d:
-                        endpoint_uris.append(d["uri"])
-                    elif "ref" in d:
-                        stats["<from ref=…>"] += 1
+                for n in it.node.walk():
+                    if local(n.qname) == "from":
+                        d = dict(n.attrs)
+                        if "uri" in d:
+                            endpoint_uris.append(d["uri"])
+                        elif "ref" in d:
+                            stats["<from ref=…>"] += 1
+                    elif local(n.qname) == "simple" and n.text:
+                        endpoint_uris.append("simple:?x=" + n.text)
             else:
                 stats["<endpoint> elements"] += 1
                 if dict(it.attrs).get("uri"):
@@ -617,7 +801,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         "",
         "## Route input schemes",
         "",
-        *[f"- {k}: {v}" for k, v in schemes.most_common()],
+        *[f"- {k}: {v}" for k, v in schemes.most_common() if k != "simple"],
+        "",
+        "## Several triggers in one route",
+        "",
+        *[f"- {k}: {stats.get(k, 0)}" for k in ("routes with several <from>", "<from> listing several file patterns",
+                                                 "routes with <choice>/<filter> on the file name", "  file-name branches in them",
+                                                 "dynamic routing on the file name (toD/recipientList…)")],
+        *([f"- operators in file-name conditions: " + ", ".join(f"`{k}` {v}" for k, v in operators.most_common())] if operators else []),
         "",
         "## Where routes sit in the XML",
         "",
@@ -632,7 +823,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     (out / "distill-report.md").write_text("\n".join(report) + "\n", encoding="utf-8")
 
     map_path = out.parent / f"{out.name}.map.json"
-    map_path.write_text(json.dumps({"words": namer.words, "files": dict(written)}, indent=2, sort_keys=True), encoding="utf-8")
+    map_path.write_text(json.dumps({"words": namer.words, "numbers": namer.numbers, "files": {**previous.get("files", {}), **dict(written)}},
+                                   indent=2, sort_keys=True), encoding="utf-8")
 
     if args.zip:
         zip_path = out.parent / f"{out.name}.zip"
