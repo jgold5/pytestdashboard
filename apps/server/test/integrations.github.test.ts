@@ -6,6 +6,7 @@ import {
   deriveChecks,
   deriveReviewState,
   graphqlUrl,
+  isMissingScope,
   maxPages,
   prState,
 } from '../src/integrations/github.js';
@@ -284,29 +285,40 @@ describe('GitHub derivations', () => {
     const hostileBody = ('@allure.id(' + 'A'.repeat(50) + '-' + '1'.repeat(10) + ' ')
       .repeat(1024)
       .slice(0, 64 * 1024);
-    const t0 = performance.now();
-    const res = linkPullRequest(
-      {
-        title: 'AAAAAAAA'.repeat(10_000),
-        body: hostileBody,
-        headBranch: 'a'.repeat(100_000),
-        files: [
-          { filename: 'tests/test_evil.py', patch: `@@ -0,0 +1 @@\n+${hostileLine}` },
-          {
-            filename: 'tests/test_evil2.py',
-            patch: Array.from({ length: 2000 }, () => `+${shortHostile}`).join('\n'),
-          },
-          { filename: 'tests/test_evil3.py', patch: `+def ${'test_'.repeat(250_000)}` },
-          { filename: 'tests/test_evil4.py', patch: `+def${' '.repeat(1_000_000)}x` },
-        ],
-      },
-      index,
-    );
-    // markerArgs on an uncapped 1 MB line is linear too
-    expect(markerArgs(hostileLine)).toEqual([]);
-    const ms = performance.now() - t0;
-    expect(res.links).toEqual([]);
-    expect(ms).toBeLessThan(100);
+    const work = () =>
+      linkPullRequest(
+        {
+          title: 'AAAAAAAA'.repeat(10_000),
+          body: hostileBody,
+          headBranch: 'a'.repeat(100_000),
+          files: [
+            { filename: 'tests/test_evil.py', patch: `@@ -0,0 +1 @@\n+${hostileLine}` },
+            {
+              filename: 'tests/test_evil2.py',
+              patch: Array.from({ length: 2000 }, () => `+${shortHostile}`).join('\n'),
+            },
+            { filename: 'tests/test_evil3.py', patch: `+def ${'test_'.repeat(250_000)}` },
+            { filename: 'tests/test_evil4.py', patch: `+def${' '.repeat(1_000_000)}x` },
+          ],
+        },
+        index,
+      );
+    // Measure CPU time of warmed-up runs, not wall-clock: test files run in parallel, and a busy
+    // CI runner stretched a single cold wall-clock timing to 101 ms (about 25 ms of CPU warm).
+    // Super-linear backtracking on these inputs would take seconds of CPU, so the bound still
+    // catches it. (pool: 'forks' gives each test file its own process to measure.)
+    work(); // JIT warm-up, so compilation on helper threads isn't counted
+    let best = Infinity;
+    for (let i = 0; i < 3; i++) {
+      const cpu0 = process.cpuUsage();
+      const res = work();
+      // markerArgs on an uncapped 1 MB line is linear too
+      expect(markerArgs(hostileLine)).toEqual([]);
+      const cpu = process.cpuUsage(cpu0);
+      best = Math.min(best, (cpu.user + cpu.system) / 1000);
+      expect(res.links).toEqual([]);
+    }
+    expect(best).toBeLessThan(100);
   });
 
   it('R2-03: caps links per PR, keeping the strongest kinds', () => {
@@ -647,6 +659,37 @@ describe('GitHub sync', () => {
     expect(s.lastStats?.fetched).toBe(7);
     expect(sleeps[0]).toBe(1000);
     expect(sleeps).toHaveLength(2);
+  });
+
+  it('a token without read:org still syncs: team reviewers are left out', async () => {
+    const inner = githubHandler('acme/api', scenario());
+    mock = await startMockServer(async (req) => {
+      const body = req.body as { query?: string } | undefined;
+      if (req.method === 'POST' && req.path === '/api/graphql' && body?.query?.includes('on Team')) {
+        return {
+          json: {
+            data: null,
+            errors: [
+              {
+                type: 'INSUFFICIENT_SCOPES',
+                message: "Your token has not been granted the required scopes to execute this query. The 'name' field requires one of the following scopes: ['read:org', 'read:discussion'], but your token has only been granted the: ['repo'] scopes.",
+              },
+            ],
+          },
+        };
+      }
+      return inner(req);
+    });
+    t = await createTestApp(env(mock.url));
+    await t.app.inject({ method: 'POST', url: '/api/integrations/github/sync' });
+    await t.runner.waitForIdle();
+    const s = (await t.app.inject({ url: '/api/integrations' })).json<IntegrationStatus[]>()[0]!;
+    expect(s.lastError).toBeNull();
+    expect(s.state).toBe('idle');
+    const queries = mock.requests.filter((r) => r.path === '/api/graphql').map((r) => (r.body as { query: string }).query);
+    expect(queries[0]).toContain('on Team');
+    expect(queries.slice(1).every((q) => !q.includes('on Team'))).toBe(true);
+    expect(isMissingScope([{ message: 'nothing to see' }])).toBe(false);
   });
 
   it('stores sanitized errors (bad credentials) without the token', async () => {

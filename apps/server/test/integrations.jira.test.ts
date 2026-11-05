@@ -414,8 +414,14 @@ describe('Jira sync', () => {
     expect(mock.requests.filter((r) => r.path === '/xray/graphql').length).toBeGreaterThanOrEqual(
       2,
     );
-    // bug batch failed (BUG-99 missing) → per-issue fallback
-    expect(mock.requests.some((r) => r.path === '/rest/api/3/issue/BUG-99')).toBe(true);
+    // bug batch failed (BUG-99 missing, named in the error) → retried once without it, no per-issue requests
+    const bugSearches = mock.requests
+      .filter((r) => r.path === '/rest/api/3/search/jql' && (r.body as { jql: string }).jql.startsWith('key in'))
+      .map((r) => (r.body as { jql: string }).jql);
+    expect(bugSearches).toHaveLength(2);
+    expect(bugSearches[0]).toContain('BUG-99');
+    expect(bugSearches[1]).not.toContain('BUG-99');
+    expect(mock.requests.some((r) => r.path.startsWith('/rest/api/3/issue/'))).toBe(false);
 
     const all = await cases();
     const byJira = (k: string) => all.find((c) => c.jiraKey === k)!;
@@ -515,11 +521,31 @@ describe('Jira sync', () => {
     const starts = mock.requests
       .filter((r) => r.path === '/rest/api/2/search')
       .map((r) => (r.body as { startAt: number }).startAt);
-    expect(starts).toEqual([0, 4, 0]);
+    // test issues: two pages; the single bug key is fetched directly (GET), not with a one-key search
+    expect(starts).toEqual([0, 4]);
+    expect(mock.requests.some((r) => r.method === 'GET' && r.path === '/rest/api/2/issue/BUG-10')).toBe(true);
     // without Xray, TC-2 (no field value) stays not_automated
     expect((await cases()).find((c) => c.jiraKey === 'TC-2')!.automationStatus).toBe(
       'not_automated',
     );
+  });
+
+  it('many stale bug keys: still syncs the real bugs, at most one request per key', async () => {
+    mock = await startMockServer(jiraHandler({ pageSize: 4 }));
+    t = await appWith(jiraConfig(mock.url, { xrayClientId: undefined, xrayClientSecret: undefined }));
+    // 60 bug keys in the dashboard that Jira no longer has, plus the real ones
+    for (let i = 0; i < 60; i++) await post('/api/bugs', { title: `gone ${i}`, jiraKey: `OLD-${100 + i}` });
+    const s = await sync();
+    expect(s.lastError).toBeNull();
+    const bugRequests = mock.requests.filter(
+      (r) =>
+        r.path.includes('/issue/') ||
+        (r.path === '/rest/api/3/search/jql' && (r.body as { jql: string }).jql.startsWith('key in')),
+    );
+    // dropping named keys never costs more than the per-key fallback (one request per key + the failed searches)
+    expect(bugRequests.length).toBeLessThanOrEqual(64 + 4);
+    const all = (await t!.app.inject({ url: '/api/bugs?pageSize=100&bucket=all' })).json<BugList>().items;
+    expect(all.find((b) => b.jiraKey === 'BUG-10')).toBeTruthy(); // a real bug still synced
   });
 
   it('Cloud credentials against a Server: falls back from v3 to v2 search', async () => {

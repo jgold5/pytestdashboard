@@ -31,10 +31,27 @@ export const XRAY_API_PATH = '/api/v2';
 
 export const JIRA_LIMITS = {
   maxIssues: 10_000,
-  pageSize: 100,
+  /** Requested page size; Jira returns fewer when it caps a page (Cloud ~100, Server/DC 1,000 by default). */
+  pageSize: 1000,
   bugBatch: 100,
   xrayPageSize: 100,
+  /** Requests in flight at once for pages whose position is known up front (and for bug batches). */
+  concurrency: 4,
 } as const;
+
+/** Run `fn` over `items` with at most `n` in flight; results keep the input order. */
+export async function mapPool<T, R>(items: readonly T[], n: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i] as T);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, worker));
+  return out;
+}
 
 export interface JiraProviderOptions {
   /** Test hook: full Xray API base URL (default `${config.xrayBaseUrl}/api/v2`). */
@@ -287,11 +304,8 @@ async function search(
     let token: string | undefined;
     const seen = new Set<string>();
     try {
-      for (
-        let page = 0;
-        out.length < cap && page <= Math.ceil(cap / JIRA_LIMITS.pageSize);
-        page++
-      ) {
+      // every page holds ≥ 1 issue (an empty page ends the loop), so `cap` pages is a safe bound
+      for (let page = 0; out.length < cap && page < cap; page++) {
         const res = await jira.post('/rest/api/3/search/jql', {
           body: {
             jql,
@@ -318,17 +332,30 @@ async function search(
       }
     }
   }
-  let startAt = 0;
-  for (let page = 0; out.length < cap && page <= Math.ceil(cap / JIRA_LIMITS.pageSize); page++) {
-    const res = await jira.post('/rest/api/2/search', {
+  const page = (startAt: number) =>
+    jira.post('/rest/api/2/search', {
       body: { jql, fields, startAt, maxResults: JIRA_LIMITS.pageSize },
       schema: SearchResponse,
     });
-    const issues = res.data.issues ?? [];
+  const first = await page(0);
+  const firstIssues = first.data.issues ?? [];
+  out.push(...firstIssues.slice(0, cap));
+  const total = first.data.total;
+  const size = firstIssues.length;
+  if (size === 0 || out.length >= cap) return out;
+  if (typeof total === 'number') {
+    // the server told us the total and its page size: fetch the remaining pages side by side
+    const starts: number[] = [];
+    for (let s = size; s < Math.min(total, cap); s += size) starts.push(s);
+    for (const res of await mapPool(starts, JIRA_LIMITS.concurrency, page)) out.push(...(res.data.issues ?? []));
+    return out.slice(0, cap);
+  }
+  let startAt = size;
+  for (let p = 1; out.length < cap && p < cap; p++) {
+    const issues = (await page(startAt)).data.issues ?? [];
+    if (issues.length === 0) break;
     out.push(...issues.slice(0, cap - out.length));
     startAt += issues.length;
-    if (issues.length === 0 || (typeof res.data.total === 'number' && startAt >= res.data.total))
-      break;
   }
   return out;
 }
@@ -355,8 +382,7 @@ async function fetchXrayTypes(
   const query = `query($jql: String!, $start: Int!, $limit: Int!) {
   getTests(jql: $jql, limit: $limit, start: $start) { total results { issueId testType { name kind } jira(fields: ["key"]) } }
 }`;
-  let start = 0;
-  for (let page = 0; start < JIRA_LIMITS.maxIssues && page < JIRA_LIMITS.maxIssues; page++) {
+  const fetchPage = async (start: number) => {
     const res = await xray.post('/graphql', {
       headers: { authorization: `Bearer ${jwt}` },
       body: { query, variables: { jql: config.jql, start, limit: JIRA_LIMITS.xrayPageSize } },
@@ -367,20 +393,34 @@ async function fetchXrayTypes(
       const msg = res.data.errors?.[0]?.message ?? 'no data returned';
       throw new HttpError(`Xray GraphQL error: ${msg.slice(0, 200)}`, res.status);
     }
-    const results = tests.results ?? [];
-    for (const r of results) {
+    return tests;
+  };
+  const record = (results: Awaited<ReturnType<typeof fetchPage>>['results']) => {
+    for (const r of results ?? []) {
       const key = r?.jira?.key;
       if (key) types.set(key, { name: r.testType?.name ?? null, kind: r.testType?.kind ?? null });
     }
-    start += results.length;
-    // Xray may return fewer than `limit` per page: continue until `total` (or an empty page)
-    if (results.length === 0) break;
-    if (
-      typeof tests.total === 'number'
-        ? start >= tests.total
-        : results.length < JIRA_LIMITS.xrayPageSize
-    )
-      break;
+  };
+  const first = await fetchPage(0);
+  record(first.results);
+  const size = first.results?.length ?? 0;
+  if (size === 0) return types;
+  if (typeof first.total === 'number') {
+    // total known: the other pages can be fetched side by side
+    const starts: number[] = [];
+    for (let s = size; s < Math.min(first.total, JIRA_LIMITS.maxIssues); s += size) starts.push(s);
+    for (const t of await mapPool(starts, JIRA_LIMITS.concurrency, fetchPage)) record(t.results);
+    return types;
+  }
+  // no total: page until a short or empty page (Xray may return fewer than `limit`)
+  let start = size;
+  let last = size;
+  for (let page = 1; last >= JIRA_LIMITS.xrayPageSize && start < JIRA_LIMITS.maxIssues && page < JIRA_LIMITS.maxIssues; page++) {
+    const t = await fetchPage(start);
+    record(t.results);
+    last = t.results?.length ?? 0;
+    if (last === 0) break;
+    start += last;
   }
   return types;
 }
@@ -408,14 +448,19 @@ async function runJiraSync(
     'issuelinks',
   ];
   if (config.automationField) fields.push(config.automationField);
+  let phaseStart = Date.now();
   const issues = (await search(jira, state, config.jql, fields, JIRA_LIMITS.maxIssues)).filter(
     (i) => isJiraKey(i.key),
   );
   stats.fetched += issues.length;
+  ctx.log.info({ ms: Date.now() - phaseStart, issues: issues.length, api: state.version }, 'jira sync: test issues fetched');
 
   // --- 2. Xray test types (optional) --------------------------------------
+  phaseStart = Date.now();
   const xrayTypes =
     config.xrayClientId && config.xrayClientSecret ? await fetchXrayTypes(config, ctx, opts) : null;
+  if (xrayTypes) ctx.log.info({ ms: Date.now() - phaseStart, tests: xrayTypes.size }, 'jira sync: xray test types fetched');
+  phaseStart = Date.now();
 
   // --- 3. Upsert test cases -------------------------------------------------
   const caseIdByJiraKey = upsertTestCases(
@@ -448,12 +493,12 @@ async function runJiraSync(
   const bugFields = ['summary', 'status', 'resolution', 'resolutiondate', 'assignee', 'priority'];
   const fetchedBugs = new Map<string, JiraIssue>();
   const keys = [...bugKeys].sort();
-  for (let i = 0; i < keys.length; i += JIRA_LIMITS.bugBatch) {
-    const batch = keys.slice(i, i + JIRA_LIMITS.bugBatch);
-    for (const issue of await fetchBugBatch(jira, state, batch, bugFields))
-      fetchedBugs.set(issue.key, issue);
-  }
+  const batches: string[][] = [];
+  for (let i = 0; i < keys.length; i += JIRA_LIMITS.bugBatch) batches.push(keys.slice(i, i + JIRA_LIMITS.bugBatch));
+  for (const found of await mapPool(batches, JIRA_LIMITS.concurrency, (b) => fetchBugBatch(jira, state, b, bugFields)))
+    for (const issue of found) fetchedBugs.set(issue.key, issue);
   stats.fetched += fetchedBugs.size;
+  ctx.log.info({ ms: Date.now() - phaseStart, bugs: fetchedBugs.size, keys: keys.length }, 'jira sync: bugs fetched');
 
   db.transaction((tx) => {
     for (const issue of fetchedBugs.values()) {
@@ -490,34 +535,50 @@ async function runJiraSync(
 
 /**
  * `key in (…)` fails with 400 on Jira when any key no longer exists (or isn't
- * visible) — fall back to per-issue GETs for that batch, skipping 404s.
+ * visible), and the error names it ("An issue with key 'BUG-9' does not exist…").
+ * Drop the named key and retry, so one stale key costs one extra request instead
+ * of one request per key. If keys are still failing after a few rounds, fetch the
+ * rest one by one (several at a time), skipping 404/403.
  */
 async function fetchBugBatch(
   jira: HttpClient,
   state: { version: ApiVersion },
   keys: string[],
   fields: string[],
+  retries = 3,
 ): Promise<JiraIssue[]> {
-  try {
-    return await search(jira, state, `key in (${keys.join(',')})`, fields, keys.length);
-  } catch (e) {
-    if (!(e instanceof HttpError) || e.status !== 400) throw e;
+  if (keys.length > 1) {
+    try {
+      return await search(jira, state, `key in (${keys.join(',')})`, fields, keys.length);
+    } catch (e) {
+      if (!(e instanceof HttpError) || e.status !== 400) throw e;
+      const inBatch = new Set(keys.map((k) => k.toUpperCase()));
+      const named = [...e.message.matchAll(/'([A-Za-z][A-Za-z0-9_]*-\d+)'/g)]
+        .map((m) => (m[1] as string).toUpperCase())
+        .filter((k) => inBatch.has(k));
+      if (named.length > 0 && retries > 0) {
+        const rest = keys.filter((k) => !named.includes(k.toUpperCase()));
+        return rest.length ? fetchBugBatch(jira, state, rest, fields, retries - 1) : [];
+      }
+    }
   }
-  const out: JiraIssue[] = [];
-  for (const key of keys) {
+  const found = await mapPool(keys, BUG_GET_CONCURRENCY, async (key) => {
     try {
       const res = await jira.get(`/rest/api/${state.version}/issue/${encodeURIComponent(key)}`, {
         query: { fields: fields.join(',') },
         schema: Issue,
       });
-      out.push(res.data);
+      return res.data;
     } catch (e) {
-      if (e instanceof HttpError && (e.status === 404 || e.status === 403)) continue;
+      if (e instanceof HttpError && (e.status === 404 || e.status === 403)) return null;
       throw e;
     }
-  }
-  return out;
+  });
+  return found.filter((x): x is JiraIssue => x !== null);
 }
+
+/** Per-issue GETs in flight at once (inside one bug batch, which itself runs alongside others). */
+const BUG_GET_CONCURRENCY = 4;
 
 function upsertTestCases(
   db: Db,
