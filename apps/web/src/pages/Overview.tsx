@@ -75,7 +75,7 @@ export function OverviewPage() {
               <CardHeader title="Coverage trend" description="Daily snapshot of total vs automated cases" />
               <CardBody>
                 {s.coverageTrend.length > 1 ? (
-                  <CoverageTrendChart data={s.coverageTrend} />
+                  <CoverageTrendChart data={s.coverageTrend} totalLabel={s.coverage.unit === 'routes' ? 'Routes' : 'Total cases'} />
                 ) : (
                   <EmptyChart>The trend appears after the inventory changes on at least two days.</EmptyChart>
                 )}
@@ -165,7 +165,11 @@ function KpiRow({ s }: { s: Summary }) {
   const lr = s.latestRun;
   return (
     <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
-      <Kpi label="Total cases" value={fmtNumber(c.total)} sub={`${fmtNumber(c.notAutomatable)} not automatable`} to="/tests" />
+      {c.unit === 'routes' ? (
+        <Kpi label="Routes to test" value={fmtNumber(c.total)} sub="file and schedule triggers on main" to="/triggers" />
+      ) : (
+        <Kpi label="Total cases" value={fmtNumber(c.total)} sub={`${fmtNumber(c.notAutomatable)} not automatable`} to="/tests" />
+      )}
       <Kpi
         label="Automated"
         value={
@@ -174,8 +178,8 @@ function KpiRow({ s }: { s: Summary }) {
             <span className="ml-1.5 text-sm font-medium text-fg-3">{fmtNumber(c.automated)}</span>
           </>
         }
-        sub="of automatable cases"
-        to="/tests?automationStatus=automated"
+        sub={c.unit === 'routes' ? 'of routes have a test on main' : 'of automatable cases'}
+        to={c.unit === 'routes' ? '/triggers?branch=main&status=automated' : '/tests?automationStatus=automated'}
       />
       <Kpi
         label="In progress"

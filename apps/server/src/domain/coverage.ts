@@ -2,6 +2,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { CoverageTotals } from '@ptd/shared';
 import type { Db } from '../db/client.js';
 import { coverageSnapshots, pullRequests, testCasePullRequests, testCases } from '../db/schema.js';
+import { routeCoverage } from '../triggers/routeCoverage.js';
 import { isoDate } from '../util/time.js';
 
 export function automationRate(total: number, automated: number, notAutomatable: number): number | null {
@@ -10,6 +11,20 @@ export function automationRate(total: number, automated: number, notAutomatable:
 }
 
 export function computeCoverage(db: Db): CoverageTotals {
+  // the source code defines the scope once it has been scanned; nothing else adds to it
+  const routes = routeCoverage(db);
+  if (routes) {
+    return {
+      unit: 'routes',
+      total: routes.total,
+      automated: routes.automated,
+      inProgress: routes.inProgress,
+      notAutomated: routes.total - routes.automated - routes.inProgress,
+      notAutomatable: 0,
+      inOpenPr: routes.inProgress,
+      automationRate: automationRate(routes.total, routes.automated, 0),
+    };
+  }
   const rows = db
     .select({ status: testCases.automationStatus, n: sql<number>`count(*)` })
     .from(testCases)
@@ -37,6 +52,7 @@ export function computeCoverage(db: Db): CoverageTotals {
       .get()?.n ?? 0;
 
   return {
+    unit: 'cases',
     total,
     automated,
     inProgress,

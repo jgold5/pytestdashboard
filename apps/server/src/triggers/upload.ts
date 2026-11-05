@@ -51,15 +51,67 @@ export interface CollectedRepo {
   warnings: string[];
 }
 
-export async function collectRepoUpload(req: FastifyRequest, zipLimits: ZipLimits = DEFAULT_ZIP_LIMITS): Promise<{ repo: CollectedRepo; fields: TriggerScanFields }> {
-  const repo: CollectedRepo = { input: { xml: [], properties: [], tests: [] }, files: { xml: 0, properties: 0, tests: 0 }, warnings: [] };
-  const add = (filePath: string, data: Buffer) => {
+function emptyRepo(): CollectedRepo {
+  return { input: { xml: [], properties: [], tests: [] }, files: { xml: 0, properties: 0, tests: 0 }, warnings: [] };
+}
+
+function adder(repo: CollectedRepo) {
+  return (filePath: string, data: Buffer) => {
     const cls = classify(filePath);
     if (!cls) return;
-    // XML routes don't mix with xml config we can't read; a BOM or Latin-1 file still scans
-    repo.input[cls].push({ path: filePath, text: data.toString('utf8').replace(/^﻿/, '') });
+    // a BOM or Latin-1 file still scans
+    repo.input[cls].push({ path: filePath, text: data.toString('utf8').replace(/^\uFEFF/, '') });
     repo.files[cls]++;
   };
+}
+
+/** Keep only the routes side (Camel repo) or the tests side (test repo) of a snapshot. */
+export function applyOnly(repo: CollectedRepo, only: 'routes' | 'tests' | undefined): void {
+  if (only === 'tests') {
+    repo.input.xml.length = 0;
+    repo.input.properties.length = 0;
+    repo.files.xml = repo.files.properties = 0;
+  } else if (only === 'routes') {
+    repo.input.tests.length = 0;
+    repo.files.tests = 0;
+  }
+}
+
+/** Limits for a whole-repo archive from GitHub: many entries, but only small XML/properties/py files are read. */
+export const REPO_ARCHIVE_LIMITS: ZipLimits = {
+  ...DEFAULT_ZIP_LIMITS,
+  maxEntries: 1_000_000,
+  maxTotalBytes: 16 * 1024 * 1024 * 1024,
+  maxEntryBytes: MAX_FILE_BYTES,
+};
+
+/**
+ * Read a repo snapshot from a zip on disk. GitHub archives put everything under one
+ * `<owner>-<repo>-<sha>/` folder: `stripTopDir` removes it (and returns its name).
+ */
+export async function readRepoZip(zipPath: string, limits: ZipLimits, opts: { stripTopDir?: boolean } = {}): Promise<{ repo: CollectedRepo; topDir: string | null }> {
+  const repo = emptyRepo();
+  const add = adder(repo);
+  let topDir: string | null = null;
+  const rel = (entry: string): string => {
+    if (!opts.stripTopDir) return entry;
+    const cut = entry.indexOf('/');
+    if (cut < 0) return entry;
+    topDir ??= entry.slice(0, cut);
+    return entry.slice(cut + 1);
+  };
+  await readZip(
+    { path: zipPath },
+    (entry) => classify(rel(entry)) !== null,
+    (entry, data) => add(rel(entry), data),
+    limits,
+  );
+  return { repo, topDir };
+}
+
+export async function collectRepoUpload(req: FastifyRequest, zipLimits: ZipLimits = DEFAULT_ZIP_LIMITS): Promise<{ repo: CollectedRepo; fields: TriggerScanFields }> {
+  const repo = emptyRepo();
+  const add = adder(repo);
   const rawFields: Record<string, string> = {};
   let tmpDir: string | null = null;
   let zipPath: string | null = null;

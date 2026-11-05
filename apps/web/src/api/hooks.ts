@@ -17,8 +17,11 @@ import type {
   FailureGroup,
   HistoryMatrix,
   HistoryMatrixQuery,
+  TriggerGithubInfo,
+  TriggerGithubScanRequest,
   TriggerListResponse,
   TriggerQuery,
+  TriggerScanResponse,
   RunComparison,
   RunUpdate,
   ImportCommitRequest,
@@ -533,5 +536,35 @@ export function useDeleteTriggerBranch() {
   return useMutation({
     mutationFn: (branch: string) => api.delete<void>(`/api/triggers/branches/${encodeURIComponent(branch)}`),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['triggers'] }),
+  });
+}
+
+export function useTriggerGithub() {
+  return useQuery({
+    queryKey: ['triggers', 'github'],
+    queryFn: ({ signal }) => api.get<TriggerGithubInfo>('/api/triggers/github', undefined, signal),
+    staleTime: 60_000,
+  });
+}
+
+export function useTriggerBranches(repo: string | null) {
+  return useQuery({
+    queryKey: ['triggers', 'github', 'branches', repo],
+    queryFn: ({ signal }) => api.get<{ branches: string[] }>('/api/triggers/github/branches', { repo: repo! }, signal),
+    enabled: !!repo,
+    staleTime: 60_000,
+  });
+}
+
+export function useScanGithubBranch() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: TriggerGithubScanRequest) => api.post<TriggerScanResponse>('/api/triggers/scan-github', body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['triggers'] });
+      void qc.invalidateQueries({ queryKey: qk.summary });
+      void qc.invalidateQueries({ queryKey: ['report'] });
+      void qc.invalidateQueries({ queryKey: ['testCases'] });
+    },
   });
 }

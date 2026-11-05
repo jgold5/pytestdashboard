@@ -23,6 +23,10 @@ The app has two sides. Editors use both; viewers see only the Report.
   → Automated. The Overview funnel links each stage to the filtered test list and
   calls out "N tests done, awaiting merge" with the approved PRs. When the sync sees a
   linked PR merged, its cases are promoted to `automated` automatically.
+- **Triggers**: every Camel route trigger in the code, per branch, and which ones a
+  test covers. Scan any branch of the route repo or the test repo straight from GitHub,
+  and compare branches to see jobs and tests that diverge. When routes are scanned,
+  they are the headline scope (see [Camel route triggers](#camel-route-triggers)).
 - **Test cases**: a searchable, filterable, server-paginated inventory. You can edit
   the automation status inline, run bulk actions and export to CSV. Each case has a
   detail page with history per run group, a duration trend, the latest failure and
@@ -206,8 +210,8 @@ def test_invoice_file_is_loaded(camel):
 Keys in a class docstring or a module docstring or comment apply to every test in that class
 or file.
 
-- **Main:** when the test repo's scan for `main` (or `master`/`develop`) is uploaded
-  (`POST /api/triggers/scan` with `only=tests`, see below), every case whose key a test names
+- **Main:** when the test repo's `main` (or `master`/`develop`) is scanned (**Scan a
+  branch** on Triggers, or `POST /api/triggers/scan` with `only=tests`, see below), every case whose key a test names
   is marked **automated**, and its detail page shows "Automated via: named by a test on main".
   The scan never downgrades a case, and leaves cases marked *not automatable* alone.
 - **PRs:** the GitHub sync links a PR to a case when an added line in a test file names the
@@ -220,7 +224,42 @@ or file.
 **Triggers** lists every Camel route that starts from a load file (`file:`, `ftp:`,
 `ftps:`, `sftp:`, `smb:`) or a schedule (`quartz:`, `cron:`, `timer:`, `scheduler:`),
 and which of them have a test. The routes and the tests can be in different repos.
-CI in each repo uploads a scan, on `main` and on every PR branch:
+
+**The routes in the code are the scope.** Once a route scan exists, the headline numbers
+on Overview and Report count routes, not spreadsheet or Jira rows:
+- **Routes to test**: the triggers in `main`'s Camel code;
+- **Automated**: those a test on `main` covers;
+- **In progress**: those only a test on another branch covers.
+
+Before the first route scan, the numbers still count test cases.
+
+#### Scan a branch from GitHub
+
+Jobs differ between branches, so any branch of either repo can be scanned on demand:
+**Triggers → Scan a branch**, pick the repository, say whether it holds the routes or the
+tests (remembered per repo), and type or pick the branch. The dashboard downloads that
+branch's archive from GitHub, scans it, and stores it like an uploaded scan (with the
+commit it was taken at).
+
+- Only repos listed in `GITHUB_REPOS` can be scanned, with `GITHUB_TOKEN` (it needs
+  **Contents: read**). Editors only; viewers and the ingest token can't start one.
+- API: `GET /api/triggers/github` (configured repos), `GET /api/triggers/github/branches?repo=`
+  and `POST /api/triggers/scan-github` with `{"repo","branch","only":"routes"|"tests"}`.
+- Archives are capped at 1 GB. The token is never sent to the download host.
+
+#### Divergence between branches
+
+Pick a branch and **Compare with** another one (usually `main`). Besides new, changed and
+removed triggers, the page shows:
+- triggers that **lost their test** on this branch;
+- a **Divergence** card listing tests and Xray keys that exist on the other branch but are
+  missing on this one, and the ones only this branch has. This catches cases that were
+  added on one branch and never made it to another.
+
+#### Uploading scans from CI
+
+Instead of (or as well as) scanning from the dashboard, CI in each repo can upload a scan
+on `main` and on every PR branch:
 
 ```bash
 # Camel repo: route XML and properties
@@ -230,8 +269,9 @@ curl --fail-with-body -sS -X POST "$DASHBOARD_URL/api/triggers/scan" \
   --form-string "branch=$BRANCH" --form-string "commit=$COMMIT" --form-string "only=routes" \
   -F "files=@scan.zip;type=application/zip"
 
-# Test repo: pytest files (only=tests ignores route copies kept there as test data)
-git ls-files '*test_*.py' '*_test.py' | zip -q -@ scan.zip
+# Test repo: pytest files (only=tests ignores route copies kept there as test data).
+# List the Python files your tests live in; every file sent is read as a test file.
+git ls-files 'src/route_test/*.py' '*test_*.py' '*_test.py' | zip -q -@ scan.zip
 curl --fail-with-body -sS -X POST "$DASHBOARD_URL/api/triggers/scan" \
   -H "Authorization: Bearer $DASHBOARD_INGEST_TOKEN" \
   --form-string "branch=$BRANCH" --form-string "commit=$COMMIT" --form-string "only=tests" \
