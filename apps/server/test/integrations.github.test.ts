@@ -285,29 +285,40 @@ describe('GitHub derivations', () => {
     const hostileBody = ('@allure.id(' + 'A'.repeat(50) + '-' + '1'.repeat(10) + ' ')
       .repeat(1024)
       .slice(0, 64 * 1024);
-    const t0 = performance.now();
-    const res = linkPullRequest(
-      {
-        title: 'AAAAAAAA'.repeat(10_000),
-        body: hostileBody,
-        headBranch: 'a'.repeat(100_000),
-        files: [
-          { filename: 'tests/test_evil.py', patch: `@@ -0,0 +1 @@\n+${hostileLine}` },
-          {
-            filename: 'tests/test_evil2.py',
-            patch: Array.from({ length: 2000 }, () => `+${shortHostile}`).join('\n'),
-          },
-          { filename: 'tests/test_evil3.py', patch: `+def ${'test_'.repeat(250_000)}` },
-          { filename: 'tests/test_evil4.py', patch: `+def${' '.repeat(1_000_000)}x` },
-        ],
-      },
-      index,
-    );
-    // markerArgs on an uncapped 1 MB line is linear too
-    expect(markerArgs(hostileLine)).toEqual([]);
-    const ms = performance.now() - t0;
-    expect(res.links).toEqual([]);
-    expect(ms).toBeLessThan(100);
+    const work = () =>
+      linkPullRequest(
+        {
+          title: 'AAAAAAAA'.repeat(10_000),
+          body: hostileBody,
+          headBranch: 'a'.repeat(100_000),
+          files: [
+            { filename: 'tests/test_evil.py', patch: `@@ -0,0 +1 @@\n+${hostileLine}` },
+            {
+              filename: 'tests/test_evil2.py',
+              patch: Array.from({ length: 2000 }, () => `+${shortHostile}`).join('\n'),
+            },
+            { filename: 'tests/test_evil3.py', patch: `+def ${'test_'.repeat(250_000)}` },
+            { filename: 'tests/test_evil4.py', patch: `+def${' '.repeat(1_000_000)}x` },
+          ],
+        },
+        index,
+      );
+    // Measure CPU time of warmed-up runs, not wall-clock: test files run in parallel, and a busy
+    // CI runner stretched a single cold wall-clock timing to 101 ms (about 25 ms of CPU warm).
+    // Super-linear backtracking on these inputs would take seconds of CPU, so the bound still
+    // catches it. (pool: 'forks' gives each test file its own process to measure.)
+    work(); // JIT warm-up, so compilation on helper threads isn't counted
+    let best = Infinity;
+    for (let i = 0; i < 3; i++) {
+      const cpu0 = process.cpuUsage();
+      const res = work();
+      // markerArgs on an uncapped 1 MB line is linear too
+      expect(markerArgs(hostileLine)).toEqual([]);
+      const cpu = process.cpuUsage(cpu0);
+      best = Math.min(best, (cpu.user + cpu.system) / 1000);
+      expect(res.links).toEqual([]);
+    }
+    expect(best).toBeLessThan(100);
   });
 
   it('R2-03: caps links per PR, keeping the strongest kinds', () => {
