@@ -25,6 +25,7 @@ function refreshOne(db: Db, id: number): void {
       sortAt: runs.sortAt,
       runGroup: runs.runGroup,
       signature: testResults.failureSignature,
+      attempts: testResults.attempts,
     })
     .from(testResults)
     .innerJoin(runs, eq(runs.id, testResults.runId))
@@ -34,14 +35,17 @@ function refreshOne(db: Db, id: number): void {
     .all();
   const last = recent[0];
 
-  // one status per run (worst — rows are ordered by severity within a run), newest first, per run group
+  // one result per run (worst — rows are ordered by severity within a run), newest first, per run group.
+  // A retried result contributes every attempt (as allure-history does), so a test that
+  // fails and then passes on rerun is seen flipping even though its final status is passed.
   const perGroup = new Map<string, ResultStatus[]>();
   let prevRun: number | null = null;
   for (const r of recent) {
     if (r.runId === prevRun) continue;
     prevRun = r.runId;
     const list = perGroup.get(r.runGroup) ?? [];
-    list.push(r.status);
+    if (r.attempts && r.attempts.length > 1) for (let i = r.attempts.length - 1; i >= 0; i--) list.push(r.attempts[i] as ResultStatus);
+    else list.push(r.status);
     perGroup.set(r.runGroup, list);
   }
   let flakiness = 0;

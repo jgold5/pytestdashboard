@@ -11,8 +11,8 @@ import type { Deps } from '../deps.js';
 import { parseWith } from '../errors.js';
 import { compareRuns, historyMatrix } from '../domain/history.js';
 import { deleteRun, getResult, getRunRow, listRunResults, listRuns, runFailureGroups, serializeRun, updateRun } from '../domain/runs.js';
-import { importAllureRun } from '../import/allure/importRun.js';
-import { collectAllureUpload } from '../import/allure/upload.js';
+import { MAX_RESULTS_PER_HISTORY_IMPORT, importAllureRun, importHistory } from '../import/allure/importRun.js';
+import { collectAllureUpload, collectHistoryUpload } from '../import/allure/upload.js';
 import type { ZipLimits } from '../import/zip.js';
 
 export function runRoutes(app: FastifyInstance, { db }: Deps, zipLimits?: ZipLimits): void {
@@ -32,6 +32,21 @@ export function runRoutes(app: FastifyInstance, { db }: Deps, zipLimits?: ZipLim
     );
     return reply.status(201).send(result);
   });
+
+  // Many runs at once: allure-history snapshots, several result folders, or one folder holding many runs.
+  app.post(
+    '/api/runs/import-history',
+    { config: { access: 'ingest', rateLimit: { max: 10, timeWindow: '1 minute' } } },
+    async (req, reply) => {
+      const { bundle, fields } = await collectHistoryUpload(req, zipLimits, MAX_RESULTS_PER_HISTORY_IMPORT);
+      const result = importHistory(db, bundle, fields);
+      req.log.info(
+        { mode: result.mode, runs: result.runs.length, duplicates: result.duplicateRuns, created: result.createdTestCases },
+        'allure history imported',
+      );
+      return reply.status(201).send(result);
+    },
+  );
 
   app.get('/api/runs/compare', async (req) => {
     const q = parseWith(RunCompareQuery, req.query);

@@ -418,6 +418,8 @@ export const TestResult = z.object({
   suggestedTriage: TriageCategory.nullable(),
   /** Allure retries (multiple results with same historyId in one run). */
   retries: z.number().int(),
+  /** Status of every attempt, oldest first, when the test was retried (null otherwise). */
+  attempts: z.array(ResultStatus).nullable(),
   change: ResultChange,
   parameters: z.array(z.object({ name: z.string(), value: z.string() })),
   labels: z.array(z.object({ name: z.string(), value: z.string() })),
@@ -570,6 +572,39 @@ export const RunImportResponse = z.object({
   warnings: z.array(z.string()),
 });
 export type RunImportResponse = z.infer<typeof RunImportResponse>;
+
+/**
+ * `POST /api/runs/import-history` (multipart, editor or ingest token): many runs
+ * in one upload, the way allure-history (allureparser) reads them:
+ * - several allure-results folders and/or allure-history snapshots
+ *   (`*.snapshot.json.gz`): each folder or snapshot is one run;
+ * - one folder that collected results from many runs: runs are recovered from
+ *   the host + process id allure-pytest records on every result.
+ * Fields apply to every run in the upload.
+ */
+export const HistoryImportFields = z.object({
+  /** Omit to auto-derive per run from the results' common test folder. */
+  runGroup: trimmed(LIMITS.shortTextMax).min(1).optional(),
+  branch: nullableShort.optional(),
+});
+export type HistoryImportFields = z.infer<typeof HistoryImportFields>;
+
+export const HistoryImportMode = z.enum(['per_source', 'detected']);
+export type HistoryImportMode = z.infer<typeof HistoryImportMode>;
+
+export const HistoryImportResponse = z.object({
+  /** `per_source`: one run per folder/snapshot. `detected`: runs recovered from one mixed folder. */
+  mode: HistoryImportMode,
+  /** Imported runs, oldest first. */
+  runs: z.array(Run),
+  /** Runs in the upload that the dashboard already had (same group, branch, start, stop and counts); not imported again. */
+  duplicateRuns: z.number().int(),
+  createdTestCases: z.number().int(),
+  promotedTestCases: z.number().int(),
+  skippedFiles: z.number().int(),
+  warnings: z.array(z.string()),
+});
+export type HistoryImportResponse = z.infer<typeof HistoryImportResponse>;
 
 // ---------------------------------------------------------------------------
 // Notes (why is this failing? triage + discussion)

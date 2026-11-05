@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isAllowedAllureFile, planAllureUpload } from '../lib/allureFiles';
+import { folderOf, isAllowedAllureFile, planAllureUpload } from '../lib/allureFiles';
 
 const f = (name: string, size = 10) => new File(['x'.repeat(size)], name);
 
@@ -33,5 +33,30 @@ describe('allure file allowlist', () => {
     const plan = planAllureUpload([f('readme.md')]);
     expect(plan.kind).toBe('empty');
     expect(plan.error).toMatch(/No allure result files/);
+  });
+});
+
+describe('history uploads', () => {
+  it('accepts allure-history snapshots only in history mode', () => {
+    expect(isAllowedAllureFile('history/build-12.snapshot.json.gz')).toBe(false);
+    expect(isAllowedAllureFile('history/build-12.snapshot.json.gz', { snapshots: true })).toBe(true);
+    expect(isAllowedAllureFile('archive.tar.gz', { snapshots: true })).toBe(false);
+  });
+
+  it('counts snapshots and result folders', () => {
+    const inFolder = (dir: string, name: string) => {
+      const file = f(name);
+      Object.defineProperty(file, 'webkitRelativePath', { value: `${dir}/${name}` });
+      return file;
+    };
+    const plan = planAllureUpload(
+      [inFolder('ci/build-1', 'a-result.json'), inFolder('ci/build-2', 'a-result.json'), inFolder('ci/history', 'build-3.snapshot.json.gz')],
+      { snapshots: true },
+    );
+    expect(plan.error).toBeUndefined();
+    expect([plan.resultCount, plan.snapshotCount, plan.folderCount]).toEqual([2, 1, 2]);
+    expect(folderOf(plan.files[0]!)).toBe('ci/build-1');
+    expect(planAllureUpload([f('build-3.snapshot.json.gz')], { snapshots: true }).error).toBeUndefined();
+    expect(planAllureUpload([f('build-3.snapshot.json.gz')]).error).toMatch(/No allure result files/);
   });
 });

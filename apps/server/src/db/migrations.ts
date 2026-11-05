@@ -207,4 +207,7 @@ ALTER TABLE "test_cases" ADD COLUMN "automated_via" text;
 ALTER TABLE "pull_requests" ADD COLUMN "approved_at" text;
 CREATE INDEX "pull_requests_merged_at_idx" ON "pull_requests" ("merged_at");
 `,
+  /* v3 — per-attempt statuses of retried results (retry-aware flakiness) */ `
+ALTER TABLE "test_results" ADD COLUMN "attempts" text;
+`,
 ];

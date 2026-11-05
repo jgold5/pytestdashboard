@@ -125,6 +125,8 @@ export const testResults = sqliteTable(
     /** vs the same case in the run's previousRunId (ResultChange). */
     change: text('change').$type<ResultChange>().notNull().default('other'),
     retries: integer('retries').notNull().default(0),
+    /** Statuses of every attempt, oldest first, when retried (null when run once). */
+    attempts: text('attempts', { mode: 'json' }).$type<ResultStatus[]>(),
     parameters: text('parameters', { mode: 'json' }).$type<NameValue[]>().notNull().default(sql`'[]'`),
     labels: text('labels', { mode: 'json' }).$type<NameValue[]>().notNull().default(sql`'[]'`),
   },

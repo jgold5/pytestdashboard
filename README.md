@@ -162,6 +162,35 @@ Results are linked to test cases in this order:
 When nothing matches, a new case is created automatically. Retries in one upload
 are deduplicated.
 
+### Run history (allure-history / allureparser)
+
+**Import → Run history** (or `POST /api/runs/import-history`, which also accepts the
+`INGEST_TOKEN`) imports many runs in one upload. It reads uploads the same way
+[allure-history](https://github.com/jgold5/allureparser) does:
+
+- **Snapshots** (`*.snapshot.json.gz`, written by `allure-history snapshot`): each
+  snapshot is one run, named after its label and linked to its build URL. Snapshots
+  hold only the failure location, not the full stack trace.
+- **Several allure-results folders** (for example `ci/build-12/allure-results/`, as a
+  folder or a `.zip`): each folder is one run, named after `executor.json`'s
+  `buildName`, or after the folder if there is none.
+- **One allure-results folder that collected many runs**: runs are recovered from the
+  host and pytest process ID that allure-pytest records on every result. The workers
+  of a `pytest -n` run count as one run.
+
+Runs the dashboard already has (same group, branch, start, stop and counts) are
+skipped, so you can upload the same history folder again safely. Runs keep each
+retry's status, so a test that fails and then passes on rerun counts towards
+flakiness.
+
+```bash
+cd history && zip -qr ../history.zip . && cd ..
+curl --fail-with-body -sS -X POST "$DASHBOARD_URL/api/runs/import-history" \
+  -H "Authorization: Bearer $DASHBOARD_INGEST_TOKEN" \
+  --form-string "runGroup=tests/api" --form-string "branch=main" \
+  -F "files=@history.zip;type=application/zip"
+```
+
 ### Run groups
 
 Every run belongs to a **run group**: a set of tests that are meant to be compared
