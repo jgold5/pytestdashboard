@@ -1297,6 +1297,24 @@ export const TriggerScanResponse = TriggerScanSummary.extend({
 });
 export type TriggerScanResponse = z.infer<typeof TriggerScanResponse>;
 
+/** `POST /api/triggers/scan-github` (editor): download a branch of a GITHUB_REPOS repo and scan it. */
+export const TriggerGithubScanRequest = z.object({
+  repo: z.string().trim().regex(/^[\w.-]+\/[\w.-]+$/, 'owner/name'),
+  branch: z
+    .string()
+    .trim()
+    .min(1)
+    .max(200)
+    .regex(/^[\w.\-/@+]+$/, 'not a valid branch name'),
+  /** The Camel repo holds routes, the test repo holds tests (route copies kept as test data there are ignored). */
+  only: z.enum(['routes', 'tests']),
+});
+export type TriggerGithubScanRequest = z.infer<typeof TriggerGithubScanRequest>;
+
+/** `GET /api/triggers/github`: repos that can be scanned from the dashboard. */
+export const TriggerGithubInfo = z.object({ configured: z.boolean(), repos: z.array(z.string()) });
+export type TriggerGithubInfo = z.infer<typeof TriggerGithubInfo>;
+
 export const TriggerChange = z.enum(['added', 'changed', 'removed', 'unchanged']);
 export type TriggerChange = z.infer<typeof TriggerChange>;
 
@@ -1333,6 +1351,21 @@ export const TriggerListResponse = z.object({
   compareTestsFrom: z.string().nullable(),
   /** Tests in the test scan(s) used, and how many of them cover at least one trigger. */
   tests: z.object({ read: z.number().int(), linked: z.number().int() }),
+  /**
+   * Only with `compare`: what the two branches' test scans disagree on — tests (pytest node
+   * ids) and Jira/Xray keys named by tests that exist on one branch and not the other. Lists
+   * are capped at 500; the counts are exact.
+   */
+  divergence: z
+    .object({
+      testsMissingHere: z.array(z.string()),
+      testsOnlyHere: z.array(z.string()),
+      testsMissingHereCount: z.number().int(),
+      testsOnlyHereCount: z.number().int(),
+      keysMissingHere: z.array(z.object({ key: z.string(), title: z.string().nullable(), testCaseId: z.number().int().nullable() })),
+      keysOnlyHere: z.array(z.object({ key: z.string(), title: z.string().nullable(), testCaseId: z.number().int().nullable() })),
+    })
+    .nullable(),
   items: z.array(TriggerRow),
 });
 export type TriggerListResponse = z.infer<typeof TriggerListResponse>;

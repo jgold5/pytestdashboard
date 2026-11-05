@@ -137,14 +137,17 @@ function pick(scans: Map<string, ScanRow>, branch: string): ScanRow | null {
 }
 
 /** Matching is the costly part with thousands of triggers: cache it per (route scan, test scans). */
-const coverageCache = new Map<string, Map<string, Covered>>();
-function coverage(routes: ScanRow, tests: readonly TestLabels[], testsKey: string): Map<string, Covered> {
+/** Per database: scan ids only identify a scan within one database. */
+const coverageCaches = new WeakMap<Db, Map<string, Map<string, Covered>>>();
+function coverage(db: Db, routes: ScanRow, tests: readonly TestLabels[], testsKey: string): Map<string, Covered> {
+  let cache = coverageCaches.get(db);
+  if (!cache) coverageCaches.set(db, (cache = new Map()));
   const key = `${routes.id}:${testsKey}`;
-  let hit = coverageCache.get(key);
+  let hit = cache.get(key);
   if (!hit) {
     hit = coverTriggers(routes.triggers, tests);
-    coverageCache.set(key, hit);
-    if (coverageCache.size > 32) coverageCache.delete(coverageCache.keys().next().value as string);
+    cache.set(key, hit);
+    if (cache.size > 32) cache.delete(cache.keys().next().value as string);
   }
   return hit;
 }
@@ -187,28 +190,32 @@ function caseLinker(db: Db): (nodeId: string) => number | null {
 
 interface View {
   triggers: StoredTrigger[];
+  /** The tests the view's coverage came from. */
+  tests: readonly TestLabels[];
   testsRead: number;
   covered: Map<string, Covered>;
   routesFrom: string | null;
   testsFrom: string | null;
 }
 
-function viewOf(latest: Latest, branch: string): View {
+function viewOf(db: Db, latest: Latest, branch: string): View {
   const routes = pick(latest.routes, branch);
   const tests = pick(latest.tests, branch);
   const testsRead = tests?.tests.length ?? 0;
-  if (!routes) return { triggers: [], testsRead, covered: new Map(), routesFrom: null, testsFrom: tests?.branch ?? null };
+  const testList = tests?.tests ?? [];
+  if (!routes) return { triggers: [], tests: testList, testsRead, covered: new Map(), routesFrom: null, testsFrom: tests?.branch ?? null };
   return {
     triggers: routes.triggers,
+    tests: testList,
     testsRead,
-    covered: coverage(routes, tests?.tests ?? [], String(tests?.id ?? 0)),
+    covered: coverage(db, routes, tests?.tests ?? [], String(tests?.id ?? 0)),
     routesFrom: routes.branch,
     testsFrom: tests?.branch ?? null,
   };
 }
 
 /** Every branch merged: one row per trigger (as on the default branch, else the newest), covered by any branch's tests. */
-function mergedView(latest: Latest): View {
+function mergedView(db: Db, latest: Latest): View {
   const order = [...latest.routes.values()].sort((a, b) => rank(a.branch) - rank(b.branch));
   const testScans = [...latest.tests.values()];
   const allTests = testScans.flatMap((s) => s.tests);
@@ -216,7 +223,7 @@ function mergedView(latest: Latest): View {
   const triggers = new Map<string, StoredTrigger>();
   const covered = new Map<string, Covered>();
   for (const s of order) {
-    const c = coverage(s, allTests, testsKey);
+    const c = coverage(db, s, allTests, testsKey);
     for (const t of s.triggers) {
       if (!triggers.has(t.key)) triggers.set(t.key, t);
       const have = covered.get(t.key) ?? [];
@@ -224,7 +231,7 @@ function mergedView(latest: Latest): View {
       covered.set(t.key, have);
     }
   }
-  return { triggers: [...triggers.values()], testsRead: new Set(allTests.map((t) => t.id)).size, covered, routesFrom: null, testsFrom: null };
+  return { triggers: [...triggers.values()], tests: allTests, testsRead: new Set(allTests.map((t) => t.id)).size, covered, routesFrom: null, testsFrom: null };
 }
 
 export function listTriggers(db: Db, q: TriggerQuery): TriggerListResponse {
@@ -236,8 +243,8 @@ export function listTriggers(db: Db, q: TriggerQuery): TriggerListResponse {
   const branchesOf = new Map<string, string[]>();
   for (const s of latest.routes.values()) for (const t of s.triggers) branchesOf.set(t.key, [...(branchesOf.get(t.key) ?? []), s.branch]);
 
-  const head = q.branch ? viewOf(latest, q.branch) : mergedView(latest);
-  const base = q.compare ? viewOf(latest, q.compare) : null;
+  const head = q.branch ? viewOf(db, latest, q.branch) : mergedView(db, latest);
+  const base = q.compare ? viewOf(db, latest, q.compare) : null;
   const baseByKey = base ? new Map(base.triggers.map((t) => [t.key, t])) : null;
   const link = caseLinker(db);
   const row = (t: StoredTrigger, covered: Covered, change: TriggerRow['change'], before: StoredTrigger | undefined): TriggerRow => {
@@ -273,7 +280,45 @@ export function listTriggers(db: Db, q: TriggerQuery): TriggerListResponse {
     compareRoutesFrom: base?.routesFrom ?? null,
     compareTestsFrom: base?.testsFrom ?? null,
     tests: { read: head.testsRead, linked: new Set([...head.covered.values()].flat().map((c) => c.test)).size },
+    divergence: base ? divergence(db, head.tests, base.tests) : null,
     items,
+  };
+}
+
+const DIVERGENCE_LIST_CAP = 500;
+
+/** Tests and Jira/Xray keys that one branch's test scan has and the other's lacks. */
+function divergence(db: Db, here: readonly TestLabels[], there: readonly TestLabels[]): NonNullable<TriggerListResponse['divergence']> {
+  const ids = (ts: readonly TestLabels[]) => new Set(ts.map((t) => t.id));
+  const keys = (ts: readonly TestLabels[]) => new Set(ts.flatMap((t) => t.keys ?? []));
+  const minus = <T>(a: Set<T>, b: Set<T>) => [...a].filter((x) => !b.has(x)).sort();
+  const [hereIds, thereIds, hereKeys, thereKeys] = [ids(here), ids(there), keys(here), keys(there)];
+  const testsMissingHere = minus(thereIds, hereIds);
+  const testsOnlyHere = minus(hereIds, thereIds);
+  const keysMissing = minus(thereKeys, hereKeys).slice(0, DIVERGENCE_LIST_CAP);
+  const keysOnly = minus(hereKeys, thereKeys).slice(0, DIVERGENCE_LIST_CAP);
+  // name the keys after their test cases (Jira/Xray sync) where the dashboard knows them
+  const titles = new Map<string, { title: string; id: number }>();
+  const wanted = [...keysMissing, ...keysOnly];
+  for (let i = 0; i < wanted.length; i += 500) {
+    const chunk = wanted.slice(i, i + 500);
+    for (const c of db
+      .select({ id: testCases.id, key: testCases.key, jiraKey: testCases.jiraKey, title: testCases.title })
+      .from(testCases)
+      .where(or(inArray(testCases.jiraKey, chunk), inArray(testCases.key, chunk)))
+      .all()) {
+      titles.set(c.jiraKey ?? c.key, { title: c.title, id: c.id });
+      titles.set(c.key, { title: c.title, id: c.id });
+    }
+  }
+  const ref = (key: string) => ({ key, title: titles.get(key)?.title ?? null, testCaseId: titles.get(key)?.id ?? null });
+  return {
+    testsMissingHere: testsMissingHere.slice(0, DIVERGENCE_LIST_CAP),
+    testsOnlyHere: testsOnlyHere.slice(0, DIVERGENCE_LIST_CAP),
+    testsMissingHereCount: testsMissingHere.length,
+    testsOnlyHereCount: testsOnlyHere.length,
+    keysMissingHere: keysMissing.map(ref),
+    keysOnlyHere: keysOnly.map(ref),
   };
 }
 

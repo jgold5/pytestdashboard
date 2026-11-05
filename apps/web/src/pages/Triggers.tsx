@@ -1,14 +1,16 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { useId, useMemo, useState, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { toast } from 'sonner';
-import { CircleCheck, CircleDashed, Clock, Copy, FileInput, GitCompareArrows, Search, Terminal, TriangleAlert, Zap } from 'lucide-react';
+import { CircleCheck, CircleDashed, Clock, Copy, FileInput, GitBranch, GitCompareArrows, Search, Terminal, TriangleAlert, Zap } from 'lucide-react';
 import type { TriggerChange, TriggerListResponse, TriggerRow } from '@ptd/shared';
-import { useTriggers } from '../api/hooks';
+import { useScanGithubBranch, useTriggerBranches, useTriggerGithub, useTriggers } from '../api/hooks';
+import { errorMessage } from '../api/client';
 import { cn, fmtNumber, fmtPct, fmtRelative, pluralize } from '../lib/utils';
 import { Button } from '../components/ui/button';
 import { Card, CardBody, CardHeader } from '../components/ui/card';
 import { EmptyState, ErrorState } from '../components/ui/empty-state';
-import { Input } from '../components/ui/input';
+import { Dialog } from '../components/ui/dialog';
+import { Field, Input } from '../components/ui/input';
 import { Chip, PageHeader } from '../components/ui/misc';
 import { Select } from '../components/ui/select';
 import { SkeletonRows } from '../components/ui/skeleton';
@@ -35,6 +37,8 @@ const automated = (r: TriggerRow) => r.coveredBy.length > 0;
 const PAGE = 200;
 /** Covered on this branch but not on the compare branch. */
 const newlyAutomated = (r: TriggerRow) => r.change !== 'removed' && automated(r) && r.automatedBefore === false;
+/** Covered on the compare branch, but no test covers it on this one. */
+const lostTest = (r: TriggerRow) => r.change !== 'removed' && !automated(r) && r.automatedBefore === true;
 
 export default function TriggersPage() {
   const [params, setParams] = useSearchParams();
@@ -72,7 +76,7 @@ export default function TriggersPage() {
           : status === 'missing'
             ? !automated(r) && r.change !== 'removed'
             : status === 'changes'
-              ? r.change !== 'unchanged' || newlyAutomated(r)
+              ? r.change !== 'unchanged' || newlyAutomated(r) || lostTest(r)
               : true,
       )
       .filter((r) => !q || [r.routeId, r.resolvedUri, r.sourceFile, r.filePattern, r.schedule, r.target, r.doneFile].some((v) => v?.toLowerCase().includes(q)))
@@ -90,6 +94,7 @@ export default function TriggersPage() {
         actions={
           data && data.branches.length > 0 ? (
             <>
+              <ScanBranchButton onScanned={(b) => set({ branch: b, compare: b === 'main' ? null : compare ?? (b !== 'main' && branchOptions.some((o) => o.value === 'main') ? 'main' : null) })} />
               <Select
                 size="sm"
                 ariaLabel="Branch"
@@ -125,7 +130,7 @@ export default function TriggersPage() {
           <SkeletonRows rows={8} />
         </Card>
       ) : data && data.branches.length === 0 ? (
-        <NoScans />
+        <NoScans onScanned={(b) => set({ branch: b })} />
       ) : data ? (
         <>
           <Totals data={data} />
@@ -205,6 +210,7 @@ export default function TriggersPage() {
               </>
             )}
           </Card>
+          {data.divergence ? <Divergence d={data.divergence} branch={data.branch ?? ''} compare={data.compare ?? ''} /> : null}
           <p className="mt-2 text-xs text-fg-3">
             {pluralize(rows.length, 'trigger')} shown. A route with several inputs, several file patterns, or a choice on the file name counts each one as its own trigger. A test covers a trigger when one of its Allure labels or pytest markers names the route id, the schedule, the job a file is sent to, or a load file the trigger picks up.
           </p>
@@ -260,6 +266,7 @@ function Totals({ data }: { data: TriggerListResponse }) {
   const changed = live.filter((r) => r.change === 'changed');
   const removed = data.items.filter((r) => r.change === 'removed');
   const fresh = live.filter(newlyAutomated);
+  const lost = live.filter(lostTest);
   return (
     <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
       <Tile label="Triggers" value={fmtNumber(live.length)} sub={`${fmtNumber(files)} load file · ${fmtNumber(live.length - files)} schedule`} />
@@ -282,7 +289,7 @@ function Totals({ data }: { data: TriggerListResponse }) {
               +{added.length} <span className="text-fg-3">·</span> ~{changed.length} <span className="text-fg-3">·</span> −{removed.length}
             </span>
           }
-          sub={`${pluralize(fresh.length, 'trigger')} newly automated`}
+          sub={`${pluralize(fresh.length, 'trigger')} newly automated${lost.length ? ` · ${lost.length} lost ${lost.length === 1 ? 'its test' : 'their tests'}` : ''}`}
           tone={fresh.length > 0 ? 'good' : undefined}
         />
       ) : scan ? (
@@ -353,6 +360,7 @@ function TriggerTable({ rows, showBranches, compare }: { rows: TriggerRow[]; sho
                 <td className="px-2 py-2.5 pr-4 whitespace-nowrap">
                   {r.change ? <span className={cn('inline-flex rounded-full border px-2 py-px text-[11px] font-medium', CHANGE_META[r.change].cls)}>{CHANGE_META[r.change].label}</span> : null}
                   {newlyAutomated(r) ? <div className="mt-1 text-[11px] text-st-passed">newly automated</div> : null}
+                  {lostTest(r) ? <div className="mt-1 text-[11px] text-st-failed">lost its test</div> : null}
                 </td>
               ) : null}
             </tr>
@@ -456,7 +464,7 @@ function Coverage({ r }: { r: TriggerRow }) {
   );
 }
 
-function NoScans() {
+function NoScans({ onScanned }: { onScanned: (branch: string) => void }) {
   const origin = typeof window !== 'undefined' ? window.location.origin : 'https://dashboard.example.com';
   const snippet = `# Run on main and on every PR branch, in each repo. Use the upload-only INGEST token.
 # Camel repo: route XML and properties
@@ -480,7 +488,7 @@ curl -fsS -X POST "${origin}/api/triggers/scan" -H "Authorization: Bearer $PTD_I
   };
   return (
     <Card>
-      <EmptyState icon={<GitCompareArrows />} title="No trigger scans yet">
+      <EmptyState icon={<GitCompareArrows />} title="No trigger scans yet" actions={<ScanBranchButton onScanned={onScanned} variant="primary" />}>
         Scan the repo with the Camel routes from CI. Each branch’s latest scan is its scope; compare a PR branch with main to see which triggers it adds and automates.
       </EmptyState>
       <CardHeader
@@ -495,6 +503,191 @@ curl -fsS -X POST "${origin}/api/triggers/scan" -H "Authorization: Bearer $PTD_I
       <CardBody>
         <pre className="overflow-x-auto rounded-lg border border-border bg-surface-2/60 p-3 font-mono text-xs leading-relaxed text-fg">{snippet}</pre>
       </CardBody>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Scan a branch from GitHub
+// ---------------------------------------------------------------------------
+
+const ROLE_KEY = 'ptd.triggers.repoRole';
+function rememberedRole(repo: string): 'routes' | 'tests' {
+  try {
+    const all = JSON.parse(localStorage.getItem(ROLE_KEY) ?? '{}') as Record<string, 'routes' | 'tests'>;
+    return all[repo] ?? (/test/i.test(repo) ? 'tests' : 'routes');
+  } catch {
+    return /test/i.test(repo) ? 'tests' : 'routes';
+  }
+}
+function rememberRole(repo: string, role: 'routes' | 'tests') {
+  try {
+    const all = JSON.parse(localStorage.getItem(ROLE_KEY) ?? '{}') as Record<string, string>;
+    localStorage.setItem(ROLE_KEY, JSON.stringify({ ...all, [repo]: role }));
+  } catch {
+    // per-browser convenience only
+  }
+}
+
+function ScanBranchButton({ onScanned, variant = 'outline' }: { onScanned: (branch: string) => void; variant?: 'outline' | 'primary' }) {
+  const gh = useTriggerGithub();
+  const [open, setOpen] = useState(false);
+  if (!gh.data?.configured) return null;
+  return (
+    <>
+      <Button size="sm" variant={variant} onClick={() => setOpen(true)}>
+        <GitBranch /> Scan a branch
+      </Button>
+      {open ? <ScanBranchDialog repos={gh.data.repos} onClose={() => setOpen(false)} onScanned={onScanned} /> : null}
+    </>
+  );
+}
+
+function ScanBranchDialog({ repos, onClose, onScanned }: { repos: string[]; onClose: () => void; onScanned: (branch: string) => void }) {
+  const id = useId();
+  const [repo, setRepo] = useState(repos[0] ?? '');
+  const [role, setRole] = useState<'routes' | 'tests'>(() => rememberedRole(repos[0] ?? ''));
+  const [branch, setBranch] = useState('main');
+  const branches = useTriggerBranches(repo || null);
+  const scan = useScanGithubBranch();
+  const submit = async () => {
+    try {
+      const res = await scan.mutateAsync({ repo, branch: branch.trim(), only: role });
+      rememberRole(repo, role);
+      toast.success(`Scanned ${repo} @ ${res.branch}`, {
+        description:
+          role === 'routes'
+            ? `${pluralize(res.total, 'trigger')} found`
+            : `${pluralize(res.testsFound, 'test')} read${res.cases ? ` · ${res.cases.newlyAutomated} cases newly automated` : ''}`,
+      });
+      onScanned(res.branch);
+      onClose();
+    } catch (e) {
+      toast.error(errorMessage(e));
+    }
+  };
+  return (
+    <Dialog
+      open
+      onOpenChange={(o) => (o ? undefined : onClose())}
+      title="Scan a branch"
+      description="Downloads the branch from GitHub and reads its Camel routes or its tests. Branches differ, so scan each one you want to see or compare."
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose} disabled={scan.isPending}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={() => void submit()} loading={scan.isPending} disabled={!repo || !branch.trim()}>
+            <GitBranch /> Scan
+          </Button>
+        </div>
+      }
+    >
+      <div className="space-y-3 p-5">
+        <Field label="Repository" htmlFor={`${id}-repo`}>
+          <Select
+            id={`${id}-repo`}
+            value={repo}
+            onValueChange={(v) => {
+              if (!v) return;
+              setRepo(v);
+              setRole(rememberedRole(v));
+            }}
+            options={repos.map((r) => ({ value: r, label: r }))}
+            className="w-full"
+          />
+        </Field>
+        <Field label="It holds" htmlFor={`${id}-role`} hint="Route copies kept as test data in the test repo are ignored">
+          <Select
+            id={`${id}-role`}
+            value={role}
+            onValueChange={(v) => v && setRole(v)}
+            options={[
+              { value: 'routes', label: 'Camel routes (scope)' },
+              { value: 'tests', label: 'pytest tests (coverage)' },
+            ]}
+            className="w-full"
+          />
+        </Field>
+        <Field label="Branch" htmlFor={`${id}-branch`} hint={branches.isError ? 'Could not list branches — type the name' : undefined}>
+          <Input id={`${id}-branch`} list={`${id}-branches`} value={branch} onChange={(e) => setBranch(e.target.value)} className="font-mono" placeholder="main" />
+          <datalist id={`${id}-branches`}>
+            {(branches.data?.branches ?? []).map((b) => (
+              <option key={b} value={b} />
+            ))}
+          </datalist>
+        </Field>
+        {scan.isPending ? <p className="text-xs text-fg-2">Downloading and scanning — a large repo can take a minute…</p> : null}
+      </div>
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// What the two branches' tests disagree on
+// ---------------------------------------------------------------------------
+
+function Divergence({ d, branch, compare }: { d: NonNullable<TriggerListResponse['divergence']>; branch: string; compare: string }) {
+  const empty = d.testsMissingHereCount + d.testsOnlyHereCount + d.keysMissingHere.length + d.keysOnlyHere.length === 0;
+  const keyList = (keys: typeof d.keysMissingHere) =>
+    keys.length === 0 ? (
+      <p className="text-xs text-fg-3">none</p>
+    ) : (
+      <ul className="space-y-0.5">
+        {keys.map((k) => (
+          <li key={k.key} className="truncate text-xs">
+            {k.testCaseId ? (
+              <Link to={`/tests/${k.testCaseId}`} className="font-mono text-fg hover:underline">
+                {k.key}
+              </Link>
+            ) : (
+              <span className="font-mono text-fg">{k.key}</span>
+            )}
+            {k.title ? <span className="text-fg-2"> — {k.title}</span> : null}
+          </li>
+        ))}
+      </ul>
+    );
+  const testList = (tests: string[], count: number) =>
+    count === 0 ? (
+      <p className="text-xs text-fg-3">none</p>
+    ) : (
+      <ul className="max-h-48 space-y-0.5 overflow-auto">
+        {tests.map((t) => (
+          <li key={t} className="truncate font-mono text-[11px] text-fg-2" title={t}>
+            {t}
+          </li>
+        ))}
+        {count > tests.length ? <li className="text-[11px] text-fg-3">+{count - tests.length} more</li> : null}
+      </ul>
+    );
+  return (
+    <Card className="mt-4">
+      <CardHeader
+        title={`Tests on ${branch} vs ${compare}`}
+        icon={<GitCompareArrows className="size-4 text-fg-3" aria-hidden />}
+        description={empty ? 'Both branches have the same tests and Xray keys.' : 'Tests and the Xray cases they name that exist on one branch and not the other.'}
+      />
+      {empty ? null : (
+        <CardBody className="grid gap-4 md:grid-cols-2">
+          <div>
+            <h3 className="mb-1 text-xs font-semibold text-st-failed">
+              On {compare}, missing on {branch}
+            </h3>
+            <p className="mb-1 text-[11px] text-fg-3">{pluralize(d.keysMissingHere.length, 'Xray case')}</p>
+            {keyList(d.keysMissingHere)}
+            <p className="mt-2 mb-1 text-[11px] text-fg-3">{pluralize(d.testsMissingHereCount, 'test')}</p>
+            {testList(d.testsMissingHere, d.testsMissingHereCount)}
+          </div>
+          <div>
+            <h3 className="mb-1 text-xs font-semibold text-st-passed">Only on {branch}</h3>
+            <p className="mb-1 text-[11px] text-fg-3">{pluralize(d.keysOnlyHere.length, 'Xray case')}</p>
+            {keyList(d.keysOnlyHere)}
+            <p className="mt-2 mb-1 text-[11px] text-fg-3">{pluralize(d.testsOnlyHereCount, 'test')}</p>
+            {testList(d.testsOnlyHere, d.testsOnlyHereCount)}
+          </div>
+        </CardBody>
+      )}
     </Card>
   );
 }

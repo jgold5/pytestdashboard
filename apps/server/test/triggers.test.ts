@@ -5,6 +5,7 @@ import { classify } from '../src/triggers/upload.js';
 import { authEnv, createTestApp, multipart, type TestApp } from './helpers/app.js';
 import { importResults } from './helpers/allure.js';
 import { makeZip } from './helpers/zip.js';
+import { startMockServer, type MockServer } from './helpers/mockServer.js';
 
 const ROUTES_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <beans xmlns="http://www.springframework.org/schema/beans">
@@ -591,6 +592,102 @@ describe('routes in the source code are the scope', () => {
     } finally {
       await t.close();
     }
+  });
+});
+
+describe('scan a branch straight from GitHub', () => {
+  const TOKEN = 'ghp_0123456789abcdefghijklmnopqrstuvwxyzAB';
+  let mock: MockServer;
+  let t: TestApp;
+  const zips: Record<string, Buffer> = {};
+  beforeEach(async () => {
+    const routes = (extra = '') => `<routes><route id="invoice-load"><from uri="file:/in?fileName=INV.TXT"/></route>${extra}</routes>`;
+    zips['acme/camel@main'] = makeZip([
+      { name: 'acme-camel-1a2b3c4/src/main/resources/billing/routes/billing.xml', data: routes() },
+      { name: 'acme-camel-1a2b3c4/README.md', data: 'hi' },
+    ]);
+    zips['acme/camel@feature/refunds'] = makeZip([
+      { name: 'acme-camel-9f8e7d6/src/main/resources/billing/routes/billing.xml', data: routes('<route id="refund-load"><from uri="file:/in?fileName=RFD.TXT"/></route>') },
+    ]);
+    zips['acme/tests@main'] = makeZip([
+      { name: 'acme-tests-5555555/src/route_test/invoice_route.py', data: '# QA-1\ndef test_invoice():\n    start("invoice-load")\n\n\ndef test_old():\n    """QA-2"""\n' },
+      { name: 'acme-tests-5555555/src/test_data/routes/copy.xml', data: routes('<route id="fake"><from uri="file:/x"/></route>') },
+    ]);
+    zips['acme/tests@feature/refunds'] = makeZip([
+      { name: 'acme-tests-6666666/src/route_test/invoice_route.py', data: '# QA-1\ndef test_invoice():\n    start("invoice-load")\n\n\ndef test_refund():\n    """QA-3"""\n    start("refund-load")\n' },
+    ]);
+    mock = await startMockServer((req) => {
+      const zb = /^\/api\/v3\/repos\/([\w.-]+)\/([\w.-]+)\/zipball\/(.+)$/.exec(req.path);
+      if (zb) {
+        if (req.headers.authorization !== `Bearer ${TOKEN}`) return { status: 401, json: { message: 'Bad credentials' } };
+        const key = `${zb[1]}/${zb[2]}@${decodeURIComponent(zb[3]!)}`;
+        if (!zips[key]) return { status: 404, json: { message: 'Not Found' } };
+        return { status: 302, headers: { location: `/_codeload/${encodeURIComponent(key)}?token=signed-secret` } };
+      }
+      const cl = /^\/_codeload\/(.+)$/.exec(req.path);
+      if (cl) {
+        // the signed download URL must not receive the API token
+        if (req.headers.authorization) return { status: 400, text: 'token forwarded' };
+        const body = zips[decodeURIComponent(cl[1]!)]!;
+        return { raw: (res) => res.writeHead(200, { 'content-type': 'application/zip', 'content-length': String(body.length) }).end(body) };
+      }
+      if (req.path === '/api/v3/repos/acme/camel/branches') return { json: [{ name: 'main' }, { name: 'feature/refunds' }] };
+      return { status: 404, json: { message: 'Not Found' } };
+    });
+    t = await createTestApp({ GITHUB_TOKEN: TOKEN, GITHUB_REPOS: 'acme/camel,acme/tests', GITHUB_API_URL: `${mock.url}/api/v3` });
+  });
+  afterEach(async () => {
+    await t.close();
+    await mock.close();
+  });
+  const scan = (repo: string, branch: string, only: 'routes' | 'tests') =>
+    t.app.inject({ method: 'POST', url: '/api/triggers/scan-github', payload: { repo, branch, only } });
+
+  it('downloads, strips the archive folder, takes the commit from it, and stores the scan', async () => {
+    expect((await t.app.inject({ url: '/api/triggers/github' })).json()).toEqual({ configured: true, repos: ['acme/camel', 'acme/tests'] });
+    expect((await t.app.inject({ url: '/api/triggers/github/branches?repo=acme/camel' })).json()).toEqual({ branches: ['main', 'feature/refunds'] });
+
+    const r1 = await scan('acme/camel', 'main', 'routes');
+    expect(r1.statusCode, r1.body).toBe(201);
+    expect(r1.json<TriggerScanResponse>()).toMatchObject({ branch: 'main', commit: '1a2b3c4', label: 'acme/camel', total: 1, files: { xml: 1, tests: 0 } });
+    // only=tests: the route copy in the test repo is not scope
+    const r2 = await scan('acme/tests', 'main', 'tests');
+    expect(r2.json<TriggerScanResponse>()).toMatchObject({ total: 0, testsFound: 2, automated: 1 });
+    await scan('acme/camel', 'feature/refunds', 'routes');
+    await scan('acme/tests', 'feature/refunds', 'tests');
+
+    const list = (await t.app.inject({ url: '/api/triggers?branch=feature%2Frefunds&compare=main' })).json<TriggerListResponse>();
+    const byId = Object.fromEntries(list.items.map((r) => [r.routeId, r]));
+    expect(byId['refund-load']).toMatchObject({ change: 'added', automatedBefore: false });
+    expect(byId['refund-load']!.coveredBy).toHaveLength(1);
+    expect(list.divergence).toMatchObject({
+      testsMissingHere: ['src/route_test/invoice_route.py::test_old'],
+      testsOnlyHere: ['src/route_test/invoice_route.py::test_refund'],
+      testsMissingHereCount: 1,
+      testsOnlyHereCount: 1,
+      keysMissingHere: [{ key: 'QA-2', title: null, testCaseId: null }],
+      keysOnlyHere: [{ key: 'QA-3', title: null, testCaseId: null }],
+    });
+    // the token never reaches the signed download URL
+    expect(mock.requests.filter((r) => r.path.startsWith('/_codeload/')).every((r) => !r.headers.authorization)).toBe(true);
+  });
+
+  it('refuses repos outside GITHUB_REPOS, bad branch names, and reports missing branches', async () => {
+    expect((await scan('evil/repo', 'main', 'routes')).json().error).toBe('repo_not_configured');
+    expect((await scan('acme/camel', '../../etc', 'routes')).statusCode).toBe(400);
+    const missing = await scan('acme/camel', 'nope', 'routes');
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json().error).toBe('branch_not_found');
+    expect(missing.body).not.toContain(TOKEN);
+  });
+
+  it('refuses a redirect to another host', async () => {
+    mock.setHandler((req) =>
+      req.path.includes('/zipball/') ? { status: 302, headers: { location: 'https://evil.example.com/x.zip' } } : { status: 404, json: {} },
+    );
+    const res = await scan('acme/camel', 'main', 'routes');
+    expect(res.statusCode).toBe(502);
+    expect(res.json().message).toMatch(/refused a redirect to evil\.example\.com/);
   });
 });
 

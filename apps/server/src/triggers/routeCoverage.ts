@@ -25,7 +25,8 @@ export interface RouteCoverage {
   branch: string;
 }
 
-let cache: { key: string; value: RouteCoverage } | null = null;
+/** Per database: scan ids only identify a scan within one database. */
+const caches = new WeakMap<Db, { key: string; value: RouteCoverage }>();
 
 export function routeCoverage(db: Db): RouteCoverage | null {
   // latest scan per branch, separately for route and test scans (light columns first)
@@ -47,7 +48,8 @@ export function routeCoverage(db: Db): RouteCoverage | null {
   const otherTests = [...tests].filter(([, id]) => id !== mainTests).map(([, id]) => id);
 
   const key = `${mainRoutesId}:${mainTests}:${otherTests.join(',')}`;
-  if (cache?.key === key) return cache.value;
+  const cached = caches.get(db);
+  if (cached?.key === key) return cached.value;
 
   const ids = [mainRoutesId, ...(mainTests ? [mainTests] : []), ...otherTests];
   const full = new Map(
@@ -69,6 +71,6 @@ export function routeCoverage(db: Db): RouteCoverage | null {
     else if ((onBranches.get(t.key)?.length ?? 0) > 0) inProgress++;
   }
   const value = { total: triggers.length, automated, inProgress, branch: mainBranch };
-  cache = { key, value };
+  caches.set(db, { key, value });
   return value;
 }

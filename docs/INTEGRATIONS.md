@@ -180,7 +180,8 @@ Recommended: a **fine-grained personal access token**.
    list in `GITHUB_REPOS`.
 4. **Repository permissions**, all **Read-only**:
    - **Pull requests**
-   - **Contents** (to read the changed files of a PR)
+   - **Contents** (to read the changed files of a PR, and to download a branch
+     when you scan it from **Triggers → Scan a branch**)
    - **Metadata** (selected automatically)
    - **Commit statuses**, and **Checks** if it's offered (to show CI status)
 5. Generate and copy the token.
