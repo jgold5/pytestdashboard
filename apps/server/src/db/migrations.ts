@@ -210,4 +210,18 @@ CREATE INDEX "pull_requests_merged_at_idx" ON "pull_requests" ("merged_at");
   /* v3 — per-attempt statuses of retried results (retry-aware flakiness) */ `
 ALTER TABLE "test_results" ADD COLUMN "attempts" text;
 `,
+  /* v4 — Camel route trigger scans (one per branch upload) */ `
+CREATE TABLE "trigger_scans" (
+	"id" integer PRIMARY KEY AUTOINCREMENT NOT NULL,
+	"branch" text NOT NULL,
+	"commit_sha" text,
+	"label" text,
+	"scanned_at" text NOT NULL,
+	"triggers" text DEFAULT '[]' NOT NULL,
+	"tests_found" integer DEFAULT 0 NOT NULL,
+	"other_routes" integer DEFAULT 0 NOT NULL,
+	"files" text DEFAULT '{}' NOT NULL
+);
+CREATE INDEX "trigger_scans_branch_idx" ON "trigger_scans" ("branch","scanned_at");
+`,
 ];

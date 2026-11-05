@@ -5,6 +5,7 @@
  */
 import { sql } from 'drizzle-orm';
 import { index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import type { Trigger, TriggerScanSummary } from '@ptd/shared';
 import type { AutomatedVia, AutomationStatus, BugSeverity, BugStatus, Priority, ResultChange, ResultStatus, TriageCategory } from '@ptd/shared';
 
 export type CaseSource = 'manual' | 'spreadsheet' | 'allure' | 'jira';
@@ -289,3 +290,20 @@ export type TestResultRow = typeof testResults.$inferSelect;
 export type NoteRow = typeof notes.$inferSelect;
 export type PullRequestRow = typeof pullRequests.$inferSelect;
 export type BugRow = typeof bugs.$inferSelect;
+
+/** One Camel trigger scan of a branch (POST /api/triggers/scan). The latest per branch is that branch's scope. */
+export const triggerScans = sqliteTable(
+  'trigger_scans',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    branch: text('branch').notNull(),
+    commit: text('commit_sha'),
+    label: text('label'),
+    scannedAt: text('scanned_at').notNull(),
+    triggers: text('triggers', { mode: 'json' }).$type<Trigger[]>().notNull().default(sql`'[]'`),
+    testsFound: integer('tests_found').notNull().default(0),
+    otherRoutes: integer('other_routes').notNull().default(0),
+    files: text('files', { mode: 'json' }).$type<TriggerScanSummary['files']>().notNull().default(sql`'{}'`),
+  },
+  (t) => [index('trigger_scans_branch_idx').on(t.branch, t.scannedAt)],
+);

@@ -1184,3 +1184,109 @@ export const TRIAGE_LABELS: Record<TriageCategory, string> = {
   flaky: 'Flaky',
   known_issue: 'Known issue',
 };
+
+// ---------------------------------------------------------------------------
+// Camel route triggers (scope of what can be automated, scanned from the repo)
+// ---------------------------------------------------------------------------
+
+/**
+ * What starts a Camel route: a file landing in a folder (`file:`, `ftp:`, `sftp:`,
+ * `ftps:`), or a schedule (`quartz:`, `cron:`, `timer:`, `scheduler:`).
+ */
+export const TriggerKind = z.enum(['file', 'schedule']);
+export type TriggerKind = z.infer<typeof TriggerKind>;
+
+export const TriggerCoverage = z.object({
+  /** pytest node id, e.g. `tests/routes/test_invoice.py::TestLoad::test_loads_file`. */
+  test: z.string(),
+  /** The label/marker value that linked the test to the trigger. */
+  via: z.string(),
+  /** Dashboard test case with the matching Allure full name, when one exists. */
+  testCaseId: z.number().int().nullable(),
+});
+export type TriggerCoverage = z.infer<typeof TriggerCoverage>;
+
+export const Trigger = z.object({
+  /** Stable identity across branches: the route id, else source file + endpoint. */
+  key: z.string(),
+  routeId: z.string().nullable(),
+  kind: TriggerKind,
+  /** Endpoint scheme: file, sftp, quartz, cron, … */
+  scheme: z.string(),
+  /** The `from` URI as written. */
+  uri: z.string(),
+  /** With property placeholders filled in (placeholders whose value differs per file are left as is). */
+  resolvedUri: z.string(),
+  /** file triggers: folder being watched. */
+  directory: z.string().nullable(),
+  /** file triggers: the file name pattern (`include`, `antInclude` or `fileName`). */
+  filePattern: z.string().nullable(),
+  /** schedule triggers: cron expression, or period / delay for timer and scheduler. */
+  schedule: z.string().nullable(),
+  sourceFile: z.string(),
+  line: z.number().int(),
+  /** Placeholders that could not be resolved to a single value (missing, or different per properties file). */
+  unresolved: z.array(
+    z.object({ key: z.string(), values: z.array(z.object({ file: z.string(), value: z.string() })) }),
+  ),
+  coveredBy: z.array(TriggerCoverage),
+});
+export type Trigger = z.infer<typeof Trigger>;
+
+/** `POST /api/triggers/scan` multipart fields (editor or ingest token); the files are a .zip of the repo or loose files. */
+export const TriggerScanFields = z.object({
+  branch: trimmed(LIMITS.shortTextMax).min(1),
+  commit: nullableShort.optional(),
+  /** Free text shown with the scan, e.g. `PR #123`. */
+  label: nullableShort.optional(),
+});
+export type TriggerScanFields = z.infer<typeof TriggerScanFields>;
+
+export const TriggerScanSummary = z.object({
+  id: z.number().int(),
+  branch: z.string(),
+  commit: z.string().nullable(),
+  label: z.string().nullable(),
+  scannedAt: z.string(),
+  total: z.number().int(),
+  automated: z.number().int(),
+  /** Route XML / properties / pytest files read. */
+  files: z.object({ xml: z.number().int(), properties: z.number().int(), tests: z.number().int() }),
+  /** Tests found in the pytest files (whether or not they cover a trigger). */
+  testsFound: z.number().int(),
+  /** Routes started by something other than a file or a schedule (jms, direct, rest…): not counted as triggers. */
+  otherRoutes: z.number().int(),
+});
+export type TriggerScanSummary = z.infer<typeof TriggerScanSummary>;
+
+export const TriggerScanResponse = TriggerScanSummary.extend({ warnings: z.array(z.string()) });
+export type TriggerScanResponse = z.infer<typeof TriggerScanResponse>;
+
+export const TriggerChange = z.enum(['added', 'changed', 'removed', 'unchanged']);
+export type TriggerChange = z.infer<typeof TriggerChange>;
+
+export const TriggerRow = Trigger.extend({
+  /** Branches whose latest scan has this trigger. */
+  branches: z.array(z.string()),
+  /** Only with `compare`: vs the same trigger on the compare branch. */
+  change: TriggerChange.nullable(),
+  /** Only with `compare`: whether it was automated on the compare branch. */
+  automatedBefore: z.boolean().nullable(),
+});
+export type TriggerRow = z.infer<typeof TriggerRow>;
+
+/** `GET /api/triggers` — `branch` omitted ⇒ every branch's latest scan merged. */
+export const TriggerQuery = z.object({
+  branch: trimmed(LIMITS.shortTextMax).min(1).optional(),
+  compare: trimmed(LIMITS.shortTextMax).min(1).optional(),
+});
+export type TriggerQuery = z.infer<typeof TriggerQuery>;
+
+export const TriggerListResponse = z.object({
+  /** Latest scan of every branch, newest first. */
+  branches: z.array(TriggerScanSummary),
+  branch: z.string().nullable(),
+  compare: z.string().nullable(),
+  items: z.array(TriggerRow),
+});
+export type TriggerListResponse = z.infer<typeof TriggerListResponse>;

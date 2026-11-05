@@ -40,7 +40,7 @@ const EnvSchema = z.object({
   DATA_DIR: z.string().default('./data'),
   DASHBOARD_TOKEN: optionalStr,
   VIEWER_TOKEN: optionalStr,
-  /** Optional CI token: may only POST /api/runs/import and /api/runs/import-history. */
+  /** Optional CI token: may only POST /api/runs/import, /api/runs/import-history and /api/triggers/scan. */
   INGEST_TOKEN: optionalStr,
   SESSION_SECRET: optionalStr,
   // Capped at 30 days (stateless sessions can only be revoked by rotating SESSION_SECRET / tokens).

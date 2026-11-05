@@ -191,6 +191,36 @@ curl --fail-with-body -sS -X POST "$DASHBOARD_URL/api/runs/import-history" \
   -F "files=@history.zip;type=application/zip"
 ```
 
+### Camel route triggers
+
+**Triggers** lists every Camel route that starts from a load file (`file:`, `ftp:`,
+`ftps:`, `sftp:`, `smb:`) or a schedule (`quartz:`, `cron:`, `timer:`, `scheduler:`),
+and which of them have a test. CI uploads the repo with the routes, on `main` and on
+every PR branch:
+
+```bash
+git ls-files '*.xml' '*.properties' '*test_*.py' '*_test.py' | zip -q -@ repo-scan.zip
+curl --fail-with-body -sS -X POST "$DASHBOARD_URL/api/triggers/scan" \
+  -H "Authorization: Bearer $DASHBOARD_INGEST_TOKEN" \
+  --form-string "branch=$BRANCH" --form-string "commit=$COMMIT" \
+  -F "files=@repo-scan.zip;type=application/zip"
+```
+
+- Routes are read from Camel XML: `<route id>` with its `<from uri>` (or
+  `<from ref>` pointing at an `<endpoint>`).
+- `{{key}}` and `${key}` placeholders are filled in from every `.properties` file.
+  When a key has different values in different files (one file per environment),
+  the page shows the placeholder and lists each value. It doesn't pick one.
+- A test covers a trigger when a string in its decorators names the route ID, the
+  schedule's name, or a file the route would pick up (for example
+  `INV_20260101.csv` for `include=INV_.*\.csv`). That includes Allure labels,
+  pytest markers and `allure.dynamic.*` calls in the test. Strings in
+  `parametrize` are not counted.
+- **All branches** merges every branch's latest scan into one list. Pick a branch
+  and **Compare with** `main` to see what a PR adds, changes or removes, and which
+  triggers it newly automates.
+- Scans of a merged branch can be removed with `DELETE /api/triggers/branches/<branch>`.
+
 ### Run groups
 
 Every run belongs to a **run group**: a set of tests that are meant to be compared

@@ -8,6 +8,7 @@ import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
 import { LIMITS } from '@ptd/shared';
+import { triggerRoutes } from './routes/triggers.js';
 import { registerAuth, registerRouteAccess } from './auth/plugin.js';
 import type { AppConfig } from './config.js';
 import { openDatabase, type DbHandle } from './db/client.js';
@@ -154,6 +155,7 @@ export async function buildApp(opts: BuildOptions): Promise<BuiltApp> {
   noteRoutes(app, deps);
   integrationRoutes(app, deps);
   bugRoutes(app, deps);
+  triggerRoutes(app, deps, opts.zipLimits);
 
   const indexHtml = path.join(config.webDist, 'index.html');
   const serveSpa = config.isProduction && fs.existsSync(indexHtml);
