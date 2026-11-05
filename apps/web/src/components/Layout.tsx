@@ -13,6 +13,7 @@ import {
   Search,
   Upload,
   X,
+  Zap,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { useLogout, useSession } from '../api/hooks';
@@ -27,6 +28,7 @@ const NAV = [
   { to: '/', label: 'Overview', icon: LayoutDashboard, end: true },
   { to: '/tests', label: 'Test cases', icon: ListChecks },
   { to: '/pulls', label: 'Pull requests', icon: GitPullRequest },
+  { to: '/triggers', label: 'Triggers', icon: Zap },
   { to: '/runs', label: 'Runs & history', icon: CirclePlay },
   { to: '/bugs', label: 'Bugs', icon: Bug },
   { to: '/import', label: 'Import', icon: Upload },

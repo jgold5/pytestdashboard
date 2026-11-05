@@ -162,6 +162,115 @@ Results are linked to test cases in this order:
 When nothing matches, a new case is created automatically. Retries in one upload
 are deduplicated.
 
+### Run history (allure-history / allureparser)
+
+**Import → Run history** (or `POST /api/runs/import-history`, which also accepts the
+`INGEST_TOKEN`) imports many runs in one upload. It reads uploads the same way
+[allure-history](https://github.com/jgold5/allureparser) does:
+
+- **Snapshots** (`*.snapshot.json.gz`, written by `allure-history snapshot`): each
+  snapshot is one run, named after its label and linked to its build URL. Snapshots
+  hold only the failure location, not the full stack trace.
+- **Several allure-results folders** (for example `ci/build-12/allure-results/`, as a
+  folder or a `.zip`): each folder is one run, named after `executor.json`'s
+  `buildName`, or after the folder if there is none.
+- **One allure-results folder that collected many runs**: runs are recovered from the
+  host and pytest process ID that allure-pytest records on every result. The workers
+  of a `pytest -n` run count as one run.
+
+Runs the dashboard already has (same group, branch, start, stop and counts) are
+skipped, so you can upload the same history folder again safely. Runs keep each
+retry's status, so a test that fails and then passes on rerun counts towards
+flakiness.
+
+```bash
+cd history && zip -qr ../history.zip . && cd ..
+curl --fail-with-body -sS -X POST "$DASHBOARD_URL/api/runs/import-history" \
+  -H "Authorization: Bearer $DASHBOARD_INGEST_TOKEN" \
+  --form-string "runGroup=tests/api" --form-string "branch=main" \
+  -F "files=@history.zip;type=application/zip"
+```
+
+### Camel route triggers
+
+**Triggers** lists every Camel route that starts from a load file (`file:`, `ftp:`,
+`ftps:`, `sftp:`, `smb:`) or a schedule (`quartz:`, `cron:`, `timer:`, `scheduler:`),
+and which of them have a test. The routes and the tests can be in different repos.
+CI in each repo uploads a scan, on `main` and on every PR branch:
+
+```bash
+# Camel repo: route XML and properties
+git ls-files '*.xml' '*.properties' | zip -q -@ scan.zip
+curl --fail-with-body -sS -X POST "$DASHBOARD_URL/api/triggers/scan" \
+  -H "Authorization: Bearer $DASHBOARD_INGEST_TOKEN" \
+  --form-string "branch=$BRANCH" --form-string "commit=$COMMIT" --form-string "only=routes" \
+  -F "files=@scan.zip;type=application/zip"
+
+# Test repo: pytest files (only=tests ignores route copies kept there as test data)
+git ls-files '*test_*.py' '*_test.py' | zip -q -@ scan.zip
+curl --fail-with-body -sS -X POST "$DASHBOARD_URL/api/triggers/scan" \
+  -H "Authorization: Bearer $DASHBOARD_INGEST_TOKEN" \
+  --form-string "branch=$BRANCH" --form-string "commit=$COMMIT" --form-string "only=tests" \
+  -F "files=@scan.zip;type=application/zip"
+```
+
+- **Branches across two repos.** The page joins each branch's latest route scan
+  with its latest test scan. When a branch has only one of the two, the other comes
+  from the default branch (`main`, `master` or `develop`). So a PR in the test repo is
+  shown against `main`'s routes, and a PR in the Camel repo against `main`'s tests. The
+  page says where each came from.
+- **Reading the routes.** Routes are read from Camel XML: `<route id>` with its
+  `<from uri>` (or `<from ref>` pointing at an `<endpoint>`). XML under `src/test/` is
+  skipped, because it holds test fixtures. Route ids are scoped per module, meaning
+  the folder under `resources/`, so the same id in two modules counts as two routes.
+- **Placeholders.** `{{key}}` and `${key}` are filled in from the `.properties` file
+  nearest to the route: the module's own file first, then shared ones higher up.
+  When a key still has different values in different files, the page shows the
+  placeholder and lists each value. It doesn't pick one.
+- **Trigger files.** A route's `doneFileName` is shown as its trigger file: the file
+  that has to exist before the data file is picked up.
+- **Several triggers in one route.** Each one counts separately:
+  - each `<from>`, when a route has more than one;
+  - each pattern, when `include=(INV|CRN)_.*` or `antInclude=INV_*.csv,CRN_*.csv` lists several;
+  - each `<when>`/`<filter>` that tests the file name (`${file:name} starts with 'INV_'`,
+    `${header.CamelFileName} regex '…'`), shown with the job it sends the file to.
+- **What counts as a test covering a trigger.** One of the test's strings has to name
+  the trigger's route ID, its schedule, the job a `<when>` sends files to
+  (`direct:invoiceJob`), its trigger file, or a file it would pick up (for example
+  `INV_20260101.csv` for `include=INV_.*\.csv`). The strings are read from:
+  - decorators: Allure labels and pytest markers;
+  - `pytestmark`;
+  - string literals in the test body, such as a trigger file the test drops.
+
+  `parametrize` values don't count. The page shows which string made each match.
+- **All branches** merges every branch's latest scan into one list. Pick a branch and
+  **Compare with** `main` to see what a PR adds, changes or removes, and which triggers
+  it newly automates.
+- **Cleaning up.** Scans of a merged branch can be removed with
+  `DELETE /api/triggers/branches/<branch>`.
+
+To share how your routes and tests are written without sharing the code, run
+[`tools/distill_camel_repo.py`](tools/distill_camel_repo.py) (Python 3.9+, no
+packages) over both repos in one go:
+
+```bash
+python3 tools/distill_camel_repo.py /path/to/camel-repo /path/to/test-repo -o distilled --zip
+```
+
+It writes a copy that keeps only:
+- the route inputs and their file-name `<choice>` branches;
+- the properties those use;
+- each test's decorators, `pytestmark`, and the short strings in its body.
+
+Every name and value is replaced by a generic word, and numbers by stand-ins of the
+same length. The replacement is the same in every file and both repos, so tests
+still line up with their routes. Passwords and user names in URIs become `REDACTED`.
+`distilled/distill-report.md` counts which trigger shapes the repo uses.
+
+Share `distilled.zip`, but keep `distilled.map.json` (original → generic) to yourself.
+`--map distilled.map.json` makes a later run reuse the same renaming. The zip can be
+uploaded to `/api/triggers/scan` as is.
+
 ### Run groups
 
 Every run belongs to a **run group**: a set of tests that are meant to be compared

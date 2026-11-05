@@ -579,7 +579,14 @@ function ResultsTab({ r }: { r: Run }) {
                   </td>
                   <td className="px-2 py-2">
                     <ResultBadge status={res.status} />
-                    {res.retries > 0 ? <div className="mt-0.5 text-[10px] text-fg-3">{pluralize(res.retries, 'retry', 'retries')}</div> : null}
+                    {res.retries > 0 ? (
+                      <div className="mt-0.5 text-[10px] text-fg-3" title={res.attempts ? `Attempts: ${res.attempts.join(' → ')}` : undefined}>
+                        {pluralize(res.retries, 'retry', 'retries')}
+                        {res.attempts?.includes('passed') && res.attempts.some((st) => st === 'failed' || st === 'broken') ? (
+                          <span className="text-st-broken"> · flaky</span>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </td>
                   <td className="max-w-0 px-2 py-2">
                     <Link to={`/tests/${res.testCaseId}`} className="block truncate text-fg hover:underline" title={res.fullName ?? res.name}>

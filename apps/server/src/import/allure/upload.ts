@@ -10,10 +10,10 @@ import path from 'node:path';
 import { finished, pipeline } from 'node:stream/promises';
 import type { Readable } from 'node:stream';
 import type { FastifyRequest } from 'fastify';
-import { RunImportFields } from '@ptd/shared';
+import { HistoryImportFields, RunImportFields } from '@ptd/shared';
 import { badRequest, parseWith } from '../../errors.js';
 import { baseName, isZipMagic, readZip, type ZipLimits, DEFAULT_ZIP_LIMITS } from '../zip.js';
-import { AllureBundle, MAX_JSON_BYTES, isAllowedAllureFile } from './parse.js';
+import { AllureBundle, MAX_JSON_BYTES, isAllowedAllureFile, type BundleOptions } from './parse.js';
 
 const FIELD_NAMES = new Set(['name', 'branch', 'commit', 'buildUrl', 'runGroup']);
 
@@ -31,6 +31,22 @@ async function readCapped(stream: Readable, cap: number): Promise<Buffer | null>
   return over ? null : Buffer.concat(chunks, size);
 }
 
+/** Folder part of an upload path ('' for top level), normalized and capped. */
+export function dirName(name: string): string {
+  const norm = name.replace(/\\/g, '/');
+  const cut = norm.lastIndexOf('/');
+  return cut > 0 ? norm.slice(0, cut).replace(/^\.?\/+/, '').slice(-300) : '';
+}
+
+/**
+ * Multipart files may name their folder in the field name (`file:<folder>`): browsers
+ * strip paths from file names, but a multi-run history upload needs to know which
+ * results came from which allure-results folder.
+ */
+function partDir(fieldname: string): string {
+  return fieldname.startsWith('file:') ? dirName(`${fieldname.slice(5)}/x`) : '';
+}
+
 async function hasZipMagic(file: string): Promise<boolean> {
   const fh = await open(file, 'r');
   try {
@@ -46,7 +62,27 @@ export async function collectAllureUpload(
   req: FastifyRequest,
   zipLimits: ZipLimits = DEFAULT_ZIP_LIMITS,
 ): Promise<{ bundle: AllureBundle; fields: RunImportFields }> {
-  const bundle = new AllureBundle();
+  const { bundle, rawFields } = await collectAllureFiles(req, zipLimits);
+  return { bundle, fields: parseWith(RunImportFields, rawFields) };
+}
+
+/** Upload for `POST /api/runs/import-history`: also accepts allure-history snapshots, and keeps folders apart. */
+export async function collectHistoryUpload(
+  req: FastifyRequest,
+  zipLimits: ZipLimits = DEFAULT_ZIP_LIMITS,
+  maxResults?: number,
+): Promise<{ bundle: AllureBundle; fields: HistoryImportFields }> {
+  const { bundle, rawFields } = await collectAllureFiles(req, zipLimits, { snapshots: true, maxResults });
+  return { bundle, fields: parseWith(HistoryImportFields, rawFields) };
+}
+
+async function collectAllureFiles(
+  req: FastifyRequest,
+  zipLimits: ZipLimits,
+  opts: BundleOptions = {},
+): Promise<{ bundle: AllureBundle; rawFields: Record<string, string> }> {
+  const bundle = new AllureBundle(opts);
+  const allowed = (basename: string) => isAllowedAllureFile(basename, opts);
   const rawFields: Record<string, string> = {};
   let tmpDir: string | null = null;
   let zipPath: string | null = null;
@@ -69,7 +105,7 @@ export async function collectAllureUpload(
         await pipeline(part.file, createWriteStream(zipPath, { mode: 0o600 }));
         continue;
       }
-      if (!isAllowedAllureFile(name)) {
+      if (!allowed(name)) {
         await finished(part.file.resume());
         bundle.skippedFiles++;
         continue;
@@ -81,7 +117,7 @@ export async function collectAllureUpload(
         continue;
       }
       individualFiles++;
-      bundle.addFile(name, data);
+      bundle.addFile(name, data, partDir(part.fieldname));
     }
 
     if (zipPath) {
@@ -89,8 +125,8 @@ export async function collectAllureUpload(
       if (!(await hasZipMagic(zipPath))) throw badRequest('The uploaded .zip is not a valid zip archive');
       const res = await readZip(
         { path: zipPath },
-        (entryName) => isAllowedAllureFile(baseName(entryName)),
-        (entryName, data) => bundle.addFile(baseName(entryName), data),
+        (entryName) => allowed(baseName(entryName)),
+        (entryName, data) => bundle.addFile(baseName(entryName), data, dirName(entryName)),
         zipLimits,
       );
       bundle.skippedFiles += res.skipped;
@@ -99,5 +135,5 @@ export async function collectAllureUpload(
     if (tmpDir) await rm(tmpDir, { recursive: true, force: true });
   }
 
-  return { bundle, fields: parseWith(RunImportFields, rawFields) };
+  return { bundle, rawFields };
 }

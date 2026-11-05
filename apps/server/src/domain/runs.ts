@@ -200,6 +200,7 @@ function serializeResult(r: typeof testResults.$inferSelect, key: string): TestR
     suggestedTriage: r.status === 'failed' || r.status === 'broken' ? suggestTriage(r.message) : null,
     change: r.change,
     retries: r.retries,
+    attempts: r.attempts ?? null,
     parameters: r.parameters,
     labels: r.labels,
   };

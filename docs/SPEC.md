@@ -45,6 +45,10 @@ Single deployable: `pnpm build && pnpm start` → one Node process on `PORT` (de
 | POST | `/api/test-cases/import/commit` | `ImportCommitRequest` | `ImportCommitResponse` |
 | GET | `/api/runs` | `RunQuery` | `RunList` (newest first) |
 | POST | `/api/runs/import` | multipart (see `RunImportFields`) | `RunImportResponse` (201) |
+| POST | `/api/triggers/scan` | multipart: repo .zip or files (Camel XML, .properties, pytest files) + `TriggerScanFields` | `TriggerScanResponse` (201) |
+| GET | `/api/triggers` | `TriggerQuery` (`branch`, `compare`) | `TriggerListResponse` |
+| DELETE | `/api/triggers/branches/:branch` | — | 204 |
+| POST | `/api/runs/import-history` | multipart: allure-history snapshots and/or results folders (see `HistoryImportFields`) | `HistoryImportResponse` (201) |
 | GET | `/api/runs/:id` | – | `Run` |
 | PATCH | `/api/runs/:id` | `RunUpdate` | `Run` (re-links baselines if runGroup/branch change) |
 | DELETE | `/api/runs/:id` | – | 204 |
@@ -142,7 +146,7 @@ Links come from the sync (R2-03 cap of 50 links per PR applies) and are replaced
 - Jira sync (integrations engineer): for bugs with jiraKey, fetch `status, statusCategory, resolutiondate, assignee, summary, priority` in batches (JQL `key in (...)`, ≤ 100 per call) → status mapping by statusCategory (new → open, indeterminate → in_progress, done → resolved, unless resolution is Won't Do/Won't Fix/Duplicate → wont_fix), severity from priority (Highest/Blocker→critical, High→major, Medium→minor, Low/Lowest→trivial). Also pull Xray Test issues' linked defects (issuelinks of type "Defect"/"Tests"/"is blocked by" where linked issue type = Bug) → upsert bugs and link to the test case.
 
 ### Flakiness
-`flakiness` = per run group: status flips (passed↔failed/broken, ignoring skipped) across that group's last 10 executed results for the case / max(1, n−1); the case's flakiness = max over groups. `flakyOnly` = flakiness ≥ 0.3.
+`flakiness` = per run group: status flips (passed↔failed/broken, ignoring skipped) across that group's last 10 executed results for the case / max(1, n−1), where every attempt of a retried result counts as an executed result (so fail-then-pass on rerun is a flip, as in allure-history); the case's flakiness = max over groups. `flakyOnly` = flakiness ≥ 0.3.
 
 ### Triage
 A case's `triage` = triage of its newest note with non-null triage. "Untriaged failure" = last result failed/broken AND (no triage OR newest triage note older than that result's run).
@@ -166,7 +170,7 @@ Credentials come **only** from env vars. The UI can trigger a sync and see statu
 ### Two sides: Workspace (internal) vs Report (management)
 - **Workspace** = everything operational (cases, triage, notes, runs, PRs, imports, integrations).
 - **Report** = presentation-grade rollup for management: `GET /api/report` returns aggregates only (no notes text, traces, messages, author names). Projection: weeklyVelocity = (automated_end − automated_start) / (periodDays/7) from coverage snapshots; remainingToGoal = ceil(targetRate × (total − notAutomatable)) − automated (min 0); projectedGoalDate = today + remaining/velocity weeks; status vs targetDate: projected ≤ target − 14d → ahead; ≤ target → on_track; ≤ target + 30d → at_risk; else behind (or behind if velocity ≤ 0 and remaining > 0).
-- **Roles**: `DASHBOARD_TOKEN` → role `editor` (everything). Optional `VIEWER_TOKEN` (≥ 32 chars, must differ) → role `viewer`, which may ONLY call: health, auth/*, `GET /api/report`, `GET /api/settings`. Every other route returns 403 for viewers. Role is embedded in the signed session cookie and re-checked server-side on every request (never trust the client). Bearer tokens map to roles the same way. Optional `INGEST_TOKEN` (≥ 32 chars, distinct) → bearer-only role `ingest`, which may ONLY call `POST /api/runs/import` (and health); it cannot log into the UI. CI pipelines should use it instead of the editor token.
+- **Roles**: `DASHBOARD_TOKEN` → role `editor` (everything). Optional `VIEWER_TOKEN` (≥ 32 chars, must differ) → role `viewer`, which may ONLY call: health, auth/*, `GET /api/report`, `GET /api/settings`. Every other route returns 403 for viewers. Role is embedded in the signed session cookie and re-checked server-side on every request (never trust the client). Bearer tokens map to roles the same way. Optional `INGEST_TOKEN` (≥ 32 chars, distinct) → bearer-only role `ingest`, which may ONLY call `POST /api/runs/import`, `POST /api/runs/import-history` and `POST /api/triggers/scan` (and health); it cannot log into the UI. CI pipelines should use it instead of the editor token.
 
 ## Security requirements (non-negotiable)
 1. **Auth**: env `DASHBOARD_TOKEN` (shared secret, ≥ 32 chars). If set, every `/api/*` route except health/session/login requires either `Authorization: Bearer <token>` (for CI uploads) or a valid session cookie. Login compares with `crypto.timingSafeEqual` (hash both sides first to equalize length), is rate-limited (e.g. 10/min/IP), and sets a signed, `httpOnly`, `SameSite=Strict`, `Secure` (in production), `Path=/` cookie with expiry (default 7d); sessions are stateless HMAC-signed with `SESSION_SECRET` and include issued-at. When `NODE_ENV=production` the server **refuses to start** without `DASHBOARD_TOKEN` and `SESSION_SECRET` (≥ 32 chars). In dev without a token, auth is disabled and a loud warning is logged.

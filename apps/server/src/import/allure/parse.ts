@@ -3,6 +3,7 @@
  * folder upload) into a parsed bundle. Never throws on bad content: problems
  * become warnings.
  */
+import { gunzipSync } from 'node:zlib';
 import { z } from 'zod';
 import { LIMITS, type ResultStatus } from '@ptd/shared';
 import type { NameValue } from '../../db/schema.js';
@@ -21,13 +22,20 @@ export const MAX_STORED_BYTES_PER_IMPORT = 256 * 1024 * 1024;
 const MAX_WARNINGS = 100;
 
 const RESULT_RE = /-result\.json$/i;
+/** allure-history (allureparser) snapshot: gzipped JSON of one run's results. */
+export const SNAPSHOT_RE = /\.snapshot\.json\.gz$/i;
+/** Decompressed size cap for one snapshot (a 3,000-test run is ~1 MB). */
+export const MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024;
+const SNAPSHOT_FORMAT = 'allure-history-snapshot';
+const SNAPSHOT_MAX_VERSION = 2;
 const CONTAINER_RE = /-container\.json$/i;
 const IGNORED_KNOWN = new Set(['categories.json']);
 
 /** Basenames we accept in an upload (everything else is ignored without reading). */
-export function isAllowedAllureFile(basename: string): boolean {
+export function isAllowedAllureFile(basename: string, opts: { snapshots?: boolean } = {}): boolean {
   return (
     RESULT_RE.test(basename) ||
+    (opts.snapshots === true && SNAPSHOT_RE.test(basename)) ||
     CONTAINER_RE.test(basename) ||
     basename === 'environment.properties' ||
     basename === 'executor.json' ||
@@ -50,6 +58,26 @@ export interface ParsedResult {
   labels: NameValue[];
   parameters: NameValue[];
   links: Array<{ name: string | null; url: string | null; type: string | null }>;
+  /** Folder of the file inside the upload ('' = top level); used to split multi-run uploads. */
+  source?: string;
+  /** 'host:pid' of the pytest process that produced the result, when recorded. */
+  session?: string | null;
+}
+
+/** One allure-history snapshot = one run. */
+export interface SnapshotRun {
+  file: string;
+  label: string;
+  order: number | null;
+  url: string | null;
+  start: number | null;
+  results: ParsedResult[];
+}
+
+export interface BundleOptions {
+  /** Accept allure-history `*.snapshot.json.gz` files. */
+  snapshots?: boolean;
+  maxResults?: number;
 }
 
 export interface Executor {
@@ -60,13 +88,25 @@ export interface Executor {
 
 export class AllureBundle {
   readonly results: ParsedResult[] = [];
+  readonly snapshots: SnapshotRun[] = [];
   environment: Record<string, string> = {};
   executor: Executor | null = null;
+  /** executor.json / environment.properties per folder of the upload. */
+  readonly executors = new Map<string, Executor>();
+  readonly environments = new Map<string, Record<string, string>>();
+  private readonly acceptSnapshots: boolean;
+  private readonly maxResults: number;
+  private resultCount = 0;
   skippedFiles = 0;
   private readonly warningList: string[] = [];
   private droppedWarnings = 0;
   /** Estimated bytes that would be stored for the parsed results. */
   storedBytes = 0;
+
+  constructor(opts: BundleOptions = {}) {
+    this.acceptSnapshots = opts.snapshots === true;
+    this.maxResults = opts.maxResults ?? MAX_RESULTS_PER_IMPORT;
+  }
 
   get warnings(): string[] {
     return this.droppedWarnings > 0
@@ -79,18 +119,21 @@ export class AllureBundle {
     else this.droppedWarnings++;
   }
 
-  /** Add one file by its basename. */
-  addFile(basename: string, data: Buffer): void {
-    if (RESULT_RE.test(basename)) return this.addResult(basename, data);
+  /** Add one file by its basename; `dir` is its folder inside the upload. */
+  addFile(basename: string, data: Buffer, dir = ''): void {
+    if (RESULT_RE.test(basename)) return this.addResult(basename, data, dir);
+    if (this.acceptSnapshots && SNAPSHOT_RE.test(basename)) return this.addSnapshot(dir ? `${dir}/${basename}` : basename, data);
     if (basename === 'environment.properties') {
       if (data.length > MAX_PROPERTIES_BYTES) {
         this.warn('environment.properties: file too large, ignored');
         return;
       }
-      this.environment = { ...this.environment, ...parseProperties(data.toString('utf8')) };
+      const props = parseProperties(data.toString('utf8'));
+      this.environment = { ...this.environment, ...props };
+      this.environments.set(dir, { ...this.environments.get(dir), ...props });
       return;
     }
-    if (basename === 'executor.json') return this.addExecutor(data);
+    if (basename === 'executor.json') return this.addExecutor(data, dir);
     // containers, categories, attachments: accepted but not used in v1
     this.skippedFiles++;
   }
@@ -108,7 +151,7 @@ export class AllureBundle {
     }
   }
 
-  private addExecutor(data: Buffer): void {
+  private addExecutor(data: Buffer, dir: string): void {
     const json = this.parseJson('executor.json', data);
     if (json === undefined) return;
     const parsed = RawExecutor.safeParse(json);
@@ -121,9 +164,92 @@ export class AllureBundle {
       buildName: str(parsed.data.buildName, LIMITS.shortTextMax),
       buildUrl: str(parsed.data.buildUrl, LIMITS.urlMax),
     };
+    this.executors.set(dir, this.executor);
   }
 
-  private addResult(basename: string, data: Buffer): void {
+  /** Count a result against the per-import caps (throws 413 when exceeded). */
+  private admit(r: ParsedResult): void {
+    if (++this.resultCount > this.maxResults) {
+      throw new AppError(413, 'too_many_results', `An import may contain at most ${this.maxResults} results`);
+    }
+    this.storedBytes += estimateBytes(r);
+    if (this.storedBytes > MAX_STORED_BYTES_PER_IMPORT) {
+      throw new AppError(413, 'import_too_large', 'This import would store too much data — split it into smaller uploads');
+    }
+  }
+
+  private addSnapshot(file: string, data: Buffer): void {
+    let json: unknown;
+    try {
+      json = JSON.parse(gunzipSync(data, { maxOutputLength: MAX_SNAPSHOT_BYTES }).toString('utf8')) as unknown;
+    } catch {
+      this.warn(`${file}: not a readable snapshot (bad gzip/JSON or too large), skipped`);
+      this.skippedFiles++;
+      return;
+    }
+    const parsed = RawSnapshot.safeParse(json);
+    if (!parsed.success || parsed.data.format !== SNAPSHOT_FORMAT) {
+      this.warn(`${file}: not an allure-history snapshot, skipped`);
+      this.skippedFiles++;
+      return;
+    }
+    const version = parsed.data.version;
+    if (typeof version !== 'number' || !Number.isInteger(version) || version > SNAPSHOT_MAX_VERSION) {
+      this.warn(`${file}: unsupported snapshot version ${String(version)}, skipped`);
+      this.skippedFiles++;
+      return;
+    }
+    const base = file.slice(file.lastIndexOf('/') + 1).replace(SNAPSHOT_RE, '');
+    const snap: SnapshotRun = {
+      file,
+      label: str(parsed.data.label, LIMITS.shortTextMax) ?? base.slice(0, LIMITS.shortTextMax),
+      order: buildOrder(parsed.data.order),
+      url: str(parsed.data.url, LIMITS.urlMax),
+      start: num(parsed.data.start),
+      results: [],
+    };
+    for (const entry of Array.isArray(parsed.data.tests) ? parsed.data.tests : []) {
+      const t = RawSnapshotTest.safeParse(entry);
+      if (!t.success) continue;
+      const key = str(t.data.k, 200);
+      const display = str(t.data.n, LIMITS.keyMax) ?? key;
+      if (!key || !display || !Array.isArray(t.data.a)) continue;
+      const { fullName, name } = splitDisplayName(display);
+      for (const a of t.data.a) {
+        if (!Array.isArray(a) || a.length === 0) continue;
+        const location = str(a[4], 300);
+        const r: ParsedResult = {
+          file,
+          uuid: null,
+          historyId: key,
+          testCaseId: null,
+          fullName,
+          name,
+          status: normalizeStatus(a[0]),
+          message: str(a[3], LIMITS.messageMax),
+          // Snapshots keep only where the failure happened (pytest's `file.py:LINE`), not the trace.
+          trace: location,
+          start: num(a[1]),
+          stop: num(a[2]),
+          labels: [],
+          parameters: [],
+          links: [],
+          source: file,
+          session: str(a[5], 200),
+        };
+        this.admit(r);
+        snap.results.push(r);
+      }
+    }
+    if (snap.results.length === 0) {
+      this.warn(`${file}: snapshot has no results, skipped`);
+      this.skippedFiles++;
+      return;
+    }
+    this.snapshots.push(snap);
+  }
+
+  private addResult(basename: string, data: Buffer, dir: string): void {
     const json = this.parseJson(basename, data);
     if (json === undefined) {
       this.skippedFiles++;
@@ -142,9 +268,6 @@ export class AllureBundle {
       this.skippedFiles++;
       return;
     }
-    if (this.results.length >= MAX_RESULTS_PER_IMPORT) {
-      throw new AppError(413, 'too_many_results', `An import may contain at most ${MAX_RESULTS_PER_IMPORT} results`);
-    }
     const parsedResult: ParsedResult = {
       file: basename,
       uuid: str(r.uuid, 200),
@@ -160,11 +283,10 @@ export class AllureBundle {
       labels: nameValues(r.labels),
       parameters: nameValues(r.parameters),
       links: links(r.links),
+      source: dir,
     };
-    this.storedBytes += estimateBytes(parsedResult);
-    if (this.storedBytes > MAX_STORED_BYTES_PER_IMPORT) {
-      throw new AppError(413, 'import_too_large', 'This import would store too much data — split it into smaller uploads');
-    }
+    parsedResult.session = sessionId(parsedResult.labels);
+    this.admit(parsedResult);
     this.results.push(parsedResult);
   }
 }
@@ -194,6 +316,48 @@ const RawResult = z.looseObject({
 });
 
 const RawExecutor = z.looseObject({ name: opt, buildName: opt, buildUrl: opt });
+
+/** allure-history snapshot (see allureparser's snapshot.py): tests[].a = [[status, start, stop, message, location, session], …]. */
+const RawSnapshot = z.looseObject({ format: opt, version: opt, label: opt, order: opt, url: opt, start: opt, tests: opt });
+const RawSnapshotTest = z.looseObject({ k: opt, n: opt, f: opt, c: opt, a: opt });
+
+function buildOrder(v: unknown): number | null {
+  const n = typeof v === 'string' && /^-?\d{1,15}$/.test(v.trim()) ? Number(v.trim()) : v;
+  return typeof n === 'number' && Number.isSafeInteger(n) ? n : null;
+}
+
+/**
+ * allure-history display names are `fullName` plus a `[param=value, …]` suffix when the
+ * test is parameterized. Recover the fullName (what raw imports link cases by) and a
+ * short name like Allure's (`test_create_order[currency=EUR]`).
+ */
+export function splitDisplayName(display: string): { fullName: string; name: string } {
+  let fullName = display;
+  let params = '';
+  const hashAt = display.indexOf('#');
+  const sep = hashAt >= 0 ? hashAt : display.indexOf('::');
+  const open = display.indexOf('[', sep + 1);
+  if (display.endsWith(']') && open > 0) {
+    fullName = display.slice(0, open);
+    params = display.slice(open);
+  }
+  const hash = fullName.lastIndexOf('#');
+  const colons = fullName.lastIndexOf('::');
+  const cut = hash >= 0 ? hash + 1 : colons >= 0 ? colons + 2 : fullName.lastIndexOf('.') + 1;
+  const short = fullName.slice(cut) || fullName;
+  return { fullName, name: `${short}${params}`.slice(0, LIMITS.titleMax) };
+}
+
+/**
+ * 'host:pid' of the pytest process that wrote a result. allure-pytest records a
+ * `host` label and a `thread` label of the form `<pid>-<thread name>`; every pytest
+ * run (and every xdist worker) is its own process.
+ */
+export function sessionId(labels: readonly NameValue[]): string | null {
+  const host = labels.find((l) => l.name === 'host')?.value ?? '';
+  const pid = /^(\d+)-/.exec(labels.find((l) => l.name === 'thread')?.value ?? '')?.[1] ?? '';
+  return host && pid ? `${host}:${pid}`.slice(0, 200) : null;
+}
 
 function str(v: unknown, max: number): string | null {
   if (typeof v === 'number' && Number.isFinite(v)) v = String(v);

@@ -17,6 +17,8 @@ import type {
   FailureGroup,
   HistoryMatrix,
   HistoryMatrixQuery,
+  TriggerListResponse,
+  TriggerQuery,
   RunComparison,
   RunUpdate,
   ImportCommitRequest,
@@ -61,6 +63,7 @@ export type RunResultsQueryInput = In<typeof RunResultsQuery>;
 export type PullRequestQueryInput = In<typeof PullRequestQuery>;
 export type BugQueryInput = In<typeof BugQuery>;
 export type HistoryMatrixQueryInput = In<typeof HistoryMatrixQuery>;
+export type TriggerQueryInput = In<typeof TriggerQuery>;
 
 export const qk = {
   session: ['session'] as const,
@@ -82,6 +85,7 @@ export const qk = {
   pullRequests: (q?: PullRequestQueryInput) => (q ? (['pullRequests', q] as const) : (['pullRequests'] as const)),
   report: (periodDays: number) => ['report', periodDays] as const,
   settings: ['settings'] as const,
+  triggers: (q: TriggerQueryInput) => ['triggers', q] as const,
 };
 
 /** Everything derived from the test-case inventory. */
@@ -509,5 +513,25 @@ export function useDeleteBug() {
   return useMutation({
     mutationFn: (id: number) => api.delete(`/api/bugs/${id}`),
     onSuccess: () => invalidateBugs(qc),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Camel route triggers
+// ---------------------------------------------------------------------------
+
+export function useTriggers(q: TriggerQueryInput) {
+  return useQuery({
+    queryKey: qk.triggers(q),
+    queryFn: ({ signal }) => api.get<TriggerListResponse>('/api/triggers', q, signal),
+    placeholderData: keepPreviousData,
+  });
+}
+
+export function useDeleteTriggerBranch() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (branch: string) => api.delete<void>(`/api/triggers/branches/${encodeURIComponent(branch)}`),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['triggers'] }),
   });
 }
