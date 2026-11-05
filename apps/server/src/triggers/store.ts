@@ -155,6 +155,7 @@ function caseLinker(db: Db): (nodeId: string) => number | null {
 
 interface View {
   triggers: StoredTrigger[];
+  testsRead: number;
   covered: Map<string, Covered>;
   routesFrom: string | null;
   testsFrom: string | null;
@@ -163,9 +164,11 @@ interface View {
 function viewOf(latest: Latest, branch: string): View {
   const routes = pick(latest.routes, branch);
   const tests = pick(latest.tests, branch);
-  if (!routes) return { triggers: [], covered: new Map(), routesFrom: null, testsFrom: tests?.branch ?? null };
+  const testsRead = tests?.tests.length ?? 0;
+  if (!routes) return { triggers: [], testsRead, covered: new Map(), routesFrom: null, testsFrom: tests?.branch ?? null };
   return {
     triggers: routes.triggers,
+    testsRead,
     covered: coverage(routes, tests?.tests ?? [], String(tests?.id ?? 0)),
     routesFrom: routes.branch,
     testsFrom: tests?.branch ?? null,
@@ -189,7 +192,7 @@ function mergedView(latest: Latest): View {
       covered.set(t.key, have);
     }
   }
-  return { triggers: [...triggers.values()], covered, routesFrom: null, testsFrom: null };
+  return { triggers: [...triggers.values()], testsRead: new Set(allTests.map((t) => t.id)).size, covered, routesFrom: null, testsFrom: null };
 }
 
 export function listTriggers(db: Db, q: TriggerQuery): TriggerListResponse {
@@ -237,6 +240,7 @@ export function listTriggers(db: Db, q: TriggerQuery): TriggerListResponse {
     testsFrom: head.testsFrom,
     compareRoutesFrom: base?.routesFrom ?? null,
     compareTestsFrom: base?.testsFrom ?? null,
+    tests: { read: head.testsRead, linked: new Set([...head.covered.values()].flat().map((c) => c.test)).size },
     items,
   };
 }

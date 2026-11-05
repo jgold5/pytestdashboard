@@ -216,7 +216,13 @@ export default function TriggersPage() {
 
 /** Where the routes and the tests come from (they can be different repos, scanned per branch). */
 function Sources({ data }: { data: TriggerListResponse }) {
-  if (!data.branch) return null;
+  if (!data.branch) {
+    return (
+      <p className="mt-2 text-xs text-fg-3">
+        All branches · {pluralize(data.tests.read, 'test')} read, {fmtNumber(data.tests.linked)} linked to a trigger
+      </p>
+    );
+  }
   const part = (label: string, from: string | null, own: string) =>
     from === null ? (
       <span>
@@ -230,7 +236,10 @@ function Sources({ data }: { data: TriggerListResponse }) {
     );
   return (
     <p className="mt-2 text-xs text-fg-3">
-      {part('Routes', data.routesFrom, data.branch)} · {part('tests', data.testsFrom, data.branch)}
+      {part('Routes', data.routesFrom, data.branch)} · {part('tests', data.testsFrom, data.branch)} ·{' '}
+      <span className={data.tests.read > 0 && data.tests.linked === 0 ? 'text-warn' : undefined}>
+        {pluralize(data.tests.read, 'test')} read, {fmtNumber(data.tests.linked)} linked to a trigger
+      </span>
       {data.compare ? (
         <>
           {' '}

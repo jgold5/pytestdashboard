@@ -1318,6 +1318,8 @@ export const TriggerListResponse = z.object({
   testsFrom: z.string().nullable(),
   compareRoutesFrom: z.string().nullable(),
   compareTestsFrom: z.string().nullable(),
+  /** Tests in the test scan(s) used, and how many of them cover at least one trigger. */
+  tests: z.object({ read: z.number().int(), linked: z.number().int() }),
   items: z.array(TriggerRow),
 });
 export type TriggerListResponse = z.infer<typeof TriggerListResponse>;

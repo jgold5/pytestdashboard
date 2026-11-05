@@ -510,8 +510,48 @@ function atomPart(m: RegExpMatchArray): NamePart {
   return 'name';
 }
 
+const NAME_BASE = String.raw`(?:in\.)?headers?(?:\.|\[\s*['"]?)CamelFileName(?:Only)?(?:['"]?\s*\])?|file:(?:name|onlyname)(?:\.noext)?`;
+const METHOD_CHAIN = new RegExp(String.raw`\$\{\s*(${NAME_BASE})((?:\.\w+\((?:[^()'"]|'[^']*'|"[^"]*")*\))+)\s*\}`, 'gi');
+const BOOLEAN_METHODS: Record<string, string> = {
+  startswith: 'starts with',
+  endswith: 'ends with',
+  contains: 'contains',
+  equals: '==',
+  equalsignorecase: '=~',
+  matches: 'regex',
+};
+
+/**
+ * Rewrite Java-style calls on the file name into simple-language operators, so one parser
+ * handles both: `${header.CamelFileName.toUpperCase().endsWith(".GZ")}` → `${header.CamelFileName} ends with '.GZ'`,
+ * `${file:name.substring(9,16)} == 'X'` → `${file:name} contains 'X'` (a part of the name), and
+ * `${properties:key}` → `'{{key}}'` (filled in from the properties files like any placeholder).
+ */
+export function normalizeCondition(expr: string): string {
+  return expr
+    .replace(/\$\{\s*properties:([^}:]+)(?::[^}]*)?\}/gi, "'{{$1}}'")
+    .replace(METHOD_CHAIN, (_whole, base: string, chain: string) => {
+      let sub = false;
+      for (const m of chain.matchAll(/\.(\w+)\(((?:[^()'"]|'[^']*'|"[^"]*")*)\)/g)) {
+        const name = (m[1] as string).toLowerCase();
+        if (name === 'substring' || name === 'substr') sub = true;
+        const op = BOOLEAN_METHODS[name];
+        if (op) {
+          const arg = /^\s*(?:'([^']*)'|"([^"]*)")\s*$/.exec(m[2] ?? '');
+          if (!arg) return `\${${base}}`;
+          return `\${${base}} ${sub && op !== 'regex' ? 'contains' : op} '${arg[1] ?? arg[2] ?? ''}'`;
+        }
+      }
+      return `\${${base}}${sub ? ' §substring§' : ''}`;
+    })
+    // after substring(): "== 'X'" only says the name contains X somewhere
+    .replace(/§substring§\s*(==|=~|starts\s+with|startsWith|ends\s+with|endsWith|contains)/gi, 'contains')
+    .replace(/§substring§/g, '');
+}
+
 /** A Camel simple expression that tests the file name, or null when it tests something else. */
-export function parseFileCondition(expr: string): FileCondition | null {
+export function parseFileCondition(rawExpr: string): FileCondition | null {
+  const expr = normalizeCondition(rawExpr);
   const groups: Atom[][] = [];
   for (const orPart of expr.split(/\|\||\s+or\s+/i)) {
     const atoms: Atom[] = [];
@@ -713,7 +753,8 @@ function fileTester(t: StoredTrigger): ((fileName: string) => boolean) | null {
   const testers: Array<(f: string) => boolean> = [];
   if (t.patternKind === 'condition' && (m?.condition ?? t.condition)) {
     const cond = parseFileCondition(m?.condition ?? (t.condition as string));
-    if (cond) testers.push((f) => conditionMatches(cond, f));
+    // every alternative must name something specific: "contains 'sp'" or "!= 'X'" alone matches nearly any label
+    if (cond && cond.groups.every((g) => g.some((x) => !x.negate && x.value.length >= 3))) testers.push((f) => conditionMatches(cond, f));
   } else if (m?.pattern ?? t.filePattern) {
     const pattern = (m?.pattern ?? t.filePattern) as string;
     const re = t.patternKind === 'regex' ? safeRegex(pattern) : t.patternKind === 'glob' ? antRegex(pattern) : fileLanguageRegex(pattern);
@@ -724,8 +765,13 @@ function fileTester(t: StoredTrigger): ((fileName: string) => boolean) | null {
     const re = fileLanguageRegex(done);
     if (re) testers.push((f) => re.test(f));
   }
-  return testers.length ? (f) => testers.some((x) => x(f)) : null;
+  // a pattern that accepts any file (include=.*, "not X") says nothing about which test covers it
+  const selective = testers.filter((x) => BROAD_PROBES.filter((p) => x(p)).length < 2);
+  return selective.length ? (f) => selective.some((x) => x(f)) : null;
 }
+
+/** Made-up file names: a pattern accepting most of them is too broad to link a test by file name. */
+const BROAD_PROBES = ['zq_probe_7x3.tmp', 'QZ9PROBE.XYZ', 'probe-file.txt'];
 
 /** Names a label can use for a trigger: route id, schedule name, the job a branch sends files to, file/trigger-file name. */
 function triggerNames(t: StoredTrigger): string[] {
@@ -850,7 +896,7 @@ export function scanRepository(input: ScanInput): ScanOutput {
     }
     if (r.inputs.length === 0) continue;
     const conditions = r.conditions
-      .map((c) => ({ c, resolved: resolvePlaceholders(c.expr, props, r.file) }))
+      .map((c) => ({ c, resolved: resolvePlaceholders(normalizeCondition(c.expr), props, r.file) }))
       .map((x) => ({ ...x, parsed: parseFileCondition(x.resolved.firstVariant) }))
       .filter((x): x is { c: RawCondition; resolved: Resolved; parsed: FileCondition } => x.parsed !== null);
     let routeHasTrigger = false;

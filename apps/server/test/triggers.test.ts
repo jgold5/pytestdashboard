@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Trigger, TriggerListResponse, TriggerScanResponse } from '@ptd/shared';
-import { parsePropertiesFile, parseEndpoint, resolvePlaceholders, buildPropertyIndex, scanCamelXml, scanPytestFile, scanRepository } from '../src/triggers/scan.js';
+import { normalizeCondition, parseFileCondition, parsePropertiesFile, parseEndpoint, resolvePlaceholders, buildPropertyIndex, scanCamelXml, scanPytestFile, scanRepository } from '../src/triggers/scan.js';
 import { classify } from '../src/triggers/upload.js';
 import { authEnv, createTestApp, multipart, type TestApp } from './helpers/app.js';
 import { importResults } from './helpers/allure.js';
@@ -266,6 +266,44 @@ describe('repo layout seen in practice', () => {
       ['west/once', 'west', null, null, null, 0, 0],
     ]);
     expect(out.triggers.slice(2).map((t) => t.schedule)).toEqual(['every 5m', 'once, at start-up']);
+  });
+});
+
+describe('matching only when a pattern names something specific', () => {
+  it('rewrites Java-style calls and ${properties:…} into simple-language conditions', () => {
+    expect(normalizeCondition('${header.CamelFileName.toUpperCase().endsWith(".GZ")}')).toBe("${header.CamelFileName} ends with '.GZ'");
+    expect(normalizeCondition("${in.header.CamelFileName.substring(9,16)} contains '0003_26'")).toBe("${in.header.CamelFileName} contains '0003_26'");
+    expect(normalizeCondition("${file:name.substring(0,3)} == 'INV'")).toBe("${file:name} contains 'INV'");
+    expect(normalizeCondition('${header.CamelFileName} == ${properties:invoice.name}')).toBe("${header.CamelFileName} == '{{invoice.name}}'");
+    expect(parseFileCondition('${header.CamelFileName.toUpperCase().startsWith("INV_")}')?.display).toBe('INV_*');
+  });
+
+  it('a condition naming a property is filled in from the properties files', () => {
+    const out = scanRepository({
+      xml: [{ path: 'r.xml', text: `<routes><route id="inbox"><from uri="file:/in"/><choice><when><simple>\${header.CamelFileName} == \${properties:inv.name}</simple><to uri="direct:inv"/></when></choice></route></routes>` }],
+      properties: [{ path: 'a.properties', text: 'inv.name=INV_DAILY.csv\n' }],
+      tests: [{ path: 'tests/test_a.py', text: 'def test_a():\n    drop("INV_DAILY.csv")\n' }],
+    });
+    expect(out.triggers.map((t) => [t.filePattern, t.coveredBy.length])).toEqual([['INV_DAILY.csv', 1]]);
+  });
+
+  it('broad patterns and negations never link a test by file name', () => {
+    const xml = `<routes>
+      <route id="all"><from uri="file:/a?include=.*"/></route>
+      <route id="inbox"><from uri="file:/b"/><choice>
+        <when><simple>\${file:name} != 'SKIP.TXT'</simple><to uri="direct:x"/></when>
+        <when><simple>\${file:name} contains 'sp'</simple><to uri="direct:y"/></when>
+      </choice></route>
+      <route id="real"><from uri="file:/c?include=ORD_.*\\.xml"/></route>
+    </routes>`;
+    const tests = [{ path: 'tests/test_a.py', text: 'def test_a():\n    read("ds.properties")\n    read("spring.datasource.url")\n    drop("ORD_1.xml")\n' }];
+    const out = scanRepository({ xml: [{ path: 'r.xml', text: xml }], properties: [], tests });
+    expect(out.triggers.map((t) => [t.routeId, t.filePattern, t.coveredBy.map((c) => c.via)])).toEqual([
+      ['all', '.*', []],
+      ['inbox', 'not SKIP.TXT', []],
+      ['inbox', '*sp*', []],
+      ['real', 'ORD_.*\\.xml', ['ORD_1.xml']],
+    ]);
   });
 });
 

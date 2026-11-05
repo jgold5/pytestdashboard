@@ -46,7 +46,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-VERSION = "1.2"
+VERSION = "1.4"
 
 SKIP_DIRS = {
     ".git", "node_modules", "target", "build", "dist", "out", ".venv", "venv", "site-packages",
@@ -78,6 +78,8 @@ com net org www localhost
 starts with ends contains regex not and or range is camelfilename camelfilenameonly camelfilepath
 camelfileparent camelfilerelativepath onlyname noext choice when otherwise
 changed markerfile rename filelock idempotent always never
+touppercase tolowercase substring substr startswith endswith equals equalsignorecase matches trim strip length indexof replace replaceall split
+ini yaml yml cfg toml json py java kt sh ps1 bat cmd sql feature robot md tsv tox pyproject conftest pytest check checks setup
 """.split())
 
 # Camel file-language date patterns (yyyyMMdd, HHmmss…) are formats, not names.
@@ -622,6 +624,132 @@ def read(p: Path) -> str:
         return p.read_text(encoding="latin-1")
 
 
+# ---------------------------------------------------------------------------
+# Where the other repos mention triggers
+# ---------------------------------------------------------------------------
+
+SEARCH_EXT = (".py", ".yaml", ".yml", ".json", ".csv", ".tsv", ".txt", ".ini", ".cfg", ".toml", ".feature", ".robot",
+              ".xml", ".java", ".kt", ".groovy", ".sql", ".sh", ".ps1", ".bat", ".cmd", ".md", ".properties", ".j2", ".tpl")
+PYTEST_CONFIG = ("pytest.ini", "tox.ini", "setup.cfg", "pyproject.toml")
+REGEX_META = re.compile(r"[\\^$.|?*+()\[\]{}]")
+
+
+def pytest_config(text: str) -> Dict[str, List[str]]:
+    """python_files / python_functions / python_classes / testpaths / markers from a pytest config file."""
+    found: Dict[str, List[str]] = defaultdict(list)
+    key = None
+    for line in text.splitlines():
+        m = re.match(r"^\s*(python_files|python_functions|python_classes|testpaths|markers)\s*[=:]\s*(.*)$", line)
+        if m:
+            key = m.group(1)
+            rest = m.group(2).strip().strip("[]")
+        elif key and line[:1] in (" ", "\t") and line.strip():
+            rest = line.strip()
+        else:
+            key = None
+            continue
+        if key == "markers":
+            # one marker per line: "name: description" or "name(arg): description"
+            for v in re.findall(r"[\"']([^\"']+)[\"']", rest) or [rest]:
+                v = v.split(":")[0].split("(")[0].strip()
+                if v:
+                    found[key].append(v)
+            continue
+        for v in re.findall(r"[\"']([^\"']+)[\"']", rest) or rest.replace(",", " ").split():
+            found[key].append(v)
+    return found
+
+
+def glob_match(name: str, patterns: List[str]) -> bool:
+    import fnmatch
+    return any(fnmatch.fnmatch(name, pat) for pat in patterns)
+
+
+class NameFinder:
+    """Finds trigger names (route ids, trigger/data file names, file-name conditions) in arbitrary text."""
+
+    def __init__(self, names: Dict[str, str], prefixes: Dict[str, str]):
+        self.names, self.prefixes = names, prefixes
+        alts = sorted({re.escape(n) for n in names}, key=len, reverse=True)
+        palts = sorted({re.escape(n) for n in prefixes}, key=len, reverse=True)
+        self.exact = re.compile(r"(?<![A-Za-z0-9])(" + "|".join(alts) + r")(?![A-Za-z0-9])", re.I) if alts else None
+        self.prefix = re.compile(r"(?<![A-Za-z0-9])(" + "|".join(palts) + r")", re.I) if palts else None
+
+    def find(self, line: str) -> List[Tuple[str, str]]:
+        hits = []
+        for rx, table in ((self.exact, self.names), (self.prefix, self.prefixes)):
+            if rx is None:
+                continue
+            for m in rx.finditer(line):
+                key = m.group(1).lower()
+                kind = table.get(key)
+                if kind:
+                    hits.append((m.group(1), kind))
+        return hits
+
+
+def trigger_names(xml_items: Dict[str, List["XmlItem"]], all_props: Dict[str, List[str]]):
+    """Names a test could use for a trigger, from the production routes (src/test XML is skipped)."""
+    names: Dict[str, str] = {}
+    prefixes: Dict[str, str] = {}
+
+    def add(value: str, kind: str, table: Optional[Dict[str, str]] = None) -> None:
+        v = value.strip()
+        low = v.lower()
+        if len(v) < 4 or low in KEEP_WORDS or v.isdigit() or "{{" in v or "${" in v:
+            return
+        (names if table is None else table).setdefault(low, kind)
+
+    def values(v: str) -> List[str]:
+        m = re.fullmatch(r"\s*\{\{([^{}:]+)(?::[^{}]*)?\}\}\s*", v)
+        if m:
+            return list(dict.fromkeys(all_props.get(m.group(1), [])))
+        return [PLACEHOLDER.sub(lambda x: (all_props.get((x.group(1) or x.group(2) or "").split(":")[0]) or [x.group(0)])[0], v)]
+
+    def add_pattern(v: str, kind: str) -> None:
+        v = re.sub(r"^RAW\((.*)\)$", r"\1", v.strip())
+        for alt in re.split(r"[,|]", v):
+            alt = alt.strip().strip("()")
+            if not alt:
+                continue
+            if REGEX_META.search(alt.replace("\\.", "")) is None:
+                add(alt.replace("\\.", "."), kind)
+            else:
+                lit = re.match(r"[A-Za-z0-9_\-]+", alt)
+                if lit:
+                    add(lit.group(0), kind + " (prefix)", prefixes)
+
+    for rel, items in xml_items.items():
+        if re.search(r"(^|/)src/test/", rel):
+            continue
+        for it in items:
+            if local(it.qname) not in ("route", "routeTemplate"):
+                continue
+            rid = dict(it.attrs).get("id")
+            if rid:
+                add(rid, "route id")
+            for n in it.node.walk():
+                if local(n.qname) == "from":
+                    _, _, query = dict(n.attrs).get("uri", "").partition("?")
+                    for part in query.split("&"):
+                        k, _, v = part.partition("=")
+                        k = k.lower()
+                        if k in ("filename", "donefilename", "include", "antinclude"):
+                            kind = {"filename": "data file", "donefilename": "trigger file"}.get(k, "file pattern")
+                            for val in values(v):
+                                if k in ("filename", "donefilename"):
+                                    for chunk in re.split(r"\$\{[^}]*\}", val):
+                                        add(chunk, kind) if chunk == val else add(chunk, kind + " (part)", prefixes)
+                                else:
+                                    add_pattern(val, kind)
+                elif local(n.qname) == "simple" and n.text and FILE_REF.search(n.text):
+                    for lit in re.findall(r"'([^']*)'|\"([^\"]*)\"", n.text):
+                        for val in values(lit[0] or lit[1]):
+                            for one in val.split(","):
+                                add(one, "file-name condition")
+    return names, prefixes
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("repos", type=Path, nargs="+", help="repository root(s): the Camel repo and the test repo")
@@ -676,8 +804,23 @@ def main(argv: Optional[List[str]] = None) -> int:
             for p, rel in walk(repo):
                 yield p, f"{prefixes[repo]}/{rel}" if prefixes[repo] else rel
 
+    configs: Dict[str, Dict[str, List[str]]] = {}
+    for p, rel in all_files():
+        if p.name in PYTEST_CONFIG:
+            cfg = pytest_config(read(p))
+            if cfg:
+                configs[rel] = cfg
+    python_files = [pat for cfg in configs.values() for pat in cfg.get("python_files", [])]
+    for pat in python_files:
+        KEEP_WORDS.update(w.lower() for w in re.findall(r"[A-Za-z]+", pat))
+    py_inventory: Counter = Counter()
+
     for p, rel in all_files():
         low = rel.lower()
+        if low.endswith(".py"):
+            base = p.name
+            py_inventory["test_*.py" if base.startswith("test_") else "*_test.py" if base.endswith("_test.py")
+                         else "conftest.py" if base == "conftest.py" else "other .py"] += 1
         if low.endswith(".xml"):
             stats["xml files read"] += 1
             items = scan_xml(read(p), stats)
@@ -685,7 +828,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 xml_items[rel] = items
         elif low.endswith(".properties"):
             prop_files[rel] = parse_properties(read(p))
-        elif is_test_file(rel):
+        elif is_test_file(rel) or (low.endswith(".py") and python_files and glob_match(p.name, python_files)):
             test_sources[rel] = read(p)
         elif low.endswith((".java", ".kt", ".groovy")):
             n = len(re.findall(r"\bfrom[F]?\s*\(\s*\"", read(p)))
@@ -790,6 +933,60 @@ def main(argv: Optional[List[str]] = None) -> int:
     if unparsable:
         stats["test files that did not parse (skipped)"] = unparsable
 
+    # where do the other files (test repo, Java tests, data files) mention triggers?
+    names, prefixes_found = trigger_names(xml_items, all_props)
+    finder = NameFinder(names, prefixes_found)
+    route_files = {rel for rel in xml_items if not re.search(r"(^|/)src/test/", rel)} | set(prop_files)
+    refs = []
+    by_ext: Counter = Counter()
+    by_folder: Counter = Counter()
+    by_context: Counter = Counter()
+    by_kind: Counter = Counter()
+    mentioned: Set[str] = set()
+    for p, rel in all_files():
+        if rel in route_files or not rel.lower().endswith(SEARCH_EXT) or p.stat().st_size > 2_000_000:
+            continue
+        text = read(p)
+        hits = []
+        current_test = None
+        test_indent = -1
+        for no, line in enumerate(text.splitlines(), 1):
+            if rel.endswith(".py"):
+                dm = re.match(r"^(\s*)(?:async\s+)?def\s+(\w+)", line)
+                if dm:
+                    current_test, test_indent = (dm.group(2), len(dm.group(1))) if dm.group(2).startswith("test") else (None, -1)
+                elif current_test and line.strip() and len(line) - len(line.lstrip()) <= test_indent:
+                    current_test = None
+            found = finder.find(line)
+            if not found:
+                continue
+            stripped = line.strip()
+            if not rel.endswith(".py"):
+                context = "data/other file"
+            elif "parametrize" in stripped:
+                context = "parametrize"
+            elif stripped.startswith("@") or stripped.startswith("pytestmark"):
+                context = "decorator / marker"
+            elif current_test:
+                context = "inside a test"
+            else:
+                context = "module level / helper"
+            for value, kind in found:
+                mentioned.add(value.lower())
+                by_kind[kind] += 1
+            by_context[context] += 1
+            if len(hits) < 200:
+                hits.append({"line": no, "context": context, "test": namer.text(current_test) if current_test and rel.endswith(".py") else None,
+                             "names": sorted({namer.text(v) for v, _ in found}), "kinds": sorted({k for _, k in found})})
+        if hits:
+            ext = Path(rel).suffix.lower() or "(none)"
+            by_ext[ext] += 1
+            by_folder["/".join(namer.text(x) for x in rel.split("/")[:3])] += 1
+            refs.append({"file": namer.path(rel), "hits": hits, "mentions": len(hits)})
+    refs.sort(key=lambda r: -r["mentions"])
+    (out / "trigger-references.json").write_text(json.dumps({"names_known": len(names) + len(prefixes_found),
+                                                               "names_mentioned": len(mentioned), "files": refs}, indent=1), encoding="utf-8")
+
     report = [
         f"# Distill report (distill_camel_repo.py {VERSION})",
         "",
@@ -820,6 +1017,35 @@ def main(argv: Optional[List[str]] = None) -> int:
     ]
     if other_dsl:
         report += ["", "## Routes in other DSLs (not distilled)", "", *[f"- {k}: {v}" for k, v in other_dsl.items()]]
+    report += [
+        "",
+        "## Python files",
+        "",
+        *[f"- {k}: {v}" for k, v in py_inventory.most_common()],
+        *[f"- pytest config `{namer.path(rel)}`: " + "; ".join(f"{k} = {', '.join(namer.text(v) if k == 'markers' else v for v in vs)}" for k, vs in cfg.items())
+          for rel, cfg in configs.items()],
+        "",
+        "## Where trigger names appear outside the routes",
+        "",
+        f"- trigger names known from the routes: {len(names) + len(prefixes_found)} (route ids, data/trigger file names, patterns, file-name conditions)",
+        f"- of which mentioned somewhere else: {len(mentioned)}",
+        f"- files mentioning them: {len(refs)} (details in trigger-references.json)",
+        "",
+        "By file type:",
+        *[f"- `{k}`: {v} files" for k, v in by_ext.most_common()],
+        "",
+        "By folder:",
+        *[f"- `{k}`: {v} files" for k, v in by_folder.most_common(20)],
+        "",
+        "Where in the file:",
+        *[f"- {k}: {v} lines" for k, v in by_context.most_common()],
+        "",
+        "What is mentioned:",
+        *[f"- {k}: {v}" for k, v in by_kind.most_common()],
+        "",
+        "Files with the most mentions:",
+        *[f"- `{r['file']}`: {r['mentions']} lines" for r in refs[:15]],
+    ]
     (out / "distill-report.md").write_text("\n".join(report) + "\n", encoding="utf-8")
 
     map_path = out.parent / f"{out.name}.map.json"
