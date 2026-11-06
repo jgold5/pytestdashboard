@@ -390,6 +390,18 @@ Share `distilled.zip`, but keep `distilled.map.json` (original → generic) to y
 `--map distilled.map.json` makes a later run reuse the same renaming. The zip can be
 uploaded to `/api/triggers/scan` as is.
 
+To check by hand which PRs (or merged code) mention a route, file name or Xray key, run
+[`tools/search_prs.py`](tools/search_prs.py) (Python 3.8+, no packages, uses `GITHUB_TOKEN`):
+
+```bash
+python3 tools/search_prs.py your-org/pytest-repo invoice-load               # open PRs' changes
+python3 tools/search_prs.py your-org/pytest-repo invoice-load --both --base core   # PRs into core + core's merged code
+python3 tools/search_prs.py your-org/pytest-repo invoice-load --branches main,core,dev --no-prs
+python3 tools/search_prs.py your-org/pytest-repo 'INV_\d+' --regex -i --full --glob '*.py'
+```
+
+It prints each PR (or branch) with the file, line number and line; `--json` for a script.
+
 ### Run groups
 
 Every run belongs to a **run group**: a set of tests that are meant to be compared
