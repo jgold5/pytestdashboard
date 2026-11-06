@@ -724,6 +724,18 @@ describe('a route with several patterns', () => {
       expect((await t.app.inject({ method: 'POST', url: '/api/triggers/scan', payload: mp.payload, headers: mp.headers })).statusCode).toBe(201);
       const ov = (await t.app.inject({ url: '/api/triggers/overview?folder=common' })).json<{ triggerRepo: { triggers: number; routes: number } }>();
       expect(ov.triggerRepo).toMatchObject({ triggers: 4, routes: 2 });
+
+      // tests that hit no trigger are listed with what the scanner read in them
+      const tp = multipart({ branch: 'main', only: 'tests' }, [
+        {
+          field: 'file:src/route_test',
+          filename: 'out_route.py',
+          content: 'def test_purge():\n    start("purge")\n\ndef test_helper_only():\n    run_out()\n    check("done")\n',
+        },
+      ]);
+      expect((await t.app.inject({ method: 'POST', url: '/api/triggers/scan', payload: tp.payload, headers: tp.headers })).statusCode).toBe(201);
+      const un = (await t.app.inject({ url: '/api/triggers/unlinked-tests' })).json<Record<string, unknown>>();
+      expect(un).toMatchObject({ routesFrom: 'main', testsFrom: 'main', testsRead: 2, unlinked: 1, tests: [{ id: 'src/route_test/out_route.py::test_helper_only', strings: ['done'] }] });
     } finally {
       await t.close();
     }

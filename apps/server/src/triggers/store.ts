@@ -8,7 +8,7 @@
  */
 import { changedTests, testScope } from './testScope.js';
 import { and, desc, eq, inArray, lt, notInArray, or } from 'drizzle-orm';
-import type { Trigger, TriggerListResponse, TriggerQuery, TriggerRow, TriggerScanFields, TriggerScanResponse, TriggerScanSummary } from '@ptd/shared';
+import type { Trigger, TriggerListResponse, TriggerQuery, TriggerRow, TriggerScanFields, TriggerScanResponse, TriggerScanSummary, UnlinkedTestsResponse } from '@ptd/shared';
 import type { Db } from '../db/client.js';
 import { testCases, triggerScans } from '../db/schema.js';
 import { recordCoverageSnapshot } from '../domain/coverage.js';
@@ -252,6 +252,23 @@ function mergedView(db: Db, latest: Latest): View {
     }
   }
   return { unmergedFrom: [], triggers: [...triggers.values()], tests: allTests, testsRead: new Set(allTests.map((t) => t.id)).size, covered, routesFrom: null, testsFrom: null };
+}
+
+/** The merged tests that cover none of the branch's triggers, and the strings read in each: to see why. */
+export function unlinkedTests(db: Db, q: Pick<TriggerQuery, 'branch' | 'tests'>): UnlinkedTestsResponse {
+  const latest = latestScans(db);
+  const branch = q.branch ?? [...latest.routes.keys()].sort((a, b) => rank(a) - rank(b))[0];
+  if (!branch) return { routesFrom: null, testsFrom: null, testsRead: 0, unlinked: 0, tests: [] };
+  const view = viewOf(db, latest, branch, { unmerged: false, tests: q.tests });
+  const linked = new Set([...view.covered.values()].flat().map((c) => c.test));
+  const missing = view.tests.filter((t) => !linked.has(t.id));
+  return {
+    routesFrom: view.routesFrom,
+    testsFrom: view.testsFrom,
+    testsRead: view.tests.length,
+    unlinked: missing.length,
+    tests: missing.slice(0, 2000).map((t) => ({ id: t.id, strings: t.strings.slice(0, 40) })),
+  };
 }
 
 export function listTriggers(db: Db, q: TriggerQuery): TriggerListResponse {

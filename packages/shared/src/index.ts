@@ -1444,6 +1444,17 @@ export const TriggerOverviewResponse = z.object({
 });
 export type TriggerOverviewResponse = z.infer<typeof TriggerOverviewResponse>;
 
+/** `GET /api/triggers/unlinked-tests`: the merged tests of the tests branch that cover no trigger of the routes branch, with what the scanner read in each. */
+export const UnlinkedTestsResponse = z.object({
+  routesFrom: z.string().nullable(),
+  testsFrom: z.string().nullable(),
+  testsRead: z.number().int(),
+  unlinked: z.number().int(),
+  /** First 2,000. */
+  tests: z.array(z.object({ id: z.string(), strings: z.array(z.string()) })),
+});
+export type UnlinkedTestsResponse = z.infer<typeof UnlinkedTestsResponse>;
+
 export const TriggerChange = z.enum(['added', 'changed', 'removed', 'unchanged']);
 export type TriggerChange = z.infer<typeof TriggerChange>;
 
