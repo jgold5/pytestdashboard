@@ -12,7 +12,7 @@ import {
   Upload,
   Zap,
 } from 'lucide-react';
-import type { RouteStatus, Summary, TriageCategory } from '@ptd/shared';
+import type { RouteStatus, ScopeSource, Summary, TriageCategory } from '@ptd/shared';
 import { useBugStats, useIntegrations, usePullRequests, useSummary, useTriggerOverview } from '../api/hooks';
 import { Card, CardBody, CardHeader } from '../components/ui/card';
 import { Skeleton } from '../components/ui/skeleton';
@@ -78,7 +78,7 @@ export function OverviewPage() {
               <CardHeader title="Coverage trend" description="Daily snapshot of total vs automated cases" />
               <CardBody>
                 {s.coverageTrend.length > 1 ? (
-                  <CoverageTrendChart data={s.coverageTrend} totalLabel={s.coverage.unit === 'routes' ? 'Routes' : 'Total cases'} />
+                  <CoverageTrendChart data={s.coverageTrend} totalLabel={s.coverage.unit === 'routes' ? 'Triggers' : 'Total cases'} />
                 ) : (
                   <EmptyChart>The trend appears after the inventory changes on at least two days.</EmptyChart>
                 )}
@@ -167,31 +167,49 @@ function KpiRow({ s }: { s: Summary }) {
   return (
     <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border bg-border md:grid-cols-3 xl:grid-cols-5">
       {c.unit === 'routes' ? (
-        <Kpi label="Routes to test" value={fmtNumber(c.total)} sub="file and schedule triggers on main" to="/triggers" />
+        <Kpi label="Unique triggers" value={fmtNumber(c.total)} sub="in the trigger repo on main" to="/triggers?branch=main" />
       ) : (
         <Kpi label="Total cases" value={fmtNumber(c.total)} sub={`${fmtNumber(c.notAutomatable)} not automatable`} to="/tests" />
       )}
-      <Kpi
-        label="Automated"
-        value={
-          <>
-            {fmtPct(c.automationRate, 1)}
-            <span className="ml-1.5 text-sm text-fg-3">{fmtNumber(c.automated)}</span>
-          </>
-        }
-        sub={c.unit === 'routes' ? 'of routes have a test on main' : 'of automatable cases'}
-        to={c.unit === 'routes' ? '/triggers?branch=main&status=automated' : '/tests?automationStatus=automated'}
-      />
-      <Kpi
-        label="In progress"
-        value={fmtNumber(c.inProgress)}
-        sub={
-          <span className="inline-flex items-center gap-1">
-            <GitPullRequest className="size-3" aria-hidden /> {fmtNumber(c.inOpenPr)} in open PRs
-          </span>
-        }
-        to="/tests?automationStatus=in_progress"
-      />
+      {c.unit === 'routes' ? (
+        <Kpi
+          label="Triggers tested"
+          value={
+            <>
+              {fmtNumber(c.automated)}
+              <span className="ml-1.5 text-sm text-fg-3">of {fmtNumber(c.total)}</span>
+            </>
+          }
+          sub={`${fmtPct(c.automationRate, 1)} have one or more tests on main`}
+          to="/triggers?branch=main&status=automated"
+        />
+      ) : (
+        <Kpi
+          label="Automated"
+          value={
+            <>
+              {fmtPct(c.automationRate, 1)}
+              <span className="ml-1.5 text-sm text-fg-3">{fmtNumber(c.automated)}</span>
+            </>
+          }
+          sub="of automatable cases"
+          to="/tests?automationStatus=automated"
+        />
+      )}
+      {c.unit === 'routes' ? (
+        <Kpi label="Tested on a branch" value={fmtNumber(c.inProgress)} sub="only tests on other branches cover them" to="/triggers" />
+      ) : (
+        <Kpi
+          label="In progress"
+          value={fmtNumber(c.inProgress)}
+          sub={
+            <span className="inline-flex items-center gap-1">
+              <GitPullRequest className="size-3" aria-hidden /> {fmtNumber(c.inOpenPr)} in open PRs
+            </span>
+          }
+          to="/tests?automationStatus=in_progress"
+        />
+      )}
       <Kpi
         label="Last run pass rate"
         value={fmtPct(lr?.passRate, 1)}
@@ -233,7 +251,7 @@ function PipelineCard({ s }: { s: Summary }) {
         title="Automation progress"
         description={
           c.unit === 'routes'
-            ? `${fmtNumber(c.automated)} of ${fmtNumber(automatable)} routes have a test on main · stages below follow the test cases' PRs`
+            ? `${fmtNumber(c.automated)} of ${fmtNumber(automatable)} triggers have one or more tests on main · stages below follow the test cases' PRs`
             : `${fmtNumber(c.automated)} of ${fmtNumber(automatable)} automatable cases automated · pipeline from GitHub PRs and runs`
         }
         actions={<span className="text-2xl font-semibold tracking-tight text-fg">{fmtPct(c.automationRate, 1)}</span>}
@@ -590,6 +608,38 @@ const ROUTE_STATUS: Record<RouteStatus, { label: string; tab: string; cls: strin
 };
 const shortTest = (nodeId: string) => nodeId.split('::').pop() ?? nodeId;
 
+/** One of the two scans the numbers come from: which repo, branch and commit, and what it found. */
+function SourceStep({
+  n,
+  title,
+  source,
+  big,
+  detail,
+}: {
+  n: number;
+  title: string;
+  source: ScopeSource | null;
+  big: string;
+  detail?: ReactNode;
+}) {
+  return (
+    <div className="min-w-0 bg-surface px-4 py-3">
+      <div className="flex items-center gap-2 text-[11px] font-semibold tracking-[0.07em] text-fg-3 uppercase">
+        <span className="grid size-4 place-items-center rounded-full border border-border-strong font-mono text-[10px] tracking-normal text-fg-2">{n}</span>
+        {title}
+      </div>
+      <div className="mt-1.5 text-[15px] font-semibold text-fg">{big}</div>
+      {source ? (
+        <div className="mt-0.5 truncate font-mono text-[11.5px] text-fg-3" title={source.repo ?? undefined}>
+          {source.repo ?? 'uploaded scan'} @ {source.branch}
+          {source.commit ? ` · ${source.commit.slice(0, 7)}` : ''} · {fmtRelative(source.scannedAt)}
+        </div>
+      ) : null}
+      {detail ? <div className="mt-0.5 truncate text-xs text-fg-2">{detail}</div> : null}
+    </div>
+  );
+}
+
 function RoutesCard() {
   const [status, setStatus] = useState<RouteStatus | undefined>(undefined);
   const q = useTriggerOverview(status);
@@ -618,36 +668,54 @@ function RoutesCard() {
   const allHref = `/triggers?branch=${encodeURIComponent(d.branch)}${shown === 'tested' ? '&status=automated' : shown === 'none' ? '&status=missing' : ''}`;
   return (
     <Card>
-      <CardHeader
-        title={<>Route triggers on <span className="font-mono">{d.branch}</span></>}
-        description={
-          <>
-            {d.commit ? <span className="font-mono">{d.commit.slice(0, 7)} · </span> : null}scanned {fmtRelative(d.scannedAt)}
-          </>
-        }
-        actions={
-          <div role="group" aria-label="Route status" className="inline-flex rounded-md border border-border bg-surface-2 p-0.5">
-            {(['none', 'branch', 'tested'] as const).map((k) => (
-              <button
-                key={k}
-                type="button"
-                aria-pressed={shown === k}
-                onClick={() => setStatus(k)}
-                className={cn(
-                  'inline-flex h-6 items-center gap-1.5 rounded-[5px] px-2.5 text-xs font-medium whitespace-nowrap outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/50',
-                  shown === k ? 'bg-surface text-fg shadow-sm' : 'text-fg-2 hover:text-fg',
-                )}
-              >
-                {ROUTE_STATUS[k].tab}
-                <span className="font-mono text-[11px] text-fg-3 tabular">{fmtNumber(d.counts[k])}</span>
-              </button>
-            ))}
-          </div>
-        }
-      />
+      <div className="grid gap-px border-b border-border bg-border sm:grid-cols-2">
+        <SourceStep
+          n={1}
+          title="Trigger repo"
+          source={d.triggerRepo}
+          big={d.triggerRepo ? `${fmtNumber(d.triggerRepo.triggers)} unique triggers` : '—'}
+        />
+        <SourceStep
+          n={2}
+          title="Test repo"
+          source={d.testRepo}
+          big={d.testRepo ? `${fmtNumber(d.testRepo.triggersTested)} triggers have one or more tests` : 'Not scanned yet'}
+          detail={
+            d.testRepo ? (
+              `${pluralize(d.testRepo.tests, 'test')} read, ${fmtNumber(d.testRepo.testsLinked)} of them hit a trigger`
+            ) : (
+              <Link to="/triggers" className="link">
+                Scan the test repo's {d.branch}
+              </Link>
+            )
+          }
+        />
+      </div>
+      <div className="flex flex-wrap items-center justify-between gap-2 px-4 pt-3 pb-2">
+        <h2 className="text-[13px] font-semibold text-fg">
+          Triggers on <span className="font-mono">{d.branch}</span>
+        </h2>
+        <div role="group" aria-label="Route status" className="inline-flex rounded-md border border-border bg-surface-2 p-0.5">
+          {(['none', 'branch', 'tested'] as const).map((k) => (
+            <button
+              key={k}
+              type="button"
+              aria-pressed={shown === k}
+              onClick={() => setStatus(k)}
+              className={cn(
+                'inline-flex h-6 items-center gap-1.5 rounded-[5px] px-2.5 text-xs font-medium whitespace-nowrap outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/50',
+                shown === k ? 'bg-surface text-fg shadow-sm' : 'text-fg-2 hover:text-fg',
+              )}
+            >
+              {ROUTE_STATUS[k].tab}
+              <span className="font-mono text-[11px] text-fg-3 tabular">{fmtNumber(d.counts[k])}</span>
+            </button>
+          ))}
+        </div>
+      </div>
       {d.items.length === 0 ? (
         <p className="px-4 pt-2 pb-5 text-[13px] text-fg-3">
-          {shown === 'none' ? 'Every route on this branch has a test.' : shown === 'branch' ? 'No route is covered only by a branch.' : 'No route has a test yet.'}
+          {shown === 'none' ? 'Every trigger on this branch has a test.' : shown === 'branch' ? 'No trigger is covered only by a branch.' : 'No trigger has a test yet.'}
         </p>
       ) : (
         <div className="overflow-x-auto">
