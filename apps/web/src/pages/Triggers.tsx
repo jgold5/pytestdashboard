@@ -66,11 +66,16 @@ export default function TriggersPage() {
     );
 
   const data = res.data;
-  const rows = useMemo(() => {
+  /** The triggers the folder, type and search pick: what the tiles count (the status tabs only narrow the list). */
+  const scoped = useMemo(() => {
     const q = search.trim().toLowerCase();
     return (data?.items ?? [])
       .filter((r) => !kind || r.kind === kind)
       .filter((r) => !module || r.module === module)
+      .filter((r) => !q || [r.routeId, r.resolvedUri, r.sourceFile, r.filePattern, r.schedule, r.target, r.doneFile].some((v) => v?.toLowerCase().includes(q)));
+  }, [data, kind, module, search]);
+  const rows = useMemo(() => {
+    return scoped
       .filter((r) =>
         status === 'automated'
           ? automated(r) && r.change !== 'removed'
@@ -80,9 +85,8 @@ export default function TriggersPage() {
               ? r.change !== 'unchanged' || newlyAutomated(r) || lostTest(r)
               : true,
       )
-      .filter((r) => !q || [r.routeId, r.resolvedUri, r.sourceFile, r.filePattern, r.schedule, r.target, r.doneFile].some((v) => v?.toLowerCase().includes(q)))
       .sort((a, b) => (compare ? CHANGE_ORDER[a.change ?? 'unchanged'] - CHANGE_ORDER[b.change ?? 'unchanged'] : 0));
-  }, [data, kind, module, status, search, compare]);
+  }, [scoped, status, compare]);
   const modules = useMemo(() => [...new Set((data?.items ?? []).map((r) => r.module).filter((m): m is string => !!m))].sort(), [data]);
 
   const branchOptions = (data?.branches ?? []).map((b) => ({ value: b.branch, label: b.branch }));
@@ -135,7 +139,7 @@ export default function TriggersPage() {
         <NoScans onScanned={(b) => set({ branch: b })} />
       ) : data ? (
         <>
-          <Totals data={data} />
+          <Totals data={data} items={scoped} scope={[module ? `in ${module}/` : null, kind ? (kind === 'file' ? 'load file' : 'schedule') : null, search.trim() ? `matching “${search.trim()}”` : null].filter(Boolean).join(' · ')} />
           <Sources data={data} />
           <div className="mt-4 mb-3 flex flex-wrap items-center gap-2">
             <div role="tablist" aria-label="Filter triggers" className="flex flex-wrap gap-1.5">
@@ -159,13 +163,13 @@ export default function TriggersPage() {
               {modules.length > 1 ? (
                 <Select
                   size="sm"
-                  ariaLabel="Module"
+                  ariaLabel="Folder"
                   value={module}
                   onValueChange={(v) => set({ module: v })}
-                  options={modules.map((m) => ({ value: m, label: m }))}
+                  options={modules.map((m) => ({ value: m, label: `${m} · ${fmtNumber((data?.items ?? []).filter((r) => r.module === m && r.change !== 'removed').length)}` }))}
                   allowNone
-                  noneLabel="All modules"
-                  className="w-40"
+                  noneLabel="All folders"
+                  className="w-48"
                 />
               ) : null}
               <Select
@@ -259,19 +263,24 @@ function Sources({ data }: { data: TriggerListResponse }) {
   );
 }
 
-function Totals({ data }: { data: TriggerListResponse }) {
-  const live = data.items.filter((r) => r.change !== 'removed');
+/** `items`: the triggers in scope (folder, type, search), `scope`: how they were picked, for the labels. */
+function Totals({ data, items, scope }: { data: TriggerListResponse; items: TriggerRow[]; scope: string }) {
+  const live = items.filter((r) => r.change !== 'removed');
   const covered = live.filter(automated).length;
   const files = live.filter((r) => r.kind === 'file').length;
   const scan = data.branch ? data.branches.find((b) => b.branch === data.branch) : null;
   const added = live.filter((r) => r.change === 'added');
   const changed = live.filter((r) => r.change === 'changed');
-  const removed = data.items.filter((r) => r.change === 'removed');
+  const removed = items.filter((r) => r.change === 'removed');
   const fresh = live.filter(newlyAutomated);
   const lost = live.filter(lostTest);
   return (
     <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-      <Tile label="Triggers" value={fmtNumber(live.length)} sub={`${fmtNumber(files)} load file · ${fmtNumber(live.length - files)} schedule`} />
+      <Tile
+        label={scope ? `Triggers ${scope}` : 'Triggers'}
+        value={fmtNumber(live.length)}
+        sub={`${fmtNumber(files)} load file · ${fmtNumber(live.length - files)} schedule`}
+      />
       <Tile
         label="Automated"
         value={
@@ -280,9 +289,14 @@ function Totals({ data }: { data: TriggerListResponse }) {
             <span className="ml-1.5 text-sm font-medium text-fg-3">{fmtNumber(covered)}</span>
           </>
         }
-        sub="have a labelled test"
+        sub={data.branch ? `by tests on ${data.testsFrom ?? data.branch} only` : 'by tests on any branch'}
       />
-      <Tile label="Not automated" value={fmtNumber(live.length - covered)} sub={live.length - covered > 0 ? 'no test names them' : 'every trigger covered'} tone={live.length - covered > 0 ? 'bad' : 'good'} />
+      <Tile
+        label="Not automated"
+        value={fmtNumber(live.length - covered)}
+        sub={live.length - covered > 0 ? (data.branch ? 'no test there names them' : 'no test names them') : 'every trigger covered'}
+        tone={live.length - covered > 0 ? 'bad' : 'good'}
+      />
       {data.compare ? (
         <Tile
           label={`vs ${data.compare}`}

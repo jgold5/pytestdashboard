@@ -49,20 +49,43 @@ import { ChartTooltipBox, Legend } from '../components/charts/ChartTooltip';
 import { FoundResolvedChart } from '../components/charts/FoundResolvedChart';
 import { SEVERITY_META } from '../components/bugs';
 import { PIPELINE_META, REVIEW_META } from '../components/status';
+import { ScopePicker } from '../components/ScopeBranchPicker';
+import { useScopeBranch, useScopeFolder } from '../lib/scopeBranch';
 
 const PERIODS = [7, 30, 90, 180] as const;
 
 export default function ReportPage() {
   const [params, setParams] = useSearchParams();
   const period = PERIODS.find((p) => p === Number(params.get('period'))) ?? 30;
-  const report = useReport(period);
   const session = useSession();
   const isEditor = session.data?.role !== 'viewer';
+  // the link carries the branch so a shared report shows the same numbers; editors default to their pick
+  const [savedBranch, setSavedBranch] = useScopeBranch();
+  const [savedFolder, setSavedFolder] = useScopeFolder();
+  const branch = params.get('branch') ?? (isEditor ? savedBranch : null);
+  const folder = params.get('folder') ?? (isEditor ? savedFolder : null);
+  const report = useReport(period, branch, folder);
+  const setScope = (key: 'branch' | 'folder', v: string | null) => {
+    (key === 'branch' ? setSavedBranch : setSavedFolder)(v);
+    setParams(
+      (prev) => {
+        const n = new URLSearchParams(prev);
+        if (v) n.set(key, v);
+        else n.delete(key);
+        return n;
+      },
+      { replace: true },
+    );
+  };
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const copyLink = async () => {
     try {
-      await navigator.clipboard.writeText(window.location.href);
+      const url = new URL(window.location.href);
+      // the picked branch and folder, even when they only live in this browser
+      if (branch) url.searchParams.set('branch', branch);
+      if (folder) url.searchParams.set('folder', folder);
+      await navigator.clipboard.writeText(url.toString());
       toast.success('Link copied');
     } catch {
       toast.error('Could not copy — copy the address bar instead.');
@@ -109,6 +132,14 @@ export default function ReportPage() {
               </button>
             ))}
           </div>
+          {isEditor ? (
+            <ScopePicker
+              branch={r?.coverage.branch ?? branch}
+              folder={folder}
+              onBranch={(b) => setScope('branch', b)}
+              onFolder={(f) => setScope('folder', f)}
+            />
+          ) : null}
           <Button variant="outline" size="sm" onClick={() => void copyLink()}>
             <Link2 /> Copy link
           </Button>
@@ -272,7 +303,8 @@ function Headline({ r, isEditor, onSetGoal }: { r: Report; isEditor: boolean; on
           <b className="font-semibold text-fg">{fmtNumber(c.automated)}</b> of{' '}
           {c.unit === 'routes' ? (
             <>
-              {fmtNumber(c.total)} unique triggers have one or more tests
+              {fmtNumber(c.total)} unique triggers{c.folder ? <> in <span className="font-mono">{c.folder}/</span></> : null}{' '}
+              on <span className="font-mono">{c.branch}</span> have one or more tests
               {(c.unmerged ?? 0) > 0 ? <>, {fmtNumber(c.unmerged ?? 0)} of them in branches not merged yet</> : null} (file and schedule
               triggers in the source code)
             </>

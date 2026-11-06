@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { LoginRequest, ReportQuery, Settings, type SessionInfo } from '@ptd/shared';
+import { LoginRequest, ReportQuery, ScopeBranchQuery, Settings, type SessionInfo } from '@ptd/shared';
 import { SESSION_COOKIE, createSession } from '../auth/session.js';
 import { roleForToken, sessionRole } from '../auth/plugin.js';
 import type { Deps } from '../deps.js';
@@ -50,12 +50,15 @@ export function systemRoutes(app: FastifyInstance, { config, db }: Deps): void {
     return reply.status(204).send();
   });
 
-  app.get('/api/summary', async () => getSummary(db));
+  app.get('/api/summary', async (req) => {
+    const q = parseWith(ScopeBranchQuery, req.query);
+    return getSummary(db, q.branch, q.folder);
+  });
   app.get('/api/meta', async () => getMeta(db));
 
   app.get('/api/report', { config: { access: 'viewer' } }, async (req) => {
     const q = parseWith(ReportQuery, req.query);
-    return getReport(db, q.periodDays);
+    return getReport(db, q.periodDays, new Date(), q.branch, q.folder);
   });
   app.get('/api/settings', { config: { access: 'viewer' } }, async () => getSettings(db));
   app.put('/api/settings', async (req) => putSettings(db, parseWith(Settings, req.body)));
