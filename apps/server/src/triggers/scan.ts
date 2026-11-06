@@ -213,6 +213,37 @@ export interface RawRoute {
   /** `<from>`s in order (usually one). */
   inputs: RawInput[];
   conditions: RawCondition[];
+  /**
+   * Marker files the route itself handles (load routes delete one when they finish:
+   * `${file:parent}/LOADTRIGGER`, or a deleteFileName / doneFile header): the route's trigger
+   * file when its `<from>` has no doneFileName.
+   */
+  markers: string[];
+}
+
+/** `${file:parent}/NAME`: a file next to the one being processed. */
+const PARENT_FILE = /\$(?:simple)?\{\s*file:parent\s*\}\s*[/\\]\s*([^\s"'<>;,()]+)/g;
+/** <setHeader name="deleteFileName"><constant|simple>…</…>, also Camel 2's headerName / propertyName. */
+const MARKER_HEADER =
+  /<\s*(?:[\w.-]+:)?set(?:Header|Property)\b((?:[^>"']|"[^"]*"|'[^']*')*)>\s*<\s*(?:[\w.-]+:)?(constant|simple)\b[^>]*>([\s\S]*?)<\s*\/\s*(?:[\w.-]+:)?\2\s*>/g;
+const MARKER_NAME = /(done|delete|trigger|marker|flag)/i;
+
+/** Marker file names in a route's XML (comments removed). */
+export function routeMarkers(body: string): string[] {
+  const out: string[] = [];
+  const add = (raw: string) => {
+    const v = decodeXml(raw).replace(/^\s*<!\[CDATA\[|\]\]>\s*$/g, '').trim();
+    const name = v.split(/[/\\]/).pop() ?? '';
+    // a bare file name, possibly with placeholders / file language (${file:onlyname}.done)
+    if (name && name.length <= 200 && /^[\w.{}$:-]+$/.test(name) && !/^\$\{[^}]*\}$/.test(name)) out.push(name);
+  };
+  for (const m of body.matchAll(PARENT_FILE)) add(m[1] as string);
+  for (const m of body.matchAll(MARKER_HEADER)) {
+    const a = attrs(m[1] ?? '');
+    const header = a.name ?? a.headerName ?? a.propertyName ?? '';
+    if (/file/i.test(header) && MARKER_NAME.test(header)) add(m[3] as string);
+  }
+  return [...new Set(out)];
 }
 
 const XML_ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
@@ -247,6 +278,7 @@ export function scanCamelXml(file: string, xml: string): { routes: RawRoute[]; e
   const routes: RawRoute[] = [];
   const endpoints = new Map<string, string>();
   const stack: RawRoute[] = [];
+  const starts: number[] = [];
   const branches: RawCondition[] = [];
   let lineAt = 0;
   let line = 1;
@@ -260,12 +292,16 @@ export function scanCamelXml(file: string, xml: string): { routes: RawRoute[]; e
     const selfClosing = m[4] === '/';
     const route = stack[stack.length - 1];
     if (name === 'route') {
-      if (closing) stack.pop();
-      else if (!selfClosing) {
+      if (closing) {
+        const done = stack.pop();
+        const start = starts.pop();
+        if (done && start !== undefined) done.markers = routeMarkers(original.slice(start, m.index ?? start).replace(/<!--[\s\S]*?-->/g, ''));
+      } else if (!selfClosing) {
         const a = attrs(m[3] ?? '');
-        const r: RawRoute = { routeId: a.id ?? a.routeId ?? null, file, line: lineOf(m.index ?? 0), inputs: [], conditions: [] };
+        const r: RawRoute = { routeId: a.id ?? a.routeId ?? null, file, line: lineOf(m.index ?? 0), inputs: [], conditions: [], markers: [] };
         routes.push(r);
         stack.push(r);
+        starts.push((m.index ?? 0) + m[0].length);
       }
       continue;
     }
@@ -976,6 +1012,8 @@ export function scanRepository(input: ScanInput): ScanOutput {
       .map((x) => ({ ...x, parsed: parseFileCondition(x.resolved.firstVariant) }))
       .filter((x): x is { c: RawCondition; resolved: Resolved; parsed: FileCondition } => x.parsed !== null);
     let routeHasTrigger = false;
+    // the marker file a load route deletes when it is done: its trigger file when the <from> names none
+    const marker = r.markers[0] ? resolvePlaceholders(r.markers[0], props, r.file) : null;
     r.inputs.forEach((inp, idx) => {
       const uri = inp.uri ?? (inp.ref ? endpoints.get(inp.ref) : undefined);
       if (!uri) {
@@ -1005,14 +1043,14 @@ export function scanRepository(input: ScanInput): ScanOutput {
         patternKind: null,
         condition: null,
         target: null,
-        doneFile: kind === 'file' ? (p.doneFileName ?? null) : null,
+        doneFile: kind === 'file' ? (p.doneFileName ?? marker?.text ?? null) : null,
         input: idx + 1,
         schedule: kind === 'schedule' ? describeSchedule(ep.scheme, p) : null,
         sourceFile: r.file,
         line: inp.line,
         unresolved: resolved.unresolved,
         coveredBy: [],
-        match: { pattern: null, condition: null, doneFile: kind === 'file' ? (ep.params.doneFileName ?? null) : null },
+        match: { pattern: null, condition: null, doneFile: kind === 'file' ? (ep.params.doneFileName ?? marker?.firstVariant ?? null) : null },
       };
       if (kind !== 'file') {
         triggers.push({ ...base, key: uniqueKey(baseKey) });

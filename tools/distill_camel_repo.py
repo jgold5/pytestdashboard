@@ -46,7 +46,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-VERSION = "1.7"
+VERSION = "1.8"
 
 SKIP_DIRS = {
     ".git", "node_modules", "target", "build", "dist", "out", ".venv", "venv", "site-packages",
@@ -77,6 +77,7 @@ dev test qa uat sit prod production stage staging preprod local default common a
 com net org www localhost
 starts with ends contains regex not and or range is camelfilename camelfilenameonly camelfilepath
 camelfileparent camelfilerelativepath onlyname noext choice when otherwise
+parent absolute relative modified size donefile deletefilename donefilename setheader setproperty headername propertyname constant
 changed markerfile rename filelock idempotent always never
 touppercase tolowercase substring substr startswith endswith equals equalsignorecase matches trim strip length indexof replace replaceall split
 ini yaml yml cfg toml json py java kt sh ps1 bat cmd sql feature robot md tsv tox pyproject conftest pytest check checks setup
@@ -260,6 +261,16 @@ class XmlItem:
 
 
 BRANCHES = ("when", "otherwise", "filter")
+# <setHeader name="deleteFileName"> / headerName="doneFileName": the marker file a load route deletes is its trigger file
+MARKER_SETTERS = ("setHeader", "setProperty")
+MARKER_HEADER = re.compile(r"(done|delete|trigger|marker|flag)", re.I)
+PARENT_FILE = re.compile(r"\$(?:simple)?\{\s*file:parent\s*\}\s*[/\\]\s*([^\s\"'<>;,()]+)")
+
+
+def is_marker_setter(name: str, attrs: List[Tuple[str, str]]) -> bool:
+    d = dict(attrs)
+    header = d.get("name") or d.get("headerName") or d.get("propertyName") or ""
+    return name in MARKER_SETTERS and "file" in header.lower() and MARKER_HEADER.search(header) is not None
 FILE_REF = re.compile(r"\$\{\s*(file:(name|onlyname|ext)|(in\.)?headers?(\.|\[\s*['\"]?)CamelFileName)", re.I)
 
 
@@ -301,7 +312,8 @@ def scan_xml(text: str, stats: Counter):
         parent = kept[-1] if kept else route
         keep = name in ("from", "choice", "simple") + BRANCHES or (
             name in ("to", "toD") and local(parent.qname) in BRANCHES
-            and not any(local(c.qname) in ("to", "toD") for c in parent.children))
+            and not any(local(c.qname) in ("to", "toD") for c in parent.children)) or is_marker_setter(name, attrs) or (
+            name == "constant" and local(parent.qname) in MARKER_SETTERS)
         if name in ("toD", "recipientList", "routingSlip", "dynamicRouter"):
             body = dict(attrs).get("uri", "")
             if name != "toD":
@@ -312,8 +324,8 @@ def scan_xml(text: str, stats: Counter):
         if keep:
             node = Node(qname, attrs)
             parent.children.append(node)
-            if name == "simple" and not selfclosing:
-                end = re.search(r"<\s*/\s*(?:[\w.-]+:)?simple\s*>", text[m.end():])
+            if name in ("simple", "constant") and not selfclosing:
+                end = re.search(r"<\s*/\s*(?:[\w.-]+:)?%s\s*>" % name, text[m.end():])
                 if end:
                     raw = original[m.end():m.end() + end.start()]
                     node.text = xml_unescape(re.sub(r"^\s*<!\[CDATA\[|\]\]>\s*$", "", raw)).strip()
@@ -406,7 +418,7 @@ def distill_xml(items: List[XmlItem], namer: Namer) -> str:
     lines = ['<?xml version="1.0" encoding="UTF-8"?>']
 
     def emit_node(n: Node, pad: str) -> None:
-        if local(n.qname) == "simple":
+        if local(n.qname) in ("simple", "constant"):
             lines.append(f"{pad}<{n.qname}{attrs_out(n.attrs, False)}>{xml_escape(simple_expr(n.text or '', namer))}</{n.qname}>")
         elif n.children:
             lines.append(f"{pad}<{n.qname}{attrs_out(n.attrs, False)}>")
@@ -834,7 +846,13 @@ def trigger_names(xml_items: Dict[str, List["XmlItem"]], all_props: Dict[str, Li
                                         add(chunk, kind) if chunk == val else add(chunk, kind + " (part)", prefixes)
                                 else:
                                     add_pattern(val, kind)
-                elif local(n.qname) == "simple" and n.text and FILE_REF.search(n.text):
+                elif local(n.qname) in ("simple", "constant") and n.text and (PARENT_FILE.search(n.text) or local(n.qname) == "constant"):
+                    # the marker file a load route deletes: ${file:parent}/LOADTRIGGER, or a doneFileName header's value
+                    for val in [m.group(1) for m in PARENT_FILE.finditer(n.text)] or [n.text]:
+                        name = re.split(r"[/\\]", val.strip())[-1]
+                        if name and "${" not in name:
+                            add(name, "trigger file")
+                if local(n.qname) == "simple" and n.text and FILE_REF.search(n.text):
                     for lit in re.findall(r"'([^']*)'|\"([^\"]*)\"", n.text):
                         for val in values(lit[0] or lit[1]):
                             for one in val.split(","):
