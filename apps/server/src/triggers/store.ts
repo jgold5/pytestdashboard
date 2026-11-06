@@ -6,6 +6,7 @@
  * or both. Coverage is matched when read: the branch's latest route scan (else the
  * default branch's) against its latest test scan (else the default branch's).
  */
+import { changedTests, testScope } from './testScope.js';
 import { and, desc, eq, inArray, lt, notInArray, or } from 'drizzle-orm';
 import type { Trigger, TriggerListResponse, TriggerQuery, TriggerRow, TriggerScanFields, TriggerScanResponse, TriggerScanSummary } from '@ptd/shared';
 import type { Db } from '../db/client.js';
@@ -147,7 +148,7 @@ function coverage(db: Db, routes: ScanRow, tests: readonly TestLabels[], testsKe
   if (!hit) {
     hit = coverTriggers(routes.triggers, tests);
     cache.set(key, hit);
-    if (cache.size > 32) cache.delete(cache.keys().next().value as string);
+    if (cache.size > 256) cache.delete(cache.keys().next().value as string);
   }
   return hit;
 }
@@ -189,6 +190,8 @@ function caseLinker(db: Db): (nodeId: string) => number | null {
 }
 
 interface View {
+  /** Branches whose tests count as not merged yet (PRs into this branch). */
+  unmergedFrom: string[];
   triggers: StoredTrigger[];
   /** The tests the view's coverage came from. */
   tests: readonly TestLabels[];
@@ -198,20 +201,36 @@ interface View {
   testsFrom: string | null;
 }
 
-function viewOf(db: Db, latest: Latest, branch: string): View {
+/**
+ * A branch's triggers, covered by its merged tests and by the PRs into it (each such test
+ * carries the PR branch it is on). Same rule as the Overview's numbers (see testScope).
+ */
+function viewOf(db: Db, latest: Latest, branch: string, opts: { unmerged?: boolean } = {}): View {
   const routes = pick(latest.routes, branch);
-  const tests = pick(latest.tests, branch);
+  const full = testScope(branch, latest.tests, new Set(latest.routes.keys()));
+  // a comparison's "before" side is what is merged there, without its open PRs
+  const scope = opts.unmerged === false ? { ...full, unmerged: [] } : full;
+  const tests = scope.merged;
   const testsRead = tests?.tests.length ?? 0;
   const testList = tests?.tests ?? [];
-  if (!routes) return { triggers: [], tests: testList, testsRead, covered: new Map(), routesFrom: null, testsFrom: tests?.branch ?? null };
-  return {
-    triggers: routes.triggers,
-    tests: testList,
-    testsRead,
-    covered: coverage(db, routes, tests?.tests ?? [], String(tests?.id ?? 0)),
-    routesFrom: routes.branch,
-    testsFrom: tests?.branch ?? null,
-  };
+  const unmergedFrom = scope.unmerged.map((s) => s.branch);
+  if (!routes) return { unmergedFrom, triggers: [], tests: testList, testsRead, covered: new Map(), routesFrom: null, testsFrom: tests?.branch ?? null };
+  const merged = coverage(db, routes, testList, String(tests?.id ?? 0));
+  let covered = merged;
+  if (scope.unmerged.length > 0) {
+    covered = new Map([...merged].map(([k, v]) => [k, [...v]]));
+    for (const s of scope.unmerged) {
+      // a PR branch is mostly the same tests as the merged branch: only its changed ones matter
+      const delta = changedTests(testList, s.tests);
+      if (delta.length === 0) continue;
+      for (const [key, list] of coverage(db, routes, delta, `${s.id}~${tests?.id ?? 0}`)) {
+        const have = covered.get(key) ?? [];
+        for (const c of list) if (!have.some((h) => h.test === c.test)) have.push({ ...c, branch: s.branch });
+        covered.set(key, have);
+      }
+    }
+  }
+  return { unmergedFrom, triggers: routes.triggers, tests: testList, testsRead, covered, routesFrom: routes.branch, testsFrom: tests?.branch ?? null };
 }
 
 /** Every branch merged: one row per trigger (as on the default branch, else the newest), covered by any branch's tests. */
@@ -231,7 +250,7 @@ function mergedView(db: Db, latest: Latest): View {
       covered.set(t.key, have);
     }
   }
-  return { triggers: [...triggers.values()], tests: allTests, testsRead: new Set(allTests.map((t) => t.id)).size, covered, routesFrom: null, testsFrom: null };
+  return { unmergedFrom: [], triggers: [...triggers.values()], tests: allTests, testsRead: new Set(allTests.map((t) => t.id)).size, covered, routesFrom: null, testsFrom: null };
 }
 
 export function listTriggers(db: Db, q: TriggerQuery): TriggerListResponse {
@@ -244,7 +263,7 @@ export function listTriggers(db: Db, q: TriggerQuery): TriggerListResponse {
   for (const s of latest.routes.values()) for (const t of s.triggers) branchesOf.set(t.key, [...(branchesOf.get(t.key) ?? []), s.branch]);
 
   const head = q.branch ? viewOf(db, latest, q.branch) : mergedView(db, latest);
-  const base = q.compare ? viewOf(db, latest, q.compare) : null;
+  const base = q.compare ? viewOf(db, latest, q.compare, { unmerged: false }) : null;
   const baseByKey = base ? new Map(base.triggers.map((t) => [t.key, t])) : null;
   const link = caseLinker(db);
   const row = (t: StoredTrigger, covered: Covered, change: TriggerRow['change'], before: StoredTrigger | undefined): TriggerRow => {
@@ -277,6 +296,7 @@ export function listTriggers(db: Db, q: TriggerQuery): TriggerListResponse {
     compare: q.compare ?? null,
     routesFrom: head.routesFrom,
     testsFrom: head.testsFrom,
+    unmergedFrom: head.unmergedFrom,
     compareRoutesFrom: base?.routesFrom ?? null,
     compareTestsFrom: base?.testsFrom ?? null,
     tests: { read: head.testsRead, linked: new Set([...head.covered.values()].flat().map((c) => c.test)).size },
