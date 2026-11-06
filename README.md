@@ -334,7 +334,12 @@ curl --fail-with-body -sS -X POST "$DASHBOARD_URL/api/triggers/scan" \
   When a key still has different values in different files, the page shows the
   placeholder and lists each value. It doesn't pick one.
 - **Trigger files.** A route's `doneFileName` is shown as its trigger file: the file
-  that has to exist before the data file is picked up.
+  that has to exist before the data file is picked up. Load routes that pick up their data
+  by `include=` and delete a marker file when they finish get that marker as their trigger
+  file: `${file:parent}/LOADTRIGGER`, or a `setHeader`/`setProperty` such as
+  `deleteFileName` / `doneFileName`. A test that drops the marker covers the route.
+- **Plain names and defaults.** `include=EXTRACTRIGGER` matches that one name, and
+  `{{key:DEFAULT}}` uses `DEFAULT` when no properties file sets `key`.
 - **Several triggers in one route.** Each one counts separately:
   - each `<from>`, when a route has more than one;
   - each pattern, when `include=(INV|CRN)_.*` or `antInclude=INV_*.csv,CRN_*.csv` lists several;
