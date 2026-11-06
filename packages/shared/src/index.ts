@@ -1126,6 +1126,10 @@ export const IntegrationStatus = z.object({
       created: z.number().int(), // jira: test cases created; github: PRs seen for the first time
       updated: z.number().int(), // jira: test cases updated; github: cases auto-promoted to automated by a merged PR
       linked: z.number().int(), // PR↔case links (github only)
+      /** github: the test repo's open PR branches scanned, already current, scans removed (PR closed), failed. */
+      branchScans: z
+        .object({ scanned: z.number().int(), unchanged: z.number().int(), removed: z.number().int(), failed: z.number().int() })
+        .optional(),
     })
     .nullable(),
   /** Minutes between automatic syncs; null = manual only. */
