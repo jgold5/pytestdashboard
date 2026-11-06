@@ -25,13 +25,14 @@ import { FlakyMeter, REVIEW_META, TRIAGE_META } from '../components/status';
 import { PipelineFunnel, stageHref } from '../components/pipeline';
 import { RunGroupChip } from '../components/RunGroup';
 import { ScopePicker } from '../components/ScopeBranchPicker';
-import { useScopeBranch, useScopeFolder } from '../lib/scopeBranch';
+import { useScopeBranch, useScopeFolder, useScopeTests } from '../lib/scopeBranch';
 import { cn, fmtNumber, fmtPct, fmtRelative, pluralize } from '../lib/utils';
 
 export function OverviewPage() {
   const [branch, setBranch] = useScopeBranch();
   const [folder, setFolder] = useScopeFolder();
-  const summary = useSummary(branch, folder);
+  const [tests, setTests] = useScopeTests();
+  const summary = useSummary(branch, folder, tests);
 
   if (summary.isError) return <ErrorState error={summary.error} onRetry={() => void summary.refetch()} />;
   if (!summary.data) return <OverviewSkeleton />;
@@ -45,7 +46,7 @@ export function OverviewPage() {
         description="Automation coverage and the health of your automated runs."
         actions={
           <>
-            <ScopePicker branch={s.coverage.branch ?? branch} folder={folder} onBranch={setBranch} onFolder={setFolder} />
+            <ScopePicker branch={s.coverage.branch ?? branch} folder={folder} tests={tests} onBranch={setBranch} onFolder={setFolder} onTests={setTests} />
             <Link to="/import" className={linkButton('outline')}>
               <Upload /> Import
             </Link>
@@ -76,7 +77,7 @@ export function OverviewPage() {
         <div className="space-y-4">
           <KpiRow s={s} />
           <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
-            <RoutesCard branch={branch} folder={folder} />
+            <RoutesCard branch={branch} folder={folder} tests={tests} />
             <NeedsAttention s={s} />
           </div>
           <PipelineCard s={s} />
@@ -667,9 +668,9 @@ function SourceStep({
   );
 }
 
-function RoutesCard({ branch, folder }: { branch: string | null; folder: string | null }) {
+function RoutesCard({ branch, folder, tests }: { branch: string | null; folder: string | null; tests: string | null }) {
   const [status, setStatus] = useState<RouteStatus | undefined>(undefined);
-  const q = useTriggerOverview(status, 8, branch, folder);
+  const q = useTriggerOverview(status, 8, branch, folder, tests);
   const d = q.data;
   if (q.isPending) return <Skeleton className="h-[360px]" />;
   if (q.isError || !d) return <Card><ErrorState error={q.error} onRetry={() => void q.refetch()} /></Card>;
@@ -705,6 +706,7 @@ function RoutesCard({ branch, folder }: { branch: string | null; folder: string 
           title="Trigger repo"
           source={d.triggerRepo}
           big={d.triggerRepo ? `${fmtNumber(d.triggerRepo.triggers)} unique triggers${where}` : '—'}
+          detail={d.triggerRepo && d.triggerRepo.routes !== d.triggerRepo.triggers ? `in ${pluralize(d.triggerRepo.routes, 'route')} (a route with several patterns counts each one)` : undefined}
         />
         <SourceStep
           n={2}

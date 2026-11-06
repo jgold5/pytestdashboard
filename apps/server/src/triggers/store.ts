@@ -205,9 +205,10 @@ interface View {
  * A branch's triggers, covered by its merged tests and by the PRs into it (each such test
  * carries the PR branch it is on). Same rule as the Overview's numbers (see testScope).
  */
-function viewOf(db: Db, latest: Latest, branch: string, opts: { unmerged?: boolean } = {}): View {
+function viewOf(db: Db, latest: Latest, branch: string, opts: { unmerged?: boolean; tests?: string } = {}): View {
   const routes = pick(latest.routes, branch);
-  const full = testScope(branch, latest.tests, new Set(latest.routes.keys()));
+  // tests: the test repo branch picked (default: the same name as the routes branch)
+  const full = testScope(opts.tests || branch, latest.tests, new Set(latest.routes.keys()));
   // a comparison's "before" side is what is merged there, without its open PRs
   const scope = opts.unmerged === false ? { ...full, unmerged: [] } : full;
   const tests = scope.merged;
@@ -262,8 +263,8 @@ export function listTriggers(db: Db, q: TriggerQuery): TriggerListResponse {
   const branchesOf = new Map<string, string[]>();
   for (const s of latest.routes.values()) for (const t of s.triggers) branchesOf.set(t.key, [...(branchesOf.get(t.key) ?? []), s.branch]);
 
-  const head = q.branch ? viewOf(db, latest, q.branch) : mergedView(db, latest);
-  const base = q.compare ? viewOf(db, latest, q.compare, { unmerged: false }) : null;
+  const head = q.branch ? viewOf(db, latest, q.branch, { tests: q.tests }) : mergedView(db, latest);
+  const base = q.compare ? viewOf(db, latest, q.compare, { unmerged: false, tests: q.tests }) : null;
   const baseByKey = base ? new Map(base.triggers.map((t) => [t.key, t])) : null;
   const link = caseLinker(db);
   const row = (t: StoredTrigger, covered: Covered, change: TriggerRow['change'], before: StoredTrigger | undefined): TriggerRow => {

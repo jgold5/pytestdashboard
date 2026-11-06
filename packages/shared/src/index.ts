@@ -804,6 +804,8 @@ export const CoverageTotals = z.object({
  */
 export const ScopeBranchQuery = z.object({
   branch: trimmed(LIMITS.shortTextMax).min(1).optional(),
+  /** Test repo branch whose merged tests count (plus the PRs into it); default: the same as the routes branch. */
+  tests: trimmed(LIMITS.shortTextMax).min(1).optional(),
   folder: trimmed(LIMITS.shortTextMax).min(1).optional(),
 });
 export type ScopeBranchQuery = z.infer<typeof ScopeBranchQuery>;
@@ -986,6 +988,8 @@ export const ReportQuery = z.object({
   branch: trimmed(LIMITS.shortTextMax).min(1).optional(),
   /** Only the triggers in this folder. */
   folder: trimmed(LIMITS.shortTextMax).min(1).optional(),
+  /** Test repo branch whose merged tests count (plus the PRs into it); default: the same as the routes branch. */
+  tests: trimmed(LIMITS.shortTextMax).min(1).optional(),
 });
 export type ReportQuery = z.infer<typeof ReportQuery>;
 
@@ -1378,6 +1382,8 @@ export const TriggerOverviewQuery = z.object({
   branch: trimmed(LIMITS.shortTextMax).min(1).optional(),
   /** Only the triggers in this folder (the folder under `resources/`). */
   folder: trimmed(LIMITS.shortTextMax).min(1).optional(),
+  /** Test repo branch whose merged tests count (plus the PRs into it); default: the same as the routes branch. */
+  tests: trimmed(LIMITS.shortTextMax).min(1).optional(),
   status: RouteStatus.optional(),
   limit: z.coerce.number().int().min(1).max(50).default(8),
 });
@@ -1413,12 +1419,14 @@ export const TriggerOverviewResponse = z.object({
   /** Branches with a route scan, the default first: what the Overview's branch picker offers. */
   routeBranches: z.array(z.string()),
   defaultBranch: z.string().nullable(),
+  /** Test repo branches that can be the merged tests (PR branches left out), the default first. */
+  testBranches: z.array(z.string()),
   /** Folders on the branch with their counts (tested includes unmerged), for the folder picker. */
   folders: z.array(z.object({ folder: z.string(), triggers: z.number().int(), tested: z.number().int(), unmerged: z.number().int() })),
   /** The folder the counts and items are limited to; null = the whole branch. */
   folder: z.string().nullable(),
   /** 1. The trigger repo: its scan on the default branch, and the unique triggers in it. */
-  triggerRepo: ScopeSource.extend({ triggers: z.number().int() }).nullable(),
+  triggerRepo: ScopeSource.extend({ triggers: z.number().int(), /** Routes they belong to (a route with several patterns has several triggers). */ routes: z.number().int() }).nullable(),
   /** 2. The test repo: its scan on the default branch, the tests read, and the triggers they cover. */
   testRepo: ScopeSource.extend({ tests: z.number().int(), testsLinked: z.number().int(), triggersTested: z.number().int() }).nullable(),
   /** Null until a route scan exists. */
@@ -1448,6 +1456,8 @@ export type TriggerRow = z.infer<typeof TriggerRow>;
 /** `GET /api/triggers` — `branch` omitted ⇒ every branch's latest route scan merged, covered by any branch's tests. */
 export const TriggerQuery = z.object({
   branch: trimmed(LIMITS.shortTextMax).min(1).optional(),
+  /** Test repo branch whose merged tests count (plus the PRs into it); default: the same as the routes branch. */
+  tests: trimmed(LIMITS.shortTextMax).min(1).optional(),
   compare: trimmed(LIMITS.shortTextMax).min(1).optional(),
 });
 export type TriggerQuery = z.infer<typeof TriggerQuery>;

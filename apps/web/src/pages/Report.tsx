@@ -50,7 +50,7 @@ import { FoundResolvedChart } from '../components/charts/FoundResolvedChart';
 import { SEVERITY_META } from '../components/bugs';
 import { PIPELINE_META, REVIEW_META } from '../components/status';
 import { ScopePicker } from '../components/ScopeBranchPicker';
-import { useScopeBranch, useScopeFolder } from '../lib/scopeBranch';
+import { useScopeBranch, useScopeFolder, useScopeTests } from '../lib/scopeBranch';
 
 const PERIODS = [7, 30, 90, 180] as const;
 
@@ -62,11 +62,13 @@ export default function ReportPage() {
   // the link carries the branch so a shared report shows the same numbers; editors default to their pick
   const [savedBranch, setSavedBranch] = useScopeBranch();
   const [savedFolder, setSavedFolder] = useScopeFolder();
+  const [savedTests, setSavedTests] = useScopeTests();
   const branch = params.get('branch') ?? (isEditor ? savedBranch : null);
   const folder = params.get('folder') ?? (isEditor ? savedFolder : null);
-  const report = useReport(period, branch, folder);
-  const setScope = (key: 'branch' | 'folder', v: string | null) => {
-    (key === 'branch' ? setSavedBranch : setSavedFolder)(v);
+  const tests = params.get('tests') ?? (isEditor ? savedTests : null);
+  const report = useReport(period, branch, folder, tests);
+  const setScope = (key: 'branch' | 'folder' | 'tests', v: string | null) => {
+    (key === 'branch' ? setSavedBranch : key === 'folder' ? setSavedFolder : setSavedTests)(v);
     setParams(
       (prev) => {
         const n = new URLSearchParams(prev);
@@ -85,6 +87,7 @@ export default function ReportPage() {
       // the picked branch and folder, even when they only live in this browser
       if (branch) url.searchParams.set('branch', branch);
       if (folder) url.searchParams.set('folder', folder);
+      if (tests) url.searchParams.set('tests', tests);
       await navigator.clipboard.writeText(url.toString());
       toast.success('Link copied');
     } catch {
@@ -136,8 +139,10 @@ export default function ReportPage() {
             <ScopePicker
               branch={r?.coverage.branch ?? branch}
               folder={folder}
+              tests={tests}
               onBranch={(b) => setScope('branch', b)}
               onFolder={(f) => setScope('folder', f)}
+              onTests={(x) => setScope('tests', x)}
             />
           ) : null}
           <Button variant="outline" size="sm" onClick={() => void copyLink()}>

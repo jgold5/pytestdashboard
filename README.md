@@ -246,6 +246,12 @@ spreadsheet or Jira rows:
   not; the Overview says how many are not merged yet;
 - **No test yet**: the rest.
 
+**Routes and tests are picked separately.** The **Routes** picker chooses the trigger repo
+branch (whose triggers are the scope); the **Tests** picker chooses the test repo branch whose
+merged tests count, plus the open PRs into it. By default the tests branch has the same name as
+the routes branch (else the test repo's default), so "routes from core, tests from main" is one
+pick away.
+
 **Every page counts one branch of the trigger repo.** Picking `core` means `core`'s triggers,
 tested by `core`'s merged tests plus every open PR into `core` (scanned with Scan open PRs);
 other branches' tests never count. There is no "all branches" view. The Triggers page lists

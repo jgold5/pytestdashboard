@@ -14,10 +14,10 @@ export function automationRate(total: number, automated: number, notAutomatable:
  * `branch`: the trigger repo branch to count, `folder`: only the triggers in that folder.
  * Snapshots (the trend) always use the whole default branch.
  */
-export function computeCoverage(db: Db, branch?: string, folder?: string): CoverageTotals {
+export function computeCoverage(db: Db, branch?: string, folder?: string, tests?: string): CoverageTotals {
   // the source code defines the scope once it has been scanned; nothing else adds to it.
   // A trigger counts as tested when a test covers it on any scanned branch, merged or not.
-  const routes = routeCoverage(db, branch);
+  const routes = routeCoverage(db, branch, tests);
   if (routes) {
     const n = scopeCounts(routes, folder);
     const tested = n.tested + n.branch;

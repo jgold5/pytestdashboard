@@ -4,7 +4,7 @@ import { toast } from 'sonner';
 import { ChevronRight, CircleCheck, CircleDashed, Clock, Copy, FileInput, GitBranch, GitCompareArrows, Search, Terminal, Trash2, TriangleAlert, Zap } from 'lucide-react';
 import type { TriggerChange, TriggerListResponse, TriggerRow } from '@ptd/shared';
 import { useDeleteTriggerBranch, useScanGithubBranch, useTriggerBranches, useTriggerGithub, useTriggerOverview, useTriggers } from '../api/hooks';
-import { useScopeBranch, useScopeFolder } from '../lib/scopeBranch';
+import { useScopeBranch, useScopeFolder, useScopeTests } from '../lib/scopeBranch';
 import { errorMessage } from '../api/client';
 import { cn, fmtNumber, fmtPct, fmtRelative, pluralize } from '../lib/utils';
 import { Button } from '../components/ui/button';
@@ -48,6 +48,7 @@ export default function TriggersPage() {
   // the branch and folder follow what was picked on the Overview (and back), unless the link names one
   const [scopeBranch, setScopeBranch] = useScopeBranch();
   const [scopeFolder, setScopeFolder] = useScopeFolder();
+  const [scopeTests, setScopeTests] = useScopeTests();
   const routeInfo = useTriggerOverview(undefined, 1);
   const routeBranches = routeInfo.data?.routeBranches ?? [];
   const defaultBranch = routeInfo.data?.defaultBranch ?? null;
@@ -60,7 +61,10 @@ export default function TriggersPage() {
   const [limit, setLimit] = useState(PAGE);
   const status = (STATUS_FILTERS.find((f) => f.key === params.get('status'))?.key ?? 'all') as StatusKey;
   const [search, setSearch] = useState(params.get('q') ?? '');
-  const res = useTriggers({ branch, compare }, !resolving);
+  // the test repo branch whose merged tests (and PRs into it) count; none = the routes branch's name
+  const tests = params.get('tests') || scopeTests || undefined;
+  const testBranches = routeInfo.data?.testBranches ?? [];
+  const res = useTriggers({ branch, compare, tests }, !resolving);
 
   const set = (patch: Record<string, string | null>) =>
     setParams(
@@ -130,14 +134,26 @@ export default function TriggersPage() {
                   }}
                 />
               ) : null}
-              <Select
-                size="sm"
-                ariaLabel="Branch"
-                value={branch ?? null}
-                onValueChange={pickBranch}
-                options={branchOptions}
-                className="w-48"
-              />
+              <span className="inline-flex items-center gap-1.5 text-xs text-fg-3">
+                Routes
+                <Select size="sm" ariaLabel="Branch" value={branch ?? null} onValueChange={pickBranch} options={branchOptions} className="w-44" />
+              </span>
+              <span className="inline-flex items-center gap-1.5 text-xs text-fg-3" title="Test repo branch: its merged tests count, plus the open PRs into it">
+                Tests
+                <Select
+                  size="sm"
+                  ariaLabel="Tests branch"
+                  value={tests ?? null}
+                  onValueChange={(v) => {
+                    set({ tests: v });
+                    setScopeTests(v);
+                  }}
+                  options={[...new Set([...testBranches, ...(tests ? [tests] : [])])].map((b) => ({ value: b, label: b }))}
+                  allowNone
+                  noneLabel="same as routes"
+                  className="w-40"
+                />
+              </span>
               <Select
                 size="sm"
                 ariaLabel="Compare with branch"
@@ -166,8 +182,33 @@ export default function TriggersPage() {
         <NoScans onScanned={(b) => set({ branch: b })} />
       ) : data ? (
         <>
+          {module && !modules.includes(module) ? (
+            <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-[color-mix(in_oklab,var(--warn)_40%,transparent)] bg-[color-mix(in_oklab,var(--warn)_8%,var(--surface))] px-3 py-2 text-[13px]">
+              <span>
+                There is no <span className="font-mono">{module}/</span> folder on <span className="font-mono">{branch}</span>
+                {modules.length ? (
+                  <>
+                    {' '}
+                    (its folders: <span className="font-mono">{modules.slice(0, 6).join(', ')}</span>
+                    {modules.length > 6 ? '…' : ''})
+                  </>
+                ) : null}
+                .
+              </span>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  set({ module: null });
+                  setScopeFolder(null);
+                }}
+              >
+                Show all folders
+              </Button>
+            </div>
+          ) : null}
           <Totals data={data} items={scoped} scope={[module ? `in ${module}/` : null, kind ? (kind === 'file' ? 'load file' : 'schedule') : null, search.trim() ? `matching “${search.trim()}”` : null].filter(Boolean).join(' · ')} />
-          <Sources data={data} routeBranches={routeBranches} />
+          <Sources data={data} routeBranches={routeBranches} prTarget={tests ?? data.branch ?? ''} />
           <div className="mt-4 mb-3 flex flex-wrap items-center gap-2">
             <div role="tablist" aria-label="Filter triggers" className="flex flex-wrap gap-1.5">
               {STATUS_FILTERS.filter((f) => !('compareOnly' in f) || compare).map((f) => (
@@ -257,7 +298,8 @@ export default function TriggersPage() {
 }
 
 /** Where the routes and the tests come from (they can be different repos, scanned per branch). */
-function Sources({ data, routeBranches }: { data: TriggerListResponse; routeBranches: string[] }) {
+/** `prTarget`: the branch whose PRs count (the tests branch picked, else the routes branch). */
+function Sources({ data, routeBranches, prTarget }: { data: TriggerListResponse; routeBranches: string[]; prTarget: string }) {
   if (!data.branch) {
     return (
       <p className="mt-2 text-xs text-fg-3">
@@ -282,10 +324,10 @@ function Sources({ data, routeBranches }: { data: TriggerListResponse; routeBran
       {data.unmergedFrom.length > 0 ? (
         <span>
           {' '}
-          + {pluralize(data.unmergedFrom.length, 'PR branch', 'PR branches')} into <span className="font-mono">{data.branch}</span>, not merged yet
+          + {pluralize(data.unmergedFrom.length, 'PR branch', 'PR branches')} into <span className="font-mono">{prTarget}</span>, not merged yet
         </span>
       ) : (
-        <span className="text-warn"> · no open PRs into {data.branch} scanned: use Scan open PRs</span>
+        <span className="text-warn"> · no open PRs into {prTarget} scanned: use Scan open PRs</span>
       )}
       {(() => {
         // test branches scanned by hand or from CI don't say which branch their PR goes into, so they count for the default only
@@ -318,6 +360,7 @@ function Sources({ data, routeBranches }: { data: TriggerListResponse; routeBran
 /** `items`: the triggers in scope (folder, type, search), `scope`: how they were picked, for the labels. */
 function Totals({ data, items, scope }: { data: TriggerListResponse; items: TriggerRow[]; scope: string }) {
   const live = items.filter((r) => r.change !== 'removed');
+  const routes = groupByRoute(live).length;
   const covered = live.filter(automated).length;
   const unmergedOnly = live.filter((r) => r.coveredBy.length > 0 && r.coveredBy.every((c) => c.branch)).length;
   const files = live.filter((r) => r.kind === 'file').length;
@@ -331,7 +374,12 @@ function Totals({ data, items, scope }: { data: TriggerListResponse; items: Trig
     <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
       <Tile
         label={scope ? `Triggers ${scope}` : 'Triggers'}
-        value={fmtNumber(live.length)}
+        value={
+          <>
+            {fmtNumber(live.length)}
+            {routes !== live.length ? <span className="ml-1.5 text-sm font-medium text-fg-3">in {pluralize(routes, 'route')}</span> : null}
+          </>
+        }
         sub={`${fmtNumber(files)} load file · ${fmtNumber(live.length - files)} schedule`}
       />
       <Tile
@@ -339,7 +387,7 @@ function Totals({ data, items, scope }: { data: TriggerListResponse; items: Trig
         value={
           <>
             {fmtPct(live.length ? covered / live.length : null, 0)}
-            <span className="ml-1.5 text-sm font-medium text-fg-3">{fmtNumber(covered)}</span>
+            {live.length ? <span className="ml-1.5 text-sm font-medium text-fg-3">{fmtNumber(covered)}</span> : null}
           </>
         }
         sub={
@@ -351,8 +399,8 @@ function Totals({ data, items, scope }: { data: TriggerListResponse; items: Trig
       <Tile
         label="No test yet"
         value={fmtNumber(live.length - covered)}
-        sub={live.length - covered > 0 ? 'no merged test or PR names them' : 'every trigger covered'}
-        tone={live.length - covered > 0 ? 'bad' : 'good'}
+        sub={live.length === 0 ? 'no triggers here' : live.length - covered > 0 ? 'no merged test or PR names them' : 'every trigger covered'}
+        tone={live.length === 0 ? undefined : live.length - covered > 0 ? 'bad' : 'good'}
       />
       {data.compare ? (
         <Tile

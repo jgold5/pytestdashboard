@@ -27,3 +27,5 @@ function useStored(key: string): [string | null, (v: string | null) => void] {
 
 export const useScopeBranch = () => useStored('ptd-scope-branch');
 export const useScopeFolder = () => useStored('ptd-scope-folder');
+/** The test repo branch whose merged tests count (plus the PRs into it); null = the same name as the routes branch. */
+export const useScopeTests = () => useStored('ptd-scope-tests');
