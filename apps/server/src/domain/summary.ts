@@ -78,7 +78,7 @@ export function coverageTrend(db: Db, sinceDate: string): Summary['coverageTrend
 const TREND_RUNS_PER_GROUP = 30;
 const TREND_MAX_GROUPS = 12;
 
-export function getSummary(db: Db, branch?: string, folder?: string): Summary {
+export function getSummary(db: Db, branch?: string, folder?: string, tests?: string): Summary {
   const latest = db.select().from(runs).orderBy(desc(runs.sortAt), desc(runs.id)).limit(1).get();
   // Last 30 runs *per run group* (the UI shows one group at a time; a global
   // "last 30" left only a handful of bars per group). Most recently active
@@ -137,7 +137,7 @@ export function getSummary(db: Db, branch?: string, folder?: string): Summary {
     .map((r) => ({ ...r, automated: r.automated ?? 0, notAutomatable: r.notAutomatable ?? 0 }));
 
   return {
-    coverage: computeCoverage(db, branch, folder),
+    coverage: computeCoverage(db, branch, folder, tests),
     coverageTrend: coverageTrend(db, isoDate(addDays(new Date(), -180))),
     latestRun: latest ? serializeRun(latest) : null,
     runTrend,

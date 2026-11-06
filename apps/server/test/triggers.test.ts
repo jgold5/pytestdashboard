@@ -652,7 +652,7 @@ describe('routes in the source code are the scope', () => {
       // the Overview's route table: the untested routes first, one status at a time
       expect(await overview()).toMatchObject({
         // 1. the trigger repo: unique triggers; 2. the test repo: triggers with one or more tests
-        triggerRepo: { branch: 'main', triggers: 3 },
+        triggerRepo: { branch: 'main', triggers: 3, routes: 3 },
         testRepo: { branch: 'main', tests: 1, testsLinked: 1, triggersTested: 1 },
         branch: 'main',
         counts: { tested: 1, branch: 1, none: 1 },
@@ -698,12 +698,32 @@ describe('routes in the source code are the scope', () => {
           { folder: 'billing', triggers: 1, tested: 1, unmerged: 1 },
           { folder: 'common', triggers: 2, tested: 1, unmerged: 0 },
         ],
-        triggerRepo: { branch: 'dev', triggers: 2 },
+        triggerRepo: { branch: 'dev', triggers: 2, routes: 2 },
         counts: { tested: 1, branch: 0, none: 1 },
         items: [{ routeId: 'purge' }],
       });
       // a folder the branch doesn't have counts nothing
       expect((await t.app.inject({ url: '/api/summary?branch=core&folder=common' })).json<{ coverage: { total: number } }>().coverage.total).toBe(0);
+    } finally {
+      await t.close();
+    }
+  });
+});
+
+describe('a route with several patterns', () => {
+  it('counts each pattern as a trigger, and says how many routes they are in', async () => {
+    const t = await createTestApp();
+    try {
+      const mp = multipart({ branch: 'main', only: 'routes' }, [
+        {
+          field: 'file:src/main/resources/common/routes',
+          filename: 'out.xml',
+          content: '<routes><route id="sftp-out-send"><from uri="sftp://h/{{outbound_home}}?include=(FirstOne_.*|SecondOne_.*|ThirdOne_.*)"/></route><route id="purge"><from uri="quartz://p?cron=0+0+2+*+*+?"/></route></routes>',
+        },
+      ]);
+      expect((await t.app.inject({ method: 'POST', url: '/api/triggers/scan', payload: mp.payload, headers: mp.headers })).statusCode).toBe(201);
+      const ov = (await t.app.inject({ url: '/api/triggers/overview?folder=common' })).json<{ triggerRepo: { triggers: number; routes: number } }>();
+      expect(ov.triggerRepo).toMatchObject({ triggers: 4, routes: 2 });
     } finally {
       await t.close();
     }
@@ -753,6 +773,18 @@ describe('PRs count for the branch they target', () => {
       ]);
       const dev = (await t.app.inject({ url: '/api/triggers?branch=dev' })).json<TriggerListResponse>();
       expect(dev.unmergedFrom).toEqual(['feature/a-dev']);
+
+      // routes and tests picked separately: core's routes, dev's tests (and the PRs into dev)
+      const mixed = (await t.app.inject({ url: '/api/triggers?branch=core&tests=dev' })).json<TriggerListResponse>();
+      expect(mixed).toMatchObject({ routesFrom: 'core', testsFrom: 'dev', unmergedFrom: ['feature/a-dev'] });
+      expect(mixed.items.map((r) => [r.routeId, r.coveredBy.map((c) => c.branch ?? 'merged')])).toEqual([
+        ['core-a', ['feature/a-dev']],
+        ['core-b', ['merged']],
+      ]);
+      expect(await cov('branch=core&folder=common&tests=dev')).toMatchObject({ branch: 'core', total: 2, automated: 2, unmerged: 1 });
+      const pickers = (await t.app.inject({ url: '/api/triggers/overview?branch=core&tests=dev' })).json<{ testBranches: string[]; testRepo: { branch: string } }>();
+      expect(pickers.testBranches).toEqual(['core', 'dev']); // PR branches are not offered
+      expect(pickers.testRepo.branch).toBe('dev');
     } finally {
       await t.close();
     }
