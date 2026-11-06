@@ -565,6 +565,60 @@ describe('Xray keys in tests', () => {
   });
 });
 
+describe('the ways a trigger is written', () => {
+  const scan = (xml: string, props = '', tests: Record<string, string> = {}) =>
+    scanRepository({
+      xml: [{ path: 'src/main/resources/sample-routes/routes/a.xml', text: xml }],
+      properties: props ? [{ path: 'src/main/resources/sample-routes/config/app.properties', text: props }] : [],
+      tests: Object.entries(tests).map(([path, text]) => ({ path, text })),
+    });
+  const covered = (out: ReturnType<typeof scan>, id: string) => out.triggers.find((t) => t.routeId === id)?.coveredBy.map((c) => c.via) ?? [];
+
+  it('load routes: the data file by include=, and the marker file the route deletes as its trigger file', () => {
+    const out = scan(
+      `<routes>
+        <route id="sample-load">
+          <from uri="file:{{in}}?include=SAMPLE.*.csv&amp;noop=true"/>
+          <to uri="direct:load"/>
+          <setHeader name="deleteFileName"><simple>\${file:parent}/LOADTRIGGER</simple></setHeader>
+          <to uri="bean:files?method=delete"/>
+        </route>
+        <route id="camel2-load">
+          <from uri="file:/in2?include=OTHER.*"/>
+          <!-- <setHeader headerName="deleteFileName"><constant>IGNORED</constant></setHeader> -->
+          <setHeader headerName="doneFileName"><constant>/in2/OTHERTRIGGER</constant></setHeader>
+        </route>
+      </routes>`,
+      'in=/data/in\n',
+      { 'src/route_test/load_route.py': 'def test_marker():\n    drop("LOADTRIGGER")\n\ndef test_other():\n    drop("OTHERTRIGGER")\n' },
+    );
+    expect(out.triggers.find((t) => t.routeId === 'sample-load')).toMatchObject({ filePattern: 'SAMPLE.*.csv', patternKind: 'regex', doneFile: 'LOADTRIGGER' });
+    expect(out.triggers.find((t) => t.routeId === 'camel2-load')).toMatchObject({ doneFile: 'OTHERTRIGGER' });
+    expect(covered(out, 'sample-load')).toEqual(['LOADTRIGGER']);
+    expect(covered(out, 'camel2-load')).toEqual(['OTHERTRIGGER']);
+  });
+
+  it('include= with a plain name, and placeholder defaults', () => {
+    const out = scan(
+      `<routes>
+        <route id="extract"><from uri="file:/ext?include=EXTRACTRIGGER&amp;delete=true"/></route>
+        <route id="daily"><from uri="file:/ext?fileName={{dailyExtractFilename:EXTRACTDAILYTRIGGER}}"/></route>
+        <route id="weekly"><from uri="file:/ext?fileName={{weeklyExtractFilename:DEFAULTNAME}}"/></route>
+      </routes>`,
+      'weeklyExtractFilename=WEEKLYTRIGGER\n',
+      { 'src/route_test/extract_route.py': 'def test_e():\n    drop("EXTRACTRIGGER")\n\ndef test_d():\n    drop("EXTRACTDAILYTRIGGER")\n\ndef test_w():\n    drop("WEEKLYTRIGGER")\n' },
+    );
+    expect(out.triggers.map((t) => [t.routeId, t.filePattern])).toEqual([
+      ['extract', 'EXTRACTRIGGER'],
+      ['daily', 'EXTRACTDAILYTRIGGER'], // the default, as no properties file sets the key
+      ['weekly', 'WEEKLYTRIGGER'], // a value in the properties wins over the default
+    ]);
+    expect(covered(out, 'extract')).toEqual(['EXTRACTRIGGER']);
+    expect(covered(out, 'daily')).toEqual(['EXTRACTDAILYTRIGGER']);
+    expect(covered(out, 'weekly')).toEqual(['WEEKLYTRIGGER']);
+  });
+});
+
 describe('routes in the source code are the scope', () => {
   it('headline coverage counts route triggers once the Camel repo is scanned; cases no longer add to it', async () => {
     const t = await createTestApp();
