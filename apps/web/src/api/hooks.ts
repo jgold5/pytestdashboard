@@ -22,6 +22,7 @@ import type {
   TriggerListResponse,
   TriggerOverviewResponse,
   PrScanStatus,
+  UnlinkedTestsResponse,
   RouteStatus,
   TriggerQuery,
   TriggerScanResponse,
@@ -553,6 +554,16 @@ export function useTriggerOverview(status: RouteStatus | undefined, limit = 8, b
         signal,
       ),
     placeholderData: keepPreviousData,
+  });
+}
+
+/** The merged tests that cover no trigger of the routes branch, with the strings the scanner read in each. */
+export function useUnlinkedTests(branch: string | null, tests: string | null, enabled: boolean) {
+  return useQuery({
+    queryKey: ['triggers', 'unlinked', branch, tests],
+    queryFn: ({ signal }) =>
+      api.get<UnlinkedTestsResponse>('/api/triggers/unlinked-tests', { ...(branch ? { branch } : {}), ...(tests ? { tests } : {}) }, signal),
+    enabled,
   });
 }
 

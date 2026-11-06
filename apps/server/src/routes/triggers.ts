@@ -12,7 +12,7 @@ import type { ZipLimits } from '../import/zip.js';
 import { prScanStatus, startPrScan, stopPrScan } from '../triggers/prBranchSync.js';
 import { routeOverview } from '../triggers/routeCoverage.js';
 import { scanRepository } from '../triggers/scan.js';
-import { deleteBranchScans, listTriggers, saveScan } from '../triggers/store.js';
+import { deleteBranchScans, listTriggers, saveScan, unlinkedTests } from '../triggers/store.js';
 import { REPO_ARCHIVE_LIMITS, applyOnly, collectRepoUpload, readRepoZip } from '../triggers/upload.js';
 
 const BranchParam = z.object({ branch: z.string().trim().min(1).max(200) });
@@ -40,6 +40,7 @@ export function triggerRoutes(app: FastifyInstance, { db, config }: Deps, zipLim
 
   app.get('/api/triggers', async (req) => listTriggers(db, parseWith(TriggerQuery, req.query)));
   app.get('/api/triggers/overview', async (req) => routeOverview(db, parseWith(TriggerOverviewQuery, req.query)));
+  app.get('/api/triggers/unlinked-tests', async (req) => unlinkedTests(db, parseWith(TriggerQuery, req.query)));
 
   // Scan any branch of a configured repo straight from GitHub (editor only: it uses the GitHub token)
   app.get('/api/triggers/github', async (): Promise<TriggerGithubInfo> => ({
