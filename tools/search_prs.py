@@ -26,6 +26,10 @@ Uses only the Python standard library (3.8+). Needs a token that can read the re
     python3 tools/search_prs.py your-org/pytest-repo invoice-load --both --base core
 
 GitHub Enterprise Server: --api https://github.yourcompany.com/api/v3
+
+Speed: PRs are fetched 8 at a time (--jobs), and each PR's changes are cached in
+~/.cache/search_prs by head commit, so searching again (any word) only fetches PRs
+that are new or changed (--no-cache to skip). --since 2026-01-01 skips older PRs.
 """
 from __future__ import annotations
 
@@ -40,9 +44,17 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Iterator, List, Optional, Tuple
 
-VERSION = "1.2"
+VERSION = "1.3"
+
+
+class GitHubError(Exception):
+    def __init__(self, message: str, code: int = 0):
+        super().__init__(message)
+        self.code = code
 
 
 class GitHub:
@@ -66,9 +78,9 @@ class GitHub:
                 403: "access refused (token scope, SSO authorization, or rate limit)",
                 404: "not found, or the token can't see this repo",
             }.get(e.code, "")
-            sys.exit(f"GitHub answered HTTP {e.code} for {url.split('?')[0]}: {hint}\n{body}")
+            raise GitHubError(f"GitHub answered HTTP {e.code} for {url.split('?')[0]}: {hint}\n{body}", e.code)
         except urllib.error.URLError as e:
-            sys.exit(f"Could not reach {self.api}: {e.reason}")
+            raise GitHubError(f"Could not reach {self.api}: {e.reason}")
 
     def get_json(self, path: str, params: Optional[Dict[str, str]] = None):
         url = f"{self.api}{path}" + (f"?{urllib.parse.urlencode(params)}" if params else "")
@@ -140,7 +152,45 @@ def search_zip(data: bytes, found, glob: Optional[str]) -> Dict[str, List[Tuple[
     return out
 
 
+def cache_dir(api: str, repo: str) -> str:
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
+    host = urllib.parse.urlparse(api).netloc or "github"
+    return os.path.join(base, "search_prs", host, repo.replace("/", "__"))
+
+
+def pr_files(gh: GitHub, repo: str, pr: dict, cache: Optional[str]) -> List[dict]:
+    """The PR's changed files with their patches; cached by head commit (a PR's diff at a commit never changes)."""
+    sha = ((pr.get("head") or {}).get("sha") or "")[:40]
+    path = os.path.join(cache, f"{pr['number']}-{sha}.json") if cache and sha else None
+    if path and os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                return json.load(fh)
+        except (OSError, ValueError):
+            pass
+    files = [{"filename": f.get("filename", ""), "patch": f.get("patch") or ""} for f in gh.paged(f"/repos/{repo}/pulls/{pr['number']}/files", {}, cap=3000)]
+    if path:
+        try:
+            os.makedirs(cache, exist_ok=True)
+            tmp = f"{path}.{os.getpid()}.tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(files, fh)
+            os.replace(tmp, path)
+        except OSError:
+            pass
+    return files
+
+
 def main(argv: Optional[List[str]] = None) -> int:
+    try:
+        return run(argv)
+    except GitHubError as e:
+        sys.exit(str(e))
+    except KeyboardInterrupt:
+        sys.exit("stopped")
+
+
+def run(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="Search a repo's pull requests for a word.")
     ap.add_argument("repo", help="owner/name")
     ap.add_argument("word", help="text to look for (a regular expression with --regex)")
@@ -155,6 +205,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("-i", "--ignore-case", action="store_true")
     ap.add_argument("--max-lines", type=int, default=5, help="matching lines shown per file (default 5)")
     ap.add_argument("--json", action="store_true", help="print the results as JSON")
+    ap.add_argument("--since", help="only PRs updated on or after this date, e.g. 2026-01-01")
+    ap.add_argument("--jobs", type=int, default=8, help="PRs fetched at the same time (default 8)")
+    ap.add_argument("--no-cache", action="store_true", help="don't read or save the local cache of PR changes")
     ap.add_argument("--api", default=os.environ.get("GITHUB_API_URL", "https://api.github.com"), help="REST API base URL")
     ap.add_argument("--version", action="version", version=VERSION)
     args = ap.parse_args(argv)
@@ -179,7 +232,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         params = {"state": "closed" if args.state == "merged" else args.state, "sort": "updated", "direction": "desc"}
         if args.base:
             params["base"] = args.base
-        prs = [p for p in gh.paged(f"/repos/{args.repo}/pulls", params) if args.state != "merged" or p.get("merged_at")]
+        prs = []
+        for p in gh.paged(f"/repos/{args.repo}/pulls", params):
+            if args.since and (p.get("updated_at") or "") < args.since:
+                break  # sorted by last update, newest first: the rest are older
+            if args.state != "merged" or p.get("merged_at"):
+                prs.append(p)
         if not args.json:
             print(f"{len(prs)} {args.state} PR(s) in {args.repo}{f' into {args.base}' if args.base else ''}; "
                   f"searching {'whole branches' if args.full else 'their changes'} for {args.word!r}", file=sys.stderr)
@@ -188,17 +246,21 @@ def main(argv: Optional[List[str]] = None) -> int:
     branches = [x.strip() for x in (args.branches or "").split(",") if x.strip()]
     if args.both and not branches:
         branches = [args.base] if args.base else sorted({(p.get("base") or {}).get("ref", "") for p in prs} - {""})
-    branch_results = []
-    for b in branches:
+    def search_branch(b: str) -> dict:
         progress(f"merged code on {b}…")
         files = search_zip(gh.zipball(args.repo, b), found, args.glob)
-        branch_results.append({"branch": b, "files": {p: [{"line": l, "text": t} for l, t in h] for p, h in files.items()}})
+        return {"branch": b, "files": {p: [{"line": l, "text": t} for l, t in h] for p, h in files.items()}}
 
-    results = []
-    for n, pr in enumerate(prs, 1):
+    with ThreadPoolExecutor(max_workers=max(1, min(args.jobs, 4))) as pool:
+        branch_results = list(pool.map(search_branch, branches))
+
+    cache = None if args.no_cache else cache_dir(args.api, args.repo)
+    done = [0]
+    lock = threading.Lock()
+
+    def search_pr(pr: dict) -> Optional[dict]:
         head = pr.get("head") or {}
         ref = head.get("ref", "")
-        progress(f"[{n}/{len(prs)}] #{pr['number']} {ref}…")
         files: Dict[str, List[Tuple[int, str]]] = {}
         note = None
         if args.full:
@@ -206,28 +268,40 @@ def main(argv: Optional[List[str]] = None) -> int:
             if src != args.repo:
                 note = f"from fork {src}: searched its changes only"
             else:
-                files = search_zip(gh.zipball(args.repo, ref), found, args.glob)
+                try:
+                    files = search_zip(gh.zipball(args.repo, ref), found, args.glob)
+                except GitHubError as e:
+                    if e.code != 404:
+                        raise
+                    note = "branch deleted: searched its changes only"
         if not args.full or note:
-            for f in gh.paged(f"/repos/{args.repo}/pulls/{pr['number']}/files", {}, cap=3000):
-                path = f.get("filename", "")
+            for f in pr_files(gh, args.repo, pr, cache):
+                path = f["filename"]
                 if args.glob and not fnmatch.fnmatch(path, args.glob) and not fnmatch.fnmatch(os.path.basename(path), args.glob):
                     continue
-                hits = search_patch(f.get("patch") or "", found)
+                hits = search_patch(f["patch"], found)
                 if found(path) and not hits:
                     hits = [(0, "(file name matches)")]
                 if hits:
                     files[path] = hits
-        if files:
-            results.append({
-                "number": pr["number"],
-                "title": pr.get("title", ""),
-                "url": pr.get("html_url", ""),
-                "branch": ref,
-                "base": (pr.get("base") or {}).get("ref", ""),
-                "state": "merged" if pr.get("merged_at") else (pr.get("state") or "open"),
-                "note": note,
-                "files": {p: [{"line": l, "text": t} for l, t in h] for p, h in files.items()},
-            })
+        with lock:
+            done[0] += 1
+            progress(f"[{done[0]}/{len(prs)}] #{pr['number']} {ref}")
+        if not files:
+            return None
+        return {
+            "number": pr["number"],
+            "title": pr.get("title", ""),
+            "url": pr.get("html_url", ""),
+            "branch": ref,
+            "base": (pr.get("base") or {}).get("ref", ""),
+            "state": "merged" if pr.get("merged_at") else (pr.get("state") or "open"),
+            "note": note,
+            "files": {p: [{"line": l, "text": t} for l, t in h] for p, h in files.items()},
+        }
+
+    with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
+        results = [r for r in pool.map(search_pr, prs) if r]
 
     if args.json:
         json.dump({"branches": branch_results, "prs": results}, sys.stdout, indent=2)
