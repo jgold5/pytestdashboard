@@ -271,7 +271,11 @@ function Headline({ r, isEditor, onSetGoal }: { r: Report; isEditor: boolean; on
         <p className="mt-3 text-sm text-fg-2">
           <b className="font-semibold text-fg">{fmtNumber(c.automated)}</b> of{' '}
           {c.unit === 'routes' ? (
-            <>{fmtNumber(c.total)} unique triggers have one or more tests (file and schedule triggers in the source code)</>
+            <>
+              {fmtNumber(c.total)} unique triggers have one or more tests
+              {(c.unmerged ?? 0) > 0 ? <>, {fmtNumber(c.unmerged ?? 0)} of them in branches not merged yet</> : null} (file and schedule
+              triggers in the source code)
+            </>
           ) : (
             <>
               {fmtNumber(c.total - c.notAutomatable)} automatable test cases · {fmtNumber(c.total)} total
@@ -291,10 +295,20 @@ function Headline({ r, isEditor, onSetGoal }: { r: Report; isEditor: boolean; on
             ))}
         </div>
         <div className="mt-2.5 flex flex-wrap gap-x-5 gap-y-1 text-xs text-fg-2">
-          <LegendDot color="var(--au-automated)" label="Automated" value={c.automated} />
-          <LegendDot color="var(--au-inpr)" label="In open PRs" value={c.inOpenPr} />
-          <LegendDot color="var(--au-progress)" label="In progress" value={c.inProgress} />
-          <LegendDot color="var(--au-not)" label="Not automated" value={c.notAutomated} />
+          {c.unit === 'routes' ? (
+            <>
+              <LegendDot color="var(--au-automated)" label="Tested" value={c.automated} />
+              <LegendDot color="var(--au-inpr)" label="of which not merged yet" value={c.unmerged ?? 0} />
+              <LegendDot color="var(--au-not)" label="No test yet" value={c.notAutomated} />
+            </>
+          ) : (
+            <>
+              <LegendDot color="var(--au-automated)" label="Automated" value={c.automated} />
+              <LegendDot color="var(--au-inpr)" label="In open PRs" value={c.inOpenPr} />
+              <LegendDot color="var(--au-progress)" label="In progress" value={c.inProgress} />
+              <LegendDot color="var(--au-not)" label="Not automated" value={c.notAutomated} />
+            </>
+          )}
         </div>
       </Panel>
       <Panel className="lg:col-span-2">

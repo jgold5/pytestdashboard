@@ -547,7 +547,12 @@ export function useDeleteTriggerBranch() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (branch: string) => api.delete<void>(`/api/triggers/branches/${encodeURIComponent(branch)}`),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ['triggers'] }),
+    onSuccess: () => {
+      // the branch's tests no longer count towards triggers tested
+      void qc.invalidateQueries({ queryKey: ['triggers'] });
+      void qc.invalidateQueries({ queryKey: qk.summary });
+      void qc.invalidateQueries({ queryKey: ['report'] });
+    },
   });
 }
 
