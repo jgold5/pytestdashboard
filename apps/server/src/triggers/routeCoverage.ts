@@ -10,6 +10,7 @@ import { desc, inArray } from 'drizzle-orm';
 import type { RouteStatus, ScopeSource, TriggerOverviewQuery, TriggerOverviewResponse, TriggerOverviewRow } from '@ptd/shared';
 import type { Db } from '../db/client.js';
 import { triggerScans } from '../db/schema.js';
+import { parsePrLabel } from './prLabel.js';
 import { coverTriggers, type StoredTrigger, type TestLabels } from './scan.js';
 
 const MAIN_BRANCHES = ['main', 'master', 'develop'];
@@ -43,8 +44,11 @@ const firesOn = (t: StoredTrigger): string => t.filePattern ?? t.schedule ?? t.c
 
 /**
  * `branch`: the trigger repo branch to count (falls back to the default when it has no route
- * scan). Its tests come from the same branch of the test repo, else from the default branch's;
- * every other branch's tests count as not merged yet.
+ * scan). Its merged tests come from the same branch of the test repo, else from the test repo's
+ * default branch. Not merged yet:
+ *   - PR branches the GitHub sync scanned, only for the branch their PR targets;
+ *   - other branches scanned by hand or from CI, only for the default line. A branch that is
+ *     also scanned in the trigger repo, or is main/master/develop, is long-lived: never counted.
  */
 export function routeCoverage(db: Db, branch?: string): RouteCoverage | null {
   // latest scan per branch, separately for route and test scans (light columns first)
@@ -72,8 +76,16 @@ export function routeCoverage(db: Db, branch?: string): RouteCoverage | null {
   const defaultBranch = byRank[0]!;
   const mainBranch = branch && routes.has(branch) ? branch : defaultBranch;
   const mainScan = routes.get(mainBranch)!;
-  const mainTests = tests.get(mainBranch) ?? [...tests].sort((a, b) => rank(a[0]) - rank(b[0]))[0]?.[1] ?? null;
-  const otherTests = [...tests].filter(([, id]) => id !== mainTests);
+  const defaultTestBranch = [...tests.keys()].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))[0] ?? null;
+  const testBase = tests.has(mainBranch) ? mainBranch : defaultTestBranch;
+  const mainTests = testBase ? tests.get(testBase)! : null;
+  const otherTests = [...tests].filter(([b, id]) => {
+    if (id === mainTests) return false;
+    const pr = parsePrLabel(byId.get(id)?.label ?? null);
+    if (pr) return pr.base ? pr.base === testBase : testBase === defaultTestBranch;
+    if (routes.has(b) || MAIN_BRANCHES.includes(b)) return false;
+    return testBase === defaultTestBranch;
+  });
 
   const key = `${mainScan.id}:${mainTests}:${otherTests.map(([, id]) => id).join(',')}:${byRank.join(',')}`;
   let perBranch = caches.get(db);

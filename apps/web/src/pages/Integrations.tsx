@@ -172,6 +172,27 @@ function IntegrationCard({ name, s }: { name: IntegrationName; s: IntegrationSta
                     </span>
                   ) : null}
                 </dd>
+                {s.lastStats.branchScans ? (
+                  <>
+                    <dt className="text-fg-3">Test repo PRs</dt>
+                    <dd className="flex flex-wrap gap-x-3 text-xs text-fg-2 tabular">
+                      <span>
+                        <b className="font-semibold text-fg">{fmtNumber(s.lastStats.branchScans.scanned)}</b> branches scanned
+                      </span>
+                      <span>
+                        <b className="font-semibold text-fg">{fmtNumber(s.lastStats.branchScans.unchanged)}</b> already current
+                      </span>
+                      <span>
+                        <b className="font-semibold text-fg">{fmtNumber(s.lastStats.branchScans.removed)}</b> closed, removed
+                      </span>
+                      {s.lastStats.branchScans.failed > 0 ? (
+                        <span className="text-bad">
+                          <b className="font-semibold">{fmtNumber(s.lastStats.branchScans.failed)}</b> failed (see the server log)
+                        </span>
+                      ) : null}
+                    </dd>
+                  </>
+                ) : null}
               </>
             ) : null}
           </dl>

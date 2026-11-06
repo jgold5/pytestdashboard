@@ -6,6 +6,9 @@ import { authEnv, createTestApp, multipart, type TestApp } from './helpers/app.j
 import { importResults } from './helpers/allure.js';
 import { makeZip } from './helpers/zip.js';
 import { startMockServer, type MockServer } from './helpers/mockServer.js';
+import { loadConfig } from '../src/config.js';
+import { triggerScans } from '../src/db/schema.js';
+import { syncPrBranchScans } from '../src/triggers/prBranchSync.js';
 
 const ROUTES_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <beans xmlns="http://www.springframework.org/schema/beans">
@@ -654,6 +657,45 @@ describe('routes in the source code are the scope', () => {
   });
 });
 
+describe('PRs count for the branch they target', () => {
+  it('core and dev both have a common folder; a PR into dev never counts for core', async () => {
+    const t = await createTestApp();
+    try {
+      const up = async (fields: Record<string, string>, dir: string, filename: string, content: string) => {
+        const mp = multipart(fields, [{ field: `file:${dir}`, filename, content }]);
+        const res = await t.app.inject({ method: 'POST', url: '/api/triggers/scan', payload: mp.payload, headers: mp.headers });
+        expect(res.statusCode, res.body).toBe(201);
+      };
+      const routes = '<routes><route id="core-a"><from uri="file:/in?fileName=A.TXT"/></route><route id="core-b"><from uri="file:/in?fileName=B.TXT"/></route></routes>';
+      const test = (name: string, route: string) => `def test_${name}():\n    start("${route}")\n`;
+      const R = 'src/main/resources/common/routes';
+      const T = 'src/route_test';
+      // trigger repo: core and dev, each with the same common/ routes
+      await up({ branch: 'core', only: 'routes', label: 'acme/camel' }, R, 'a.xml', routes);
+      await up({ branch: 'dev', only: 'routes', label: 'acme/camel' }, R, 'a.xml', routes);
+      // test repo: core tests A; dev already has B merged; a PR into dev adds A
+      await up({ branch: 'core', only: 'tests', label: 'acme/tests' }, T, 'a_route.py', test('a', 'core-a'));
+      await up({ branch: 'dev', only: 'tests', label: 'acme/tests' }, T, 'b_route.py', test('b', 'core-b'));
+      await up({ branch: 'feature/a-dev', only: 'tests', label: 'acme/tests PR #3 → dev' }, T, 'a_route.py', test('a', 'core-a'));
+
+      const cov = async (q: string) => (await t.app.inject({ url: `/api/summary?${q}` })).json<{ coverage: Record<string, unknown> }>().coverage;
+      // core: A merged; B is only merged on dev, which doesn't count for core
+      expect(await cov('branch=core&folder=common')).toMatchObject({ total: 2, automated: 1, unmerged: 0, notAutomated: 1 });
+      // dev: B merged, A only in the PR into dev
+      expect(await cov('branch=dev&folder=common')).toMatchObject({ total: 2, automated: 2, unmerged: 1, notAutomated: 0 });
+
+      // the same test in a PR into core: now it counts for core too, as not merged yet
+      await up({ branch: 'feature/b-core', only: 'tests', label: 'acme/tests PR #1 → core' }, T, 'b_route.py', test('b', 'core-b'));
+      expect(await cov('branch=core&folder=common')).toMatchObject({ total: 2, automated: 2, unmerged: 1 });
+      expect(await cov('branch=dev&folder=common')).toMatchObject({ automated: 2, unmerged: 1 }); // unchanged
+      const ov = (await t.app.inject({ url: '/api/triggers/overview?branch=core&folder=common&status=branch' })).json<{ items: { routeId: string; branches: string[] }[] }>();
+      expect(ov.items).toEqual([expect.objectContaining({ routeId: 'core-b', branches: ['feature/b-core'] })]);
+    } finally {
+      await t.close();
+    }
+  });
+});
+
 describe('scan a branch straight from GitHub', () => {
   const TOKEN = 'ghp_0123456789abcdefghijklmnopqrstuvwxyzAB';
   let mock: MockServer;
@@ -734,6 +776,52 @@ describe('scan a branch straight from GitHub', () => {
     });
     // the token never reaches the signed download URL
     expect(mock.requests.filter((r) => r.path.startsWith('/_codeload/')).every((r) => !r.headers.authorization)).toBe(true);
+  });
+
+  it('the GitHub sync keeps the test repo\'s open PR branches scanned, and drops them once closed', async () => {
+    const cfg = loadConfig({ NODE_ENV: 'test', DATA_DIR: t.dataDir, GITHUB_TOKEN: TOKEN, GITHUB_REPOS: 'acme/camel,acme/tests', GITHUB_API_URL: `${mock.url}/api/v3` }).github;
+    const db = t.dbHandle.db;
+    const ctx = { signal: new AbortController().signal, log: t.app.log };
+    const scans = () => db.select({ branch: triggerScans.branch, label: triggerScans.label, commit: triggerScans.commit }).from(triggerScans).all();
+    const pr = (number: number, ref: string, extra: Partial<{ state: 'open' | 'closed'; sha: string; repo: string; base: string }> = {}) => ({
+      number,
+      ref,
+      base: extra.base ?? 'main',
+      state: extra.state ?? ('open' as const),
+      sha: extra.sha ?? '6666666aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      repo: extra.repo ?? 'acme/tests',
+    });
+
+    // not a test repo until the dashboard has scanned it as tests
+    expect(await syncPrBranchScans(db, cfg, 'acme/tests', [pr(7, 'feature/refunds')], ctx)).toEqual({ scanned: 0, unchanged: 0, removed: 0, failed: 0 });
+    await scan('acme/camel', 'main', 'routes');
+    await scan('acme/camel', 'feature/refunds', 'routes');
+    await scan('acme/tests', 'main', 'tests');
+    // the route repo's PRs are never scanned this way
+    expect(await syncPrBranchScans(db, cfg, 'acme/camel', [pr(3, 'feature/refunds', { repo: 'acme/camel' })], ctx)).toMatchObject({ scanned: 0 });
+
+    // open PR → its branch is scanned as tests; forks and default branches are skipped
+    const stats = await syncPrBranchScans(db, cfg, 'acme/tests', [pr(7, 'feature/refunds'), pr(8, 'feature/fork', { repo: 'someone/tests' }), pr(9, 'main')], ctx);
+    expect(stats).toEqual({ scanned: 1, unchanged: 0, removed: 0, failed: 0 });
+    expect(scans()).toContainEqual({ branch: 'feature/refunds', label: 'acme/tests PR #7 → main', commit: '6666666' });
+    // its tests count as not merged yet: refund-load isn't on main, but invoice-load is tested on main already
+    const summary = (await t.app.inject({ url: '/api/summary' })).json<{ coverage: Record<string, unknown> }>().coverage;
+    expect(summary).toMatchObject({ unit: 'routes', total: 1, automated: 1 });
+
+    // same head commit → nothing downloaded again
+    const downloads = () => mock.requests.filter((r) => r.path.includes('/zipball/')).length;
+    const before = downloads();
+    expect(await syncPrBranchScans(db, cfg, 'acme/tests', [pr(7, 'feature/refunds')], ctx)).toMatchObject({ scanned: 0, unchanged: 1 });
+    expect(downloads()).toBe(before);
+    // retargeted to another branch → scanned again with the new target
+    expect(await syncPrBranchScans(db, cfg, 'acme/tests', [pr(7, 'feature/refunds', { base: 'core' })], ctx)).toMatchObject({ scanned: 1 });
+    expect(scans()).toContainEqual(expect.objectContaining({ branch: 'feature/refunds', label: 'acme/tests PR #7 → core' }));
+
+    // merged or closed → its scan goes; the route repo's branch of the same name and the hand-made scans stay
+    expect(await syncPrBranchScans(db, cfg, 'acme/tests', [pr(7, 'feature/refunds', { state: 'closed' })], ctx)).toMatchObject({ removed: 1 });
+    expect(scans().filter((s) => s.label?.startsWith('acme/tests PR #7'))).toEqual([]);
+    expect(scans()).toContainEqual(expect.objectContaining({ branch: 'feature/refunds', label: 'acme/camel' }));
+    expect(scans()).toContainEqual(expect.objectContaining({ branch: 'main', label: 'acme/tests' }));
   });
 
   it('refuses repos outside GITHUB_REPOS, bad branch names, and reports missing branches', async () => {

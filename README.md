@@ -253,6 +253,21 @@ Report's **Copy link** carries it. A branch without its own test scan uses `main
 The coverage trend always follows the whole default branch. On Triggers, the tiles follow the
 folder, type and search filters.
 
+**Open PRs in the test repo are scanned automatically.** Once the test repo has been scanned
+as tests from the dashboard (Scan a branch → It holds: tests), every GitHub sync:
+- scans the branch of each open PR in it (same repo, not forks), so their tests count as
+  *not merged yet*. A branch is only downloaded again when its head commit changed, and at
+  most 25 per sync;
+- removes those scans once the PR is merged or closed.
+
+A PR's tests count as *not merged yet* only for **the branch the PR targets**. With `core`
+and `dev` both in the trigger repo, a PR into `dev` counts for `dev`, never for `core`, and
+the test repo's own `dev` branch is `dev`'s merged tests, not "not merged" for `core`.
+Branches scanned by hand or from CI without a PR count toward the default branch only.
+
+The Camel repo's PRs are not scanned this way. The Integrations page shows what the last sync
+did. To count a branch that has no PR, scan it by hand.
+
 A branch's tests keep counting until its scans are removed: pick the branch on Triggers and
 use the bin icon (or `DELETE /api/triggers/branches/<branch>`) once it is abandoned.
 
