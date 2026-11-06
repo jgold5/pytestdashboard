@@ -21,6 +21,7 @@ import type {
   TriggerGithubScanRequest,
   TriggerListResponse,
   TriggerOverviewResponse,
+  PrScanStatus,
   RouteStatus,
   TriggerQuery,
   TriggerScanResponse,
@@ -550,6 +551,24 @@ export function useTriggerOverview(status: RouteStatus | undefined, limit = 8, b
         signal,
       ),
     placeholderData: keepPreviousData,
+  });
+}
+
+/** The "Scan open PRs" job: polled every 1.5 s while it runs. */
+export function usePrScan(enabled = true) {
+  return useQuery({
+    queryKey: ['triggers', 'pr-scan'],
+    queryFn: ({ signal }) => api.get<PrScanStatus>('/api/triggers/pr-scan', undefined, signal),
+    enabled,
+    refetchInterval: (q) => (q.state.data?.state === 'running' ? 1500 : false),
+  });
+}
+
+export function useStartPrScan() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.post<PrScanStatus>('/api/triggers/pr-scan', {}),
+    onSuccess: (st) => qc.setQueryData(['triggers', 'pr-scan'], st),
   });
 }
 

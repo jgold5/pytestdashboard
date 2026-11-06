@@ -9,6 +9,7 @@ import path from 'node:path';
 import { AppError, parseWith } from '../errors.js';
 import { commitFromTopDir, downloadBranchZip, listBranches } from '../integrations/githubArchive.js';
 import type { ZipLimits } from '../import/zip.js';
+import { prScanStatus, startPrScan, stopPrScan } from '../triggers/prBranchSync.js';
 import { routeOverview } from '../triggers/routeCoverage.js';
 import { scanRepository } from '../triggers/scan.js';
 import { deleteBranchScans, listTriggers, saveScan } from '../triggers/store.js';
@@ -76,6 +77,13 @@ export function triggerRoutes(app: FastifyInstance, { db, config }: Deps, zipLim
       await rm(tmp, { recursive: true, force: true });
     }
   });
+
+  // Scan every open PR branch of the test repo (editor only): runs in the background, poll GET
+  app.get('/api/triggers/pr-scan', async () => prScanStatus(db));
+  app.addHook('onClose', async () => stopPrScan(db));
+  app.post('/api/triggers/pr-scan', { config: { rateLimit: { max: 6, timeWindow: '1 minute' } } }, async (req, reply) =>
+    reply.status(202).send(startPrScan(db, config.github, req.log)),
+  );
 
   app.delete('/api/triggers/branches/:branch', async (req, reply) => {
     const { branch } = parseWith(BranchParam, req.params);
