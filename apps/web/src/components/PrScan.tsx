@@ -113,6 +113,19 @@ function PrScanDialog({ onClose, start }: { onClose: () => void; start: ReturnTy
             {count('skipped') > 0 ? <span>{fmtNumber(count('skipped'))} not scannable</span> : null}
             {st.removed > 0 ? <span>{pluralize(st.removed, 'closed PR')} removed</span> : null}
           </div>
+          {prs.length > 0 ? (
+            <div className="text-xs text-fg-3">
+              Into{' '}
+              {Object.entries(prs.reduce<Record<string, number>>((m, p) => ({ ...m, [p.base]: (m[p.base] ?? 0) + 1 }), {}))
+                .sort((x, y) => y[1] - x[1])
+                .map(([base, n], i) => (
+                  <span key={base}>
+                    {i > 0 ? ' · ' : ''}
+                    <span className="font-mono text-fg-2">{base}</span>: {fmtNumber(n)}
+                  </span>
+                ))}
+            </div>
+          ) : null}
         </div>
       ) : running ? (
         <p className="text-[13px] text-fg-2">Listing open PRs…</p>
