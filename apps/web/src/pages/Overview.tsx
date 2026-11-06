@@ -180,7 +180,11 @@ function KpiRow({ s }: { s: Summary }) {
               <span className="ml-1.5 text-sm text-fg-3">of {fmtNumber(c.total)}</span>
             </>
           }
-          sub={`${fmtPct(c.automationRate, 1)} have one or more tests on main`}
+          sub={
+            (c.unmerged ?? 0) > 0
+              ? `${fmtPct(c.automationRate, 1)} · ${fmtNumber(c.unmerged ?? 0)} not merged yet`
+              : `${fmtPct(c.automationRate, 1)} have one or more tests`
+          }
           to="/triggers?branch=main&status=automated"
         />
       ) : (
@@ -197,7 +201,7 @@ function KpiRow({ s }: { s: Summary }) {
         />
       )}
       {c.unit === 'routes' ? (
-        <Kpi label="Tested on a branch" value={fmtNumber(c.inProgress)} sub="only tests on other branches cover them" to="/triggers" />
+        <Kpi label="No test yet" value={fmtNumber(c.notAutomated)} sub="no test on any scanned branch" to="/triggers?branch=main&status=missing" />
       ) : (
         <Kpi
           label="In progress"
@@ -251,7 +255,7 @@ function PipelineCard({ s }: { s: Summary }) {
         title="Automation progress"
         description={
           c.unit === 'routes'
-            ? `${fmtNumber(c.automated)} of ${fmtNumber(automatable)} triggers have one or more tests on main · stages below follow the test cases' PRs`
+            ? `${fmtNumber(c.automated)} of ${fmtNumber(automatable)} triggers have one or more tests${(c.unmerged ?? 0) > 0 ? ` (${fmtNumber(c.unmerged ?? 0)} not merged yet)` : ''} · stages below follow the test cases' PRs`
             : `${fmtNumber(c.automated)} of ${fmtNumber(automatable)} automatable cases automated · pipeline from GitHub PRs and runs`
         }
         actions={<span className="text-2xl font-semibold tracking-tight text-fg">{fmtPct(c.automationRate, 1)}</span>}
@@ -603,8 +607,8 @@ function OwnerCard({ s }: { s: Summary }) {
 
 const ROUTE_STATUS: Record<RouteStatus, { label: string; tab: string; cls: string }> = {
   none: { label: 'No test', tab: 'No test', cls: 'text-fg-3' },
-  branch: { label: 'Test on a branch', tab: 'On a branch', cls: 'text-fg' },
-  tested: { label: 'Tested', tab: 'Tested', cls: 'text-st-passed' },
+  branch: { label: 'Test not merged', tab: 'Not merged', cls: 'text-fg' },
+  tested: { label: 'Tested on main', tab: 'On main', cls: 'text-st-passed' },
 };
 const shortTest = (nodeId: string) => nodeId.split('::').pop() ?? nodeId;
 
@@ -679,10 +683,10 @@ function RoutesCard() {
           n={2}
           title="Test repo"
           source={d.testRepo}
-          big={d.testRepo ? `${fmtNumber(d.testRepo.triggersTested)} triggers have one or more tests` : 'Not scanned yet'}
+          big={d.testRepo ? `${fmtNumber(d.counts.tested + d.counts.branch)} triggers have one or more tests` : 'Not scanned yet'}
           detail={
             d.testRepo ? (
-              `${pluralize(d.testRepo.tests, 'test')} read, ${fmtNumber(d.testRepo.testsLinked)} of them hit a trigger`
+              `${fmtNumber(d.counts.tested)} on main, ${fmtNumber(d.counts.branch)} only in unmerged branches · ${pluralize(d.testRepo.tests, 'test')} on main`
             ) : (
               <Link to="/triggers" className="link">
                 Scan the test repo's {d.branch}
@@ -715,7 +719,7 @@ function RoutesCard() {
       </div>
       {d.items.length === 0 ? (
         <p className="px-4 pt-2 pb-5 text-[13px] text-fg-3">
-          {shown === 'none' ? 'Every trigger on this branch has a test.' : shown === 'branch' ? 'No trigger is covered only by a branch.' : 'No trigger has a test yet.'}
+          {shown === 'none' ? 'Every trigger on this branch has a test.' : shown === 'branch' ? 'No trigger is covered only by an unmerged branch.' : 'No trigger has a test on main yet.'}
         </p>
       ) : (
         <div className="overflow-x-auto">

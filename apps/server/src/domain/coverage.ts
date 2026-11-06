@@ -11,18 +11,21 @@ export function automationRate(total: number, automated: number, notAutomatable:
 }
 
 export function computeCoverage(db: Db): CoverageTotals {
-  // the source code defines the scope once it has been scanned; nothing else adds to it
+  // the source code defines the scope once it has been scanned; nothing else adds to it.
+  // A trigger counts as tested when a test covers it on any scanned branch, merged or not.
   const routes = routeCoverage(db);
   if (routes) {
+    const tested = routes.automated + routes.inProgress;
     return {
       unit: 'routes',
       total: routes.total,
-      automated: routes.automated,
-      inProgress: routes.inProgress,
-      notAutomated: routes.total - routes.automated - routes.inProgress,
+      automated: tested,
+      inProgress: 0,
+      notAutomated: routes.total - tested,
       notAutomatable: 0,
-      inOpenPr: routes.inProgress,
-      automationRate: automationRate(routes.total, routes.automated, 0),
+      inOpenPr: 0,
+      automationRate: automationRate(routes.total, tested, 0),
+      unmerged: routes.inProgress,
     };
   }
   const rows = db

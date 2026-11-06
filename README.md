@@ -235,11 +235,19 @@ or file.
 `ftps:`, `sftp:`, `smb:`) or a schedule (`quartz:`, `cron:`, `timer:`, `scheduler:`),
 and which of them have a test. The routes and the tests can be in different repos.
 
-**The routes in the code are the scope.** Once a route scan exists, the headline numbers
-on Overview and Report count routes, not spreadsheet or Jira rows:
-- **Routes to test**: the triggers in `main`'s Camel code;
-- **Automated**: those a test on `main` covers;
-- **In progress**: those only a test on another branch covers.
+**The triggers in the code are the scope.** It takes two scans:
+1. **The trigger repo** (the Camel XML): every unique trigger on `main`.
+2. **The test repo**: every trigger with one or more tests.
+
+Once a route scan exists, the headline numbers on Overview and Report count triggers, not
+spreadsheet or Jira rows:
+- **Unique triggers**: the triggers in `main`'s Camel code;
+- **Triggers tested**: those a test covers on `main` *or on any scanned branch*, merged or
+  not; the Overview says how many are not merged yet;
+- **No test yet**: the rest.
+
+A branch's tests keep counting until its scans are removed: pick the branch on Triggers and
+use the bin icon (or `DELETE /api/triggers/branches/<branch>`) once it is abandoned.
 
 Before the first route scan, the numbers still count test cases.
 
@@ -320,8 +328,8 @@ curl --fail-with-body -sS -X POST "$DASHBOARD_URL/api/triggers/scan" \
 - **All branches** merges every branch's latest scan into one list. Pick a branch and
   **Compare with** `main` to see what a PR adds, changes or removes, and which triggers
   it newly automates.
-- **Cleaning up.** Scans of a merged branch can be removed with
-  `DELETE /api/triggers/branches/<branch>`.
+- **Cleaning up.** Remove an abandoned branch's scans with the bin icon next to the branch
+  picker on Triggers, or `DELETE /api/triggers/branches/<branch>`.
 
 To share how your routes and tests are written without sharing the code, run
 [`tools/distill_camel_repo.py`](tools/distill_camel_repo.py) (Python 3.9+, no

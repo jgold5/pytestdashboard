@@ -584,7 +584,8 @@ describe('routes in the source code are the scope', () => {
       // a PR branch in the test repo already covers credit-load
       await upload({ branch: 'feature/credit', only: 'tests' }, 'file:src/route_test', 'credit_route.py', 'def test_credit():\n    start("credit-load")\n');
 
-      expect(await summary()).toMatchObject({ unit: 'routes', total: 3, automated: 1, inProgress: 1, notAutomated: 1, notAutomatable: 0 });
+      // tested = a test on main or on any scanned branch (credit-load only on feature/credit, not merged)
+      expect(await summary()).toMatchObject({ unit: 'routes', total: 3, automated: 2, unmerged: 1, inProgress: 0, notAutomated: 1, notAutomatable: 0 });
       // more cases (e.g. a spreadsheet import) change nothing now
       await t.app.inject({ method: 'POST', url: '/api/test-cases', payload: { key: 'XL-4', title: 'XL-4', automationStatus: 'automated' } });
       expect((await summary()).total).toBe(3);

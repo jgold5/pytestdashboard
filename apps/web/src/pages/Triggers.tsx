@@ -1,13 +1,14 @@
 import { useId, useMemo, useState, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { toast } from 'sonner';
-import { CircleCheck, CircleDashed, Clock, Copy, FileInput, GitBranch, GitCompareArrows, Search, Terminal, TriangleAlert, Zap } from 'lucide-react';
+import { CircleCheck, CircleDashed, Clock, Copy, FileInput, GitBranch, GitCompareArrows, Search, Terminal, Trash2, TriangleAlert, Zap } from 'lucide-react';
 import type { TriggerChange, TriggerListResponse, TriggerRow } from '@ptd/shared';
-import { useScanGithubBranch, useTriggerBranches, useTriggerGithub, useTriggers } from '../api/hooks';
+import { useDeleteTriggerBranch, useScanGithubBranch, useTriggerBranches, useTriggerGithub, useTriggers } from '../api/hooks';
 import { errorMessage } from '../api/client';
 import { cn, fmtNumber, fmtPct, fmtRelative, pluralize } from '../lib/utils';
 import { Button } from '../components/ui/button';
 import { Card, CardBody, CardHeader } from '../components/ui/card';
+import { ConfirmDialog } from '../components/ui/confirm';
 import { EmptyState, ErrorState } from '../components/ui/empty-state';
 import { Dialog } from '../components/ui/dialog';
 import { Field, Input } from '../components/ui/input';
@@ -95,6 +96,7 @@ export default function TriggersPage() {
           data && data.branches.length > 0 ? (
             <>
               <ScanBranchButton onScanned={(b) => set({ branch: b, compare: b === 'main' ? null : compare ?? (b !== 'main' && branchOptions.some((o) => o.value === 'main') ? 'main' : null) })} />
+              {branch && !DEFAULT_BRANCHES.includes(branch) ? <RemoveBranchButton branch={branch} onRemoved={() => set({ branch: null, compare: null })} /> : null}
               <Select
                 size="sm"
                 ariaLabel="Branch"
@@ -527,6 +529,46 @@ function rememberRole(repo: string, role: 'routes' | 'tests') {
   } catch {
     // per-browser convenience only
   }
+}
+
+const DEFAULT_BRANCHES = ['main', 'master', 'develop'];
+
+/** Abandoned or merged PR branches: their tests stop counting towards "triggers tested" once removed. */
+function RemoveBranchButton({ branch, onRemoved }: { branch: string; onRemoved: () => void }) {
+  const [open, setOpen] = useState(false);
+  const del = useDeleteTriggerBranch();
+  return (
+    <>
+      <Tooltip content="Remove this branch's scans" side="bottom">
+        <Button size="icon" variant="ghost" aria-label={`Remove the scans of ${branch}`} onClick={() => setOpen(true)}>
+          <Trash2 />
+        </Button>
+      </Tooltip>
+      <ConfirmDialog
+        open={open}
+        onOpenChange={setOpen}
+        title={`Remove the scans of ${branch}?`}
+        description={
+          <>
+            Its routes and tests stop counting. Use this when the branch was abandoned, or merged and <span className="font-mono">main</span> has been
+            scanned since. Scanning the branch again brings it back.
+          </>
+        }
+        confirmLabel="Remove"
+        loading={del.isPending}
+        onConfirm={() =>
+          del.mutate(branch, {
+            onSuccess: () => {
+              setOpen(false);
+              toast.success(`Removed the scans of ${branch}`);
+              onRemoved();
+            },
+            onError: (e) => toast.error(errorMessage(e)),
+          })
+        }
+      />
+    </>
+  );
 }
 
 function ScanBranchButton({ onScanned, variant = 'outline' }: { onScanned: (branch: string) => void; variant?: 'outline' | 'primary' }) {
