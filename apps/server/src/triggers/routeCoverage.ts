@@ -10,7 +10,7 @@ import { desc, inArray } from 'drizzle-orm';
 import type { RouteStatus, ScopeSource, TriggerOverviewQuery, TriggerOverviewResponse, TriggerOverviewRow } from '@ptd/shared';
 import type { Db } from '../db/client.js';
 import { triggerScans } from '../db/schema.js';
-import { parsePrLabel } from './prLabel.js';
+import { changedTests, testScope } from './testScope.js';
 import { coverTriggers, type StoredTrigger, type TestLabels } from './scan.js';
 
 const MAIN_BRANCHES = ['main', 'master', 'develop'];
@@ -65,27 +65,20 @@ export function routeCoverage(db: Db, branch?: string): RouteCoverage | null {
     .orderBy(desc(triggerScans.scannedAt), desc(triggerScans.id))
     .all();
   const routes = new Map<string, (typeof rows)[number]>();
-  const tests = new Map<string, number>();
+  const testRows = new Map<string, (typeof rows)[number]>();
   const byId = new Map(rows.map((r) => [r.id, r] as const));
   for (const r of rows) {
     if (r.files.xml > 0 && !routes.has(r.branch)) routes.set(r.branch, r);
-    if (r.files.tests > 0 && !tests.has(r.branch)) tests.set(r.branch, r.id);
+    if (r.files.tests > 0 && !testRows.has(r.branch)) testRows.set(r.branch, r);
   }
   if (routes.size === 0) return null;
   const byRank = [...routes.keys()].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
   const defaultBranch = byRank[0]!;
   const mainBranch = branch && routes.has(branch) ? branch : defaultBranch;
   const mainScan = routes.get(mainBranch)!;
-  const defaultTestBranch = [...tests.keys()].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))[0] ?? null;
-  const testBase = tests.has(mainBranch) ? mainBranch : defaultTestBranch;
-  const mainTests = testBase ? tests.get(testBase)! : null;
-  const otherTests = [...tests].filter(([b, id]) => {
-    if (id === mainTests) return false;
-    const pr = parsePrLabel(byId.get(id)?.label ?? null);
-    if (pr) return pr.base ? pr.base === testBase : testBase === defaultTestBranch;
-    if (routes.has(b) || MAIN_BRANCHES.includes(b)) return false;
-    return testBase === defaultTestBranch;
-  });
+  const scope = testScope(mainBranch, testRows, new Set(routes.keys()));
+  const mainTests = scope.merged?.id ?? null;
+  const otherTests = scope.unmerged.map((s) => [s.branch, s.id] as const);
 
   const key = `${mainScan.id}:${mainTests}:${otherTests.map(([, id]) => id).join(',')}:${byRank.join(',')}`;
   let perBranch = caches.get(db);
@@ -105,7 +98,8 @@ export function routeCoverage(db: Db, branch?: string): RouteCoverage | null {
   const triggers: StoredTrigger[] = full.get(mainScan.id)?.triggers ?? [];
   const testsOf = (id: number | null): TestLabels[] => (id ? (full.get(id)?.tests ?? []) : []);
   const onMain = coverTriggers(triggers, testsOf(mainTests));
-  const onBranch = otherTests.map(([branch, id]) => [branch, coverTriggers(triggers, testsOf(id))] as const);
+  // a PR branch is mostly the same tests as the merged branch: only its changed ones are matched
+  const onBranch = otherTests.map(([branch, id]) => [branch, coverTriggers(triggers, changedTests(testsOf(mainTests), testsOf(id)))] as const);
 
   let automated = 0;
   let inProgress = 0;

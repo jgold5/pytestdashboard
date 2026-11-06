@@ -246,6 +246,12 @@ spreadsheet or Jira rows:
   not; the Overview says how many are not merged yet;
 - **No test yet**: the rest.
 
+**Every page counts one branch of the trigger repo.** Picking `core` means `core`'s triggers,
+tested by `core`'s merged tests plus every open PR into `core` (scanned with Scan open PRs);
+other branches' tests never count. There is no "all branches" view. The Triggers page lists
+only trigger repo branches, follows the branch and folder picked on the Overview (and back),
+and marks a test that is only in a PR with that PR's branch.
+
 **Pick the branch and folder** at the top of the Overview (and the Report) to count one branch
 of the trigger repo, or only one folder in it: the folder under `resources/` (e.g.
 `src/main/resources/common/…` is `common`). The pick stays until you change it, and the
@@ -354,9 +360,9 @@ curl --fail-with-body -sS -X POST "$DASHBOARD_URL/api/triggers/scan" \
   - string literals in the test body, such as a trigger file the test drops.
 
   `parametrize` values don't count. The page shows which string made each match.
-- **All branches** merges every branch's latest scan into one list. Pick a branch and
-  **Compare with** `main` to see what a PR adds, changes or removes, and which triggers
-  it newly automates.
+- **Compare with** another trigger repo branch (e.g. `main`) to see what a branch adds,
+  changes or removes, and which triggers it newly automates; the other side counts only
+  its merged tests.
 - **Cleaning up.** Remove an abandoned branch's scans with the bin icon next to the branch
   picker on Triggers, or `DELETE /api/triggers/branches/<branch>`.
 

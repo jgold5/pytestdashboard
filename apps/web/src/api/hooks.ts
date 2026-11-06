@@ -532,8 +532,9 @@ export function useDeleteBug() {
 // Camel route triggers
 // ---------------------------------------------------------------------------
 
-export function useTriggers(q: TriggerQueryInput) {
+export function useTriggers(q: TriggerQueryInput, enabled = true) {
   return useQuery({
+    enabled,
     queryKey: qk.triggers(q),
     queryFn: ({ signal }) => api.get<TriggerListResponse>('/api/triggers', q, signal),
     placeholderData: keepPreviousData,

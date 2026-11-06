@@ -1230,6 +1230,8 @@ export const TriggerCoverage = z.object({
   via: z.string(),
   /** Dashboard test case with the matching Allure full name, when one exists. */
   testCaseId: z.number().int().nullable(),
+  /** Not merged yet: the PR branch the test is on (null or absent = merged). */
+  branch: z.string().nullable().optional(),
 });
 export type TriggerCoverage = z.infer<typeof TriggerCoverage>;
 
@@ -1462,6 +1464,8 @@ export const TriggerListResponse = z.object({
    */
   routesFrom: z.string().nullable(),
   testsFrom: z.string().nullable(),
+  /** Branches whose tests count as not merged yet for this branch (PRs into it). */
+  unmergedFrom: z.array(z.string()).default([]),
   compareRoutesFrom: z.string().nullable(),
   compareTestsFrom: z.string().nullable(),
   /** Tests in the test scan(s) used, and how many of them cover at least one trigger. */

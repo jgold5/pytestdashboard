@@ -3,7 +3,8 @@ import { Link, useSearchParams } from 'react-router';
 import { toast } from 'sonner';
 import { CircleCheck, CircleDashed, Clock, Copy, FileInput, GitBranch, GitCompareArrows, Search, Terminal, Trash2, TriangleAlert, Zap } from 'lucide-react';
 import type { TriggerChange, TriggerListResponse, TriggerRow } from '@ptd/shared';
-import { useDeleteTriggerBranch, useScanGithubBranch, useTriggerBranches, useTriggerGithub, useTriggers } from '../api/hooks';
+import { useDeleteTriggerBranch, useScanGithubBranch, useTriggerBranches, useTriggerGithub, useTriggerOverview, useTriggers } from '../api/hooks';
+import { useScopeBranch, useScopeFolder } from '../lib/scopeBranch';
 import { errorMessage } from '../api/client';
 import { cn, fmtNumber, fmtPct, fmtRelative, pluralize } from '../lib/utils';
 import { Button } from '../components/ui/button';
@@ -20,8 +21,8 @@ import { Tooltip } from '../components/ui/tooltip';
 
 const STATUS_FILTERS = [
   { key: 'all', label: 'All' },
-  { key: 'automated', label: 'Automated' },
-  { key: 'missing', label: 'Not automated' },
+  { key: 'automated', label: 'Tested' },
+  { key: 'missing', label: 'No test yet' },
   { key: 'changes', label: 'Changed on this branch', compareOnly: true },
 ] as const;
 type StatusKey = (typeof STATUS_FILTERS)[number]['key'];
@@ -44,14 +45,22 @@ const lostTest = (r: TriggerRow) => r.change !== 'removed' && !automated(r) && r
 
 export default function TriggersPage() {
   const [params, setParams] = useSearchParams();
-  const branch = params.get('branch') || undefined;
+  // the branch and folder follow what was picked on the Overview (and back), unless the link names one
+  const [scopeBranch, setScopeBranch] = useScopeBranch();
+  const [scopeFolder, setScopeFolder] = useScopeFolder();
+  const routeInfo = useTriggerOverview(undefined, 1);
+  const routeBranches = routeInfo.data?.routeBranches ?? [];
+  const defaultBranch = routeInfo.data?.defaultBranch ?? null;
+  // always one branch of the trigger repo: its triggers, its merged tests and the PRs into it
+  const branchParam = params.get('branch') || null;
+  const branch = (branchParam ?? (scopeBranch && routeBranches.includes(scopeBranch) ? scopeBranch : defaultBranch)) ?? undefined;
+  const resolving = !branchParam && routeInfo.isPending;
   const compare = (branch && params.get('compare')) || undefined;
   const kind = params.get('kind') || null;
-  const module = params.get('module') || null;
   const [limit, setLimit] = useState(PAGE);
   const status = (STATUS_FILTERS.find((f) => f.key === params.get('status'))?.key ?? 'all') as StatusKey;
   const [search, setSearch] = useState(params.get('q') ?? '');
-  const res = useTriggers({ branch, compare });
+  const res = useTriggers({ branch, compare }, !resolving);
 
   const set = (patch: Record<string, string | null>) =>
     setParams(
@@ -67,6 +76,9 @@ export default function TriggersPage() {
     );
 
   const data = res.data;
+  const modules = useMemo(() => [...new Set((data?.items ?? []).map((r) => r.module).filter((m): m is string => !!m))].sort(), [data]);
+  const moduleParam = params.get('module') || null;
+  const module = moduleParam ?? (scopeFolder && modules.includes(scopeFolder) ? scopeFolder : null);
   /** The triggers the folder, type and search pick: what the tiles count (the status tabs only narrow the list). */
   const scoped = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -88,9 +100,15 @@ export default function TriggersPage() {
       )
       .sort((a, b) => (compare ? CHANGE_ORDER[a.change ?? 'unchanged'] - CHANGE_ORDER[b.change ?? 'unchanged'] : 0));
   }, [scoped, status, compare]);
-  const modules = useMemo(() => [...new Set((data?.items ?? []).map((r) => r.module).filter((m): m is string => !!m))].sort(), [data]);
 
-  const branchOptions = (data?.branches ?? []).map((b) => ({ value: b.branch, label: b.branch }));
+  // only trigger repo branches (dev, core…): PR branches of the test repo count inside them
+  const branchOptions = routeBranches.map((b) => ({ value: b, label: b === defaultBranch ? `${b} (default)` : b }));
+  if (branch && !routeBranches.includes(branch)) branchOptions.push({ value: branch, label: `${branch} · tests only` });
+  const pickBranch = (v: string | null) => {
+    if (!v) return;
+    set({ branch: v, compare: compare && compare !== v ? compare : null });
+    if (routeBranches.includes(v)) setScopeBranch(v === defaultBranch ? null : v);
+  };
 
   return (
     <>
@@ -102,15 +120,21 @@ export default function TriggersPage() {
             <>
               <ScanBranchButton onScanned={(b) => set({ branch: b, compare: b === 'main' ? null : compare ?? (b !== 'main' && branchOptions.some((o) => o.value === 'main') ? 'main' : null) })} />
               <PrScanButton />
-              {branch && !DEFAULT_BRANCHES.includes(branch) ? <RemoveBranchButton branch={branch} onRemoved={() => set({ branch: null, compare: null })} /> : null}
+              {branch && !DEFAULT_BRANCHES.includes(branch) ? (
+                <RemoveBranchButton
+                  branch={branch}
+                  onRemoved={() => {
+                    if (branch === scopeBranch) setScopeBranch(null);
+                    set({ branch: null, compare: null });
+                  }}
+                />
+              ) : null}
               <Select
                 size="sm"
                 ariaLabel="Branch"
                 value={branch ?? null}
-                onValueChange={(v) => set({ branch: v, compare: v ? compare ?? null : null })}
+                onValueChange={pickBranch}
                 options={branchOptions}
-                allowNone
-                noneLabel="All branches"
                 className="w-48"
               />
               <Select
@@ -167,7 +191,10 @@ export default function TriggersPage() {
                   size="sm"
                   ariaLabel="Folder"
                   value={module}
-                  onValueChange={(v) => set({ module: v })}
+                  onValueChange={(v) => {
+                    set({ module: v });
+                    setScopeFolder(v);
+                  }}
                   options={modules.map((m) => ({ value: m, label: `${m} · ${fmtNumber((data?.items ?? []).filter((r) => r.module === m && r.change !== 'removed').length)}` }))}
                   allowNone
                   noneLabel="All folders"
@@ -250,7 +277,14 @@ function Sources({ data }: { data: TriggerListResponse }) {
     );
   return (
     <p className="mt-2 text-xs text-fg-3">
-      {part('Routes', data.routesFrom, data.branch)} · {part('tests', data.testsFrom, data.branch)} ·{' '}
+      {part('Routes', data.routesFrom, data.branch)} · {part('tests', data.testsFrom, data.branch)}
+      {data.unmergedFrom.length > 0 ? (
+        <span>
+          {' '}
+          + {pluralize(data.unmergedFrom.length, 'PR branch', 'PR branches')} into <span className="font-mono">{data.testsFrom ?? data.branch}</span>, not merged yet
+        </span>
+      ) : null}{' '}
+      ·{' '}
       <span className={data.tests.read > 0 && data.tests.linked === 0 ? 'text-warn' : undefined}>
         {pluralize(data.tests.read, 'test')} read, {fmtNumber(data.tests.linked)} linked to a trigger
       </span>
@@ -269,6 +303,7 @@ function Sources({ data }: { data: TriggerListResponse }) {
 function Totals({ data, items, scope }: { data: TriggerListResponse; items: TriggerRow[]; scope: string }) {
   const live = items.filter((r) => r.change !== 'removed');
   const covered = live.filter(automated).length;
+  const unmergedOnly = live.filter((r) => r.coveredBy.length > 0 && r.coveredBy.every((c) => c.branch)).length;
   const files = live.filter((r) => r.kind === 'file').length;
   const scan = data.branch ? data.branches.find((b) => b.branch === data.branch) : null;
   const added = live.filter((r) => r.change === 'added');
@@ -284,19 +319,23 @@ function Totals({ data, items, scope }: { data: TriggerListResponse; items: Trig
         sub={`${fmtNumber(files)} load file · ${fmtNumber(live.length - files)} schedule`}
       />
       <Tile
-        label="Automated"
+        label="Tested"
         value={
           <>
             {fmtPct(live.length ? covered / live.length : null, 0)}
             <span className="ml-1.5 text-sm font-medium text-fg-3">{fmtNumber(covered)}</span>
           </>
         }
-        sub={data.branch ? `by tests on ${data.testsFrom ?? data.branch} only` : 'by tests on any branch'}
+        sub={
+          unmergedOnly > 0
+            ? `${fmtNumber(covered - unmergedOnly)} merged · ${fmtNumber(unmergedOnly)} only in PRs into ${data.testsFrom ?? data.branch}`
+            : 'have one or more tests'
+        }
       />
       <Tile
-        label="Not automated"
+        label="No test yet"
         value={fmtNumber(live.length - covered)}
-        sub={live.length - covered > 0 ? (data.branch ? 'no test there names them' : 'no test names them') : 'every trigger covered'}
+        sub={live.length - covered > 0 ? 'no merged test or PR names them' : 'every trigger covered'}
         tone={live.length - covered > 0 ? 'bad' : 'good'}
       />
       {data.compare ? (
@@ -452,20 +491,22 @@ function Coverage({ r }: { r: TriggerRow }) {
   if (r.coveredBy.length === 0) {
     return (
       <span className="inline-flex items-center gap-1.5 text-xs text-fg-3">
-        <CircleDashed className="size-3.5" aria-hidden /> Not automated
+        <CircleDashed className="size-3.5" aria-hidden /> No test yet
       </span>
     );
   }
+  const onlyUnmerged = r.coveredBy.every((c) => c.branch);
   return (
     <div className="min-w-0">
-      <span className="inline-flex items-center gap-1.5 text-xs font-medium text-st-passed">
-        <CircleCheck className="size-3.5" aria-hidden /> {pluralize(r.coveredBy.length, 'test')}
+      <span className={cn('inline-flex items-center gap-1.5 text-xs font-medium', onlyUnmerged ? 'text-fg' : 'text-st-passed')}>
+        {onlyUnmerged ? <CircleDashed className="size-3.5" aria-hidden /> : <CircleCheck className="size-3.5" aria-hidden />}{' '}
+        {onlyUnmerged ? `${pluralize(r.coveredBy.length, 'test')}, not merged yet` : pluralize(r.coveredBy.length, 'test')}
       </span>
       <ul className="mt-0.5 space-y-0.5">
         {r.coveredBy.slice(0, 3).map((c) => {
           const name = c.test.split('::').pop();
           return (
-            <li key={c.test} className="truncate text-[11px] text-fg-2" title={`${c.test} — via "${c.via}"`}>
+            <li key={c.test} className="truncate text-[11px] text-fg-2" title={`${c.test} — via "${c.via}"${c.branch ? ` — on ${c.branch}, not merged yet` : ''}`}>
               {c.testCaseId ? (
                 <Link to={`/tests/${c.testCaseId}`} className="font-mono hover:underline">
                   {name}
@@ -473,6 +514,7 @@ function Coverage({ r }: { r: TriggerRow }) {
               ) : (
                 <span className="font-mono">{name}</span>
               )}
+              {c.branch ? <span className="text-fg-3"> · {c.branch}</span> : null}
             </li>
           );
         })}

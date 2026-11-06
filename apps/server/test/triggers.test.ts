@@ -484,11 +484,12 @@ describe('routes and tests from different repos', () => {
       { field: 'file:camel', filename: 'routes.xml', content: ROUTES('<route id="refund-load"><from uri="file:/in?include=RFD_.*"/></route>') },
     ]);
     const rpr = (await t.app.inject({ url: '/api/triggers?branch=feature%2Frefunds&compare=main' })).json<TriggerListResponse>();
-    expect(rpr).toMatchObject({ routesFrom: 'feature/refunds', testsFrom: 'main' });
-    expect(rpr.items.map((r) => [r.routeId, r.change, r.coveredBy.length])).toEqual([
-      ['invoice-load', 'unchanged', 1],
-      ['purge', 'unchanged', 0],
-      ['refund-load', 'added', 0],
+    // tests come from main, plus the branch scanned by hand above, not merged yet
+    expect(rpr).toMatchObject({ routesFrom: 'feature/refunds', testsFrom: 'main', unmergedFrom: ['feature/purge-test'] });
+    expect(rpr.items.map((r) => [r.routeId, r.change, r.coveredBy.map((c) => c.branch ?? 'merged')])).toEqual([
+      ['invoice-load', 'unchanged', ['merged']],
+      ['purge', 'unchanged', ['feature/purge-test']],
+      ['refund-load', 'added', []],
     ]);
     expect(JSON.stringify(rpr)).not.toContain('"match"');
   });
@@ -742,6 +743,16 @@ describe('PRs count for the branch they target', () => {
       expect(await cov('branch=dev&folder=common')).toMatchObject({ automated: 2, unmerged: 1 }); // unchanged
       const ov = (await t.app.inject({ url: '/api/triggers/overview?branch=core&folder=common&status=branch' })).json<{ items: { routeId: string; branches: string[] }[] }>();
       expect(ov.items).toEqual([expect.objectContaining({ routeId: 'core-b', branches: ['feature/b-core'] })]);
+
+      // the Triggers page counts the same way: core's merged tests plus the PRs into core, never dev's
+      const list = (await t.app.inject({ url: '/api/triggers?branch=core' })).json<TriggerListResponse>();
+      expect(list).toMatchObject({ routesFrom: 'core', testsFrom: 'core', unmergedFrom: ['feature/b-core'] });
+      expect(list.items.map((r) => [r.routeId, r.coveredBy.map((c) => c.branch ?? 'merged')])).toEqual([
+        ['core-a', ['merged']],
+        ['core-b', ['feature/b-core']],
+      ]);
+      const dev = (await t.app.inject({ url: '/api/triggers?branch=dev' })).json<TriggerListResponse>();
+      expect(dev.unmergedFrom).toEqual(['feature/a-dev']);
     } finally {
       await t.close();
     }

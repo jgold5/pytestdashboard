@@ -41,7 +41,7 @@ test('trigger scope per branch, and a PR branch compared with main', async ({ pa
   await expect(invoice).toContainText('INV_.*\\.csv');
   await expect(invoice).toContainText('/data/in/invoices');
   await expect(invoice).toContainText('test_invoice_file_is_loaded');
-  await expect(page.getByRole('row').filter({ hasText: 'e2e-nightly-purge' })).toContainText('Not automated');
+  await expect(page.getByRole('row').filter({ hasText: 'e2e-nightly-purge' })).toContainText('No test yet');
 
   await page.goto('/triggers?branch=e2e%2Frefunds&compare=main&status=changes');
   const refund = page.getByRole('row').filter({ hasText: 'e2e-refund-load' });
