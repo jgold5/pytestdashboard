@@ -572,7 +572,7 @@ describe('routes in the source code are the scope', () => {
       const summary = async () => (await t.app.inject({ url: '/api/summary' })).json<{ coverage: Record<string, unknown> }>().coverage;
       expect(await summary()).toMatchObject({ unit: 'cases', total: 3, automated: 3 });
       const overview = async (q = '') => (await t.app.inject({ url: `/api/triggers/overview${q}` })).json<Record<string, unknown>>();
-      expect(await overview()).toMatchObject({ branch: null, counts: { tested: 0, branch: 0, none: 0 }, items: [] });
+      expect(await overview()).toMatchObject({ triggerRepo: null, testRepo: null, branch: null, counts: { tested: 0, branch: 0, none: 0 }, items: [] });
 
       const upload = (fields: Record<string, string>, field: string, filename: string, content: string) => {
         const mp = multipart(fields, [{ field, filename, content }]);
@@ -594,6 +594,9 @@ describe('routes in the source code are the scope', () => {
 
       // the Overview's route table: the untested routes first, one status at a time
       expect(await overview()).toMatchObject({
+        // 1. the trigger repo: unique triggers; 2. the test repo: triggers with one or more tests
+        triggerRepo: { branch: 'main', triggers: 3 },
+        testRepo: { branch: 'main', tests: 1, testsLinked: 1, triggersTested: 1 },
         branch: 'main',
         counts: { tested: 1, branch: 1, none: 1 },
         status: 'none',
@@ -668,6 +671,11 @@ describe('scan a branch straight from GitHub', () => {
     // only=tests: the route copy in the test repo is not scope
     const r2 = await scan('acme/tests', 'main', 'tests');
     expect(r2.json<TriggerScanResponse>()).toMatchObject({ total: 0, testsFound: 2, automated: 1 });
+    // the two steps: unique triggers in the trigger repo, and how many of them the test repo tests
+    expect((await t.app.inject({ url: '/api/triggers/overview' })).json()).toMatchObject({
+      triggerRepo: { repo: 'acme/camel', branch: 'main', commit: '1a2b3c4', triggers: 1 },
+      testRepo: { repo: 'acme/tests', branch: 'main', commit: '5555555', tests: 2, testsLinked: 1, triggersTested: 1 },
+    });
     await scan('acme/camel', 'feature/refunds', 'routes');
     await scan('acme/tests', 'feature/refunds', 'tests');
 

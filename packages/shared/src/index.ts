@@ -1342,7 +1342,21 @@ export const TriggerOverviewRow = z.object({
 });
 export type TriggerOverviewRow = z.infer<typeof TriggerOverviewRow>;
 
+/** One of the two scans the scope comes from: the trigger (Camel) repo or the test repo. */
+export const ScopeSource = z.object({
+  /** Repo name for scans started from the dashboard (owner/name), else the upload's label. */
+  repo: z.string().nullable(),
+  branch: z.string(),
+  commit: z.string().nullable(),
+  scannedAt: z.string(),
+});
+export type ScopeSource = z.infer<typeof ScopeSource>;
+
 export const TriggerOverviewResponse = z.object({
+  /** 1. The trigger repo: its scan on the default branch, and the unique triggers in it. */
+  triggerRepo: ScopeSource.extend({ triggers: z.number().int() }).nullable(),
+  /** 2. The test repo: its scan on the default branch, the tests read, and the triggers they cover. */
+  testRepo: ScopeSource.extend({ tests: z.number().int(), testsLinked: z.number().int(), triggersTested: z.number().int() }).nullable(),
   /** Null until a route scan exists. */
   branch: z.string().nullable(),
   commit: z.string().nullable(),

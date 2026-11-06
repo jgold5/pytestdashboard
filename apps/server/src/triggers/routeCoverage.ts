@@ -7,7 +7,7 @@
  * Reads trigger_scans directly so the coverage module needn't depend on the trigger store.
  */
 import { desc, inArray } from 'drizzle-orm';
-import type { RouteStatus, TriggerOverviewQuery, TriggerOverviewResponse, TriggerOverviewRow } from '@ptd/shared';
+import type { RouteStatus, ScopeSource, TriggerOverviewQuery, TriggerOverviewResponse, TriggerOverviewRow } from '@ptd/shared';
 import type { Db } from '../db/client.js';
 import { triggerScans } from '../db/schema.js';
 import { coverTriggers, type StoredTrigger, type TestLabels } from './scan.js';
@@ -28,6 +28,9 @@ export interface RouteCoverage {
   scannedAt: string;
   /** Every trigger on that branch with its status, sorted by module then route. */
   rows: TriggerOverviewRow[];
+  /** Where the two halves came from: the trigger repo's scan and the test repo's scan. */
+  triggerRepo: ScopeSource;
+  testRepo: (ScopeSource & { tests: number; testsLinked: number }) | null;
 }
 
 /** Per database: scan ids only identify a scan within one database. */
@@ -38,12 +41,20 @@ const firesOn = (t: StoredTrigger): string => t.filePattern ?? t.schedule ?? t.c
 export function routeCoverage(db: Db): RouteCoverage | null {
   // latest scan per branch, separately for route and test scans (light columns first)
   const rows = db
-    .select({ id: triggerScans.id, branch: triggerScans.branch, files: triggerScans.files, commit: triggerScans.commit, scannedAt: triggerScans.scannedAt })
+    .select({
+      id: triggerScans.id,
+      branch: triggerScans.branch,
+      files: triggerScans.files,
+      commit: triggerScans.commit,
+      scannedAt: triggerScans.scannedAt,
+      label: triggerScans.label,
+    })
     .from(triggerScans)
     .orderBy(desc(triggerScans.scannedAt), desc(triggerScans.id))
     .all();
   const routes = new Map<string, (typeof rows)[number]>();
   const tests = new Map<string, number>();
+  const byId = new Map(rows.map((r) => [r.id, r] as const));
   for (const r of rows) {
     if (r.files.xml > 0 && !routes.has(r.branch)) routes.set(r.branch, r);
     if (r.files.tests > 0 && !tests.has(r.branch)) tests.set(r.branch, r.id);
@@ -91,6 +102,10 @@ export function routeCoverage(db: Db): RouteCoverage | null {
       branches,
     };
   });
+  const mainTestLabels = testsOf(mainTests);
+  const linked = new Set([...onMain.values()].flatMap((cov) => cov.map((c) => c.test)));
+  const source = (r: (typeof rows)[number]): ScopeSource => ({ repo: r.label, branch: r.branch, commit: r.commit, scannedAt: r.scannedAt });
+  const testScan = mainTests ? byId.get(mainTests) : undefined;
   out.sort((a, b) => (a.module ?? '').localeCompare(b.module ?? '') || (a.routeId ?? a.key).localeCompare(b.routeId ?? b.key));
   const value: RouteCoverage = {
     total: triggers.length,
@@ -100,6 +115,8 @@ export function routeCoverage(db: Db): RouteCoverage | null {
     commit: mainScan.commit,
     scannedAt: mainScan.scannedAt,
     rows: out,
+    triggerRepo: source(mainScan),
+    testRepo: testScan ? { ...source(testScan), tests: mainTestLabels.length, testsLinked: linked.size } : null,
   };
   caches.set(db, { key, value });
   return value;
@@ -111,6 +128,8 @@ export function routeOverview(db: Db, q: TriggerOverviewQuery): TriggerOverviewR
   const counts = { tested: cov?.automated ?? 0, branch: cov?.inProgress ?? 0, none: cov ? cov.total - cov.automated - cov.inProgress : 0 };
   const status: RouteStatus = q.status ?? (counts.none > 0 ? 'none' : counts.branch > 0 ? 'branch' : 'tested');
   return {
+    triggerRepo: cov ? { ...cov.triggerRepo, triggers: cov.total } : null,
+    testRepo: cov?.testRepo ? { ...cov.testRepo, triggersTested: cov.automated } : null,
     branch: cov?.branch ?? null,
     commit: cov?.commit ?? null,
     scannedAt: cov?.scannedAt ?? null,
