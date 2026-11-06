@@ -9,6 +9,7 @@ import { cn, fmtNumber, fmtPct, fmtRelative, pluralize } from '../lib/utils';
 import { Button } from '../components/ui/button';
 import { Card, CardBody, CardHeader } from '../components/ui/card';
 import { ConfirmDialog } from '../components/ui/confirm';
+import { PrScanButton } from '../components/PrScan';
 import { EmptyState, ErrorState } from '../components/ui/empty-state';
 import { Dialog } from '../components/ui/dialog';
 import { Field, Input } from '../components/ui/input';
@@ -100,6 +101,7 @@ export default function TriggersPage() {
           data && data.branches.length > 0 ? (
             <>
               <ScanBranchButton onScanned={(b) => set({ branch: b, compare: b === 'main' ? null : compare ?? (b !== 'main' && branchOptions.some((o) => o.value === 'main') ? 'main' : null) })} />
+              <PrScanButton />
               {branch && !DEFAULT_BRANCHES.includes(branch) ? <RemoveBranchButton branch={branch} onRemoved={() => set({ branch: null, compare: null })} /> : null}
               <Select
                 size="sm"

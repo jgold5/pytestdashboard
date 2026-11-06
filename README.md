@@ -253,12 +253,14 @@ Report's **Copy link** carries it. A branch without its own test scan uses `main
 The coverage trend always follows the whole default branch. On Triggers, the tiles follow the
 folder, type and search filters.
 
-**Open PRs in the test repo are scanned automatically.** Once the test repo has been scanned
-as tests from the dashboard (Scan a branch → It holds: tests), every GitHub sync:
-- scans the branch of each open PR in it (same repo, not forks), so their tests count as
-  *not merged yet*. A branch is only downloaded again when its head commit changed, and at
-  most 25 per sync;
-- removes those scans once the PR is merged or closed.
+**Scan open PRs.** On Triggers, **Scan open PRs** scans the branch of every open PR in the
+test repo (same repo, not forks) as tests, 3 at a time, until all are done, with a live list.
+- It works once the test repo has been scanned as tests from the dashboard (Scan a branch →
+  It holds: tests). The Camel repo's PRs are never scanned this way.
+- Each PR shows **Up to date** when it was already scanned at its latest commit: it is
+  skipped, so running it again only downloads PRs that moved. Failed ones are tried again.
+- Scans of PRs that were merged or closed since are removed.
+- It runs only when you click it; the GitHub sync doesn't scan branches.
 
 A PR's tests count as *not merged yet* only for **the branch the PR targets**. With `core`
 and `dev` both in the trigger repo, a PR into `dev` counts for `dev`, never for `core`, and

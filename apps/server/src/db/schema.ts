@@ -223,8 +223,6 @@ export type IntegrationStats = {
   created: number;
   updated: number;
   linked: number;
-  /** github: open PR branches of the test repo scanned / already current / scans removed (PR closed) / failed. */
-  branchScans?: { scanned: number; unchanged: number; removed: number; failed: number };
 };
 
 export const integrationState = sqliteTable('integration_state', {

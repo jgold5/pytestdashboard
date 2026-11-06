@@ -1126,10 +1126,6 @@ export const IntegrationStatus = z.object({
       created: z.number().int(), // jira: test cases created; github: PRs seen for the first time
       updated: z.number().int(), // jira: test cases updated; github: cases auto-promoted to automated by a merged PR
       linked: z.number().int(), // PR↔case links (github only)
-      /** github: the test repo's open PR branches scanned, already current, scans removed (PR closed), failed. */
-      branchScans: z
-        .object({ scanned: z.number().int(), unchanged: z.number().int(), removed: z.number().int(), failed: z.number().int() })
-        .optional(),
     })
     .nullable(),
   /** Minutes between automatic syncs; null = manual only. */
@@ -1334,6 +1330,37 @@ export const TriggerGithubScanRequest = z.object({
   only: z.enum(['routes', 'tests']),
 });
 export type TriggerGithubScanRequest = z.infer<typeof TriggerGithubScanRequest>;
+
+/**
+ * `POST /api/triggers/pr-scan` starts, `GET` reads: one job scanning every open PR branch of the
+ * test repo(s), a few at a time, skipping those already scanned at their current commit.
+ */
+export const PrScanStatus = z.object({
+  state: z.enum(['idle', 'running', 'done', 'error']),
+  /** Test repos (GITHUB_REPOS scanned as tests from the dashboard). */
+  repos: z.array(z.string()),
+  startedAt: z.string().nullable(),
+  finishedAt: z.string().nullable(),
+  error: z.string().nullable(),
+  /** Scans removed because their PR was merged or closed. */
+  removed: z.number().int(),
+  prs: z.array(
+    z.object({
+      repo: z.string(),
+      number: z.number().int(),
+      title: z.string(),
+      branch: z.string(),
+      /** The branch the PR targets: its tests count as not merged yet there. */
+      base: z.string(),
+      commit: z.string().nullable(),
+      scannedAt: z.string().nullable(),
+      /** up_to_date: already scanned at this commit, so skipped. */
+      status: z.enum(['pending', 'scanning', 'scanned', 'up_to_date', 'failed', 'skipped']),
+      error: z.string().nullable(),
+    }),
+  ),
+});
+export type PrScanStatus = z.infer<typeof PrScanStatus>;
 
 /** `GET /api/triggers/github`: repos that can be scanned from the dashboard. */
 export const TriggerGithubInfo = z.object({ configured: z.boolean(), repos: z.array(z.string()) });

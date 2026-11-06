@@ -10,7 +10,6 @@
  * GHES: GITHUB_API_URL=https://ghe.example.com/api/v3 → GraphQL at
  * https://ghe.example.com/api/graphql.
  */
-import { syncPrBranchScans, type PrHead } from '../triggers/prBranchSync.js';
 import { and, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import type { GithubConfig } from '../config.js';
@@ -108,10 +107,7 @@ const RestPr = z.object({
   created_at: z.string(),
   updated_at: z.string(),
   user: Login,
-  head: z
-    .object({ ref: z.string(), sha: z.string().nullish(), repo: z.object({ full_name: z.string() }).nullish() })
-    .nullish(),
-  base: z.object({ ref: z.string() }).nullish(),
+  head: z.object({ ref: z.string() }).nullish(),
   requested_reviewers: z.array(z.object({ login: z.string() }).nullish()).nullish(),
   requested_teams: z
     .array(z.object({ name: z.string().nullish(), slug: z.string().nullish() }).nullish())
@@ -311,8 +307,6 @@ export function createGithubProvider(
     ctx: SyncContext,
     budget: { patchChars: number; warned: boolean },
     stats: { droppedLinks: number },
-    /** Filled with the PRs' branches (open, and closed in the window) for the PR branch scans. */
-    heads: PrHead[] = [],
   ): Promise<SyncStats> {
     const [owner, name] = repo.split('/') as [string, string];
     const repoPath = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
@@ -350,17 +344,6 @@ export function createGithubProvider(
     for (const [n, pr] of byNumber) {
       if (pr.state === 'closed' && new Date(pr.merged_at ?? pr.updated_at) < cutoff)
         byNumber.delete(n);
-    }
-    for (const pr of byNumber.values()) {
-      if (!pr.head?.ref || !pr.base?.ref) continue;
-      heads.push({
-        number: pr.number,
-        state: pr.state === 'open' ? 'open' : 'closed',
-        ref: pr.head.ref,
-        base: pr.base.ref,
-        sha: pr.head.sha ?? null,
-        repo: pr.head.repo?.full_name ?? null,
-      });
     }
 
     // PRs we still think are open but GitHub no longer lists as open (closed while
@@ -593,15 +576,9 @@ export function createGithubProvider(
       });
       const total: SyncStats = { fetched: 0, created: 0, updated: 0, linked: 0 };
       const budget = { patchChars: GITHUB_LIMITS.patchCharsPerSync as number, warned: false };
-      const branchScans = { scanned: 0, unchanged: 0, removed: 0, failed: 0 };
       for (const repo of config.repos) {
         const repoStats = { droppedLinks: 0 };
-        const heads: PrHead[] = [];
-        const s = await syncRepo(gh, ctx.db, repo, ctx, budget, repoStats, heads);
-        // the test repo only (one the dashboard has scanned as tests): keep its open PR branches scanned
-        const b = await syncPrBranchScans(ctx.db, config, repo, heads, ctx);
-        for (const k of ['scanned', 'unchanged', 'removed', 'failed'] as const) branchScans[k] += b[k];
-        if (b.scanned + b.removed + b.failed > 0) ctx.log.info({ repo, ...b }, 'GitHub PR branches scanned');
+        const s = await syncRepo(gh, ctx.db, repo, ctx, budget, repoStats);
         if (repoStats.droppedLinks > 0) {
           ctx.log.warn(
             { repo, droppedLinks: repoStats.droppedLinks },
@@ -614,7 +591,7 @@ export function createGithubProvider(
         total.linked += s.linked;
         ctx.log.info({ repo, ...s }, 'GitHub repo synced');
       }
-      return branchScans.scanned + branchScans.unchanged + branchScans.removed + branchScans.failed > 0 ? { ...total, branchScans } : total;
+      return total;
     },
   };
 }

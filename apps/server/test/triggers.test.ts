@@ -1,14 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { Trigger, TriggerListResponse, TriggerScanResponse } from '@ptd/shared';
+import type { PrScanStatus, Trigger, TriggerListResponse, TriggerScanResponse } from '@ptd/shared';
 import { normalizeCondition, parseFileCondition, parsePropertiesFile, parseEndpoint, resolvePlaceholders, buildPropertyIndex, scanCamelXml, scanPytestFile, scanRepository } from '../src/triggers/scan.js';
 import { classify } from '../src/triggers/upload.js';
 import { authEnv, createTestApp, multipart, type TestApp } from './helpers/app.js';
 import { importResults } from './helpers/allure.js';
 import { makeZip } from './helpers/zip.js';
 import { startMockServer, type MockServer } from './helpers/mockServer.js';
-import { loadConfig } from '../src/config.js';
 import { triggerScans } from '../src/db/schema.js';
-import { syncPrBranchScans } from '../src/triggers/prBranchSync.js';
 
 const ROUTES_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <beans xmlns="http://www.springframework.org/schema/beans">
@@ -752,6 +750,14 @@ describe('PRs count for the branch they target', () => {
 
 describe('scan a branch straight from GitHub', () => {
   const TOKEN = 'ghp_0123456789abcdefghijklmnopqrstuvwxyzAB';
+  const openPrs: Record<string, unknown[]> = {};
+  const pull = (number: number, ref: string, base: string, repo = 'acme/tests') => ({
+    number,
+    title: `PR ${number}`,
+    updated_at: '2026-11-06T10:00:00Z',
+    head: { ref, sha: '6666666aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', repo: { full_name: repo } },
+    base: { ref: base },
+  });
   let mock: MockServer;
   let t: TestApp;
   const zips: Record<string, Buffer> = {};
@@ -787,6 +793,8 @@ describe('scan a branch straight from GitHub', () => {
         return { raw: (res) => res.writeHead(200, { 'content-type': 'application/zip', 'content-length': String(body.length) }).end(body) };
       }
       if (req.path === '/api/v3/repos/acme/camel/branches') return { json: [{ name: 'main' }, { name: 'feature/refunds' }] };
+      const pulls = /^\/api\/v3\/repos\/([\w.-]+\/[\w.-]+)\/pulls$/.exec(req.path);
+      if (pulls) return { json: openPrs[pulls[1]!] ?? [] };
       return { status: 404, json: { message: 'Not Found' } };
     });
     t = await createTestApp({ GITHUB_TOKEN: TOKEN, GITHUB_REPOS: 'acme/camel,acme/tests', GITHUB_API_URL: `${mock.url}/api/v3` });
@@ -832,48 +840,50 @@ describe('scan a branch straight from GitHub', () => {
     expect(mock.requests.filter((r) => r.path.startsWith('/_codeload/')).every((r) => !r.headers.authorization)).toBe(true);
   });
 
-  it('the GitHub sync keeps the test repo\'s open PR branches scanned, and drops them once closed', async () => {
-    const cfg = loadConfig({ NODE_ENV: 'test', DATA_DIR: t.dataDir, GITHUB_TOKEN: TOKEN, GITHUB_REPOS: 'acme/camel,acme/tests', GITHUB_API_URL: `${mock.url}/api/v3` }).github;
-    const db = t.dbHandle.db;
-    const ctx = { signal: new AbortController().signal, log: t.app.log };
-    const scans = () => db.select({ branch: triggerScans.branch, label: triggerScans.label, commit: triggerScans.commit }).from(triggerScans).all();
-    const pr = (number: number, ref: string, extra: Partial<{ state: 'open' | 'closed'; sha: string; repo: string; base: string }> = {}) => ({
-      number,
-      ref,
-      base: extra.base ?? 'main',
-      state: extra.state ?? ('open' as const),
-      sha: extra.sha ?? '6666666aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-      repo: extra.repo ?? 'acme/tests',
-    });
+  it('Scan open PRs: scans each open PR branch of the test repo, skips the ones up to date, drops closed ones', async () => {
+    const scans = () => t.dbHandle.db.select({ branch: triggerScans.branch, label: triggerScans.label, commit: triggerScans.commit }).from(triggerScans).all();
+    const run = async () => {
+      expect((await t.app.inject({ method: 'POST', url: '/api/triggers/pr-scan' })).statusCode).toBe(202);
+      for (let i = 0; i < 200; i++) {
+        const st = (await t.app.inject({ url: '/api/triggers/pr-scan' })).json<PrScanStatus>();
+        if (st.state !== 'running') return st;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      throw new Error('PR scan did not finish');
+    };
 
     // not a test repo until the dashboard has scanned it as tests
-    expect(await syncPrBranchScans(db, cfg, 'acme/tests', [pr(7, 'feature/refunds')], ctx)).toEqual({ scanned: 0, unchanged: 0, removed: 0, failed: 0 });
+    expect(await run()).toMatchObject({ state: 'error', error: expect.stringContaining('No test repo yet') });
     await scan('acme/camel', 'main', 'routes');
     await scan('acme/camel', 'feature/refunds', 'routes');
     await scan('acme/tests', 'main', 'tests');
-    // the route repo's PRs are never scanned this way
-    expect(await syncPrBranchScans(db, cfg, 'acme/camel', [pr(3, 'feature/refunds', { repo: 'acme/camel' })], ctx)).toMatchObject({ scanned: 0 });
 
-    // open PR → its branch is scanned as tests; forks and default branches are skipped
-    const stats = await syncPrBranchScans(db, cfg, 'acme/tests', [pr(7, 'feature/refunds'), pr(8, 'feature/fork', { repo: 'someone/tests' }), pr(9, 'main')], ctx);
-    expect(stats).toEqual({ scanned: 1, unchanged: 0, removed: 0, failed: 0 });
+    // open PRs: one to scan, one from a fork; the route repo's PRs are never listed
+    openPrs['acme/tests'] = [pull(7, 'feature/refunds', 'main'), pull(8, 'feature/fork', 'main', 'someone/tests')];
+    openPrs['acme/camel'] = [pull(3, 'feature/refunds', 'main', 'acme/camel')];
+    const first = await run();
+    expect(first).toMatchObject({ state: 'done', repos: ['acme/tests'] });
+    expect(first.prs).toEqual([
+      expect.objectContaining({ number: 7, branch: 'feature/refunds', base: 'main', status: 'scanned', commit: '6666666' }),
+      expect.objectContaining({ number: 8, status: 'skipped', error: 'from a fork' }),
+    ]);
     expect(scans()).toContainEqual({ branch: 'feature/refunds', label: 'acme/tests PR #7 → main', commit: '6666666' });
-    // its tests count as not merged yet: refund-load isn't on main, but invoice-load is tested on main already
-    const summary = (await t.app.inject({ url: '/api/summary' })).json<{ coverage: Record<string, unknown> }>().coverage;
-    expect(summary).toMatchObject({ unit: 'routes', total: 1, automated: 1 });
+    expect(mock.requests.some((r) => r.path === '/api/v3/repos/acme/camel/pulls')).toBe(false);
 
-    // same head commit → nothing downloaded again
+    // run again: nothing moved, so nothing is downloaded
     const downloads = () => mock.requests.filter((r) => r.path.includes('/zipball/')).length;
     const before = downloads();
-    expect(await syncPrBranchScans(db, cfg, 'acme/tests', [pr(7, 'feature/refunds')], ctx)).toMatchObject({ scanned: 0, unchanged: 1 });
+    expect((await run()).prs[0]).toMatchObject({ number: 7, status: 'up_to_date', commit: '6666666' });
     expect(downloads()).toBe(before);
-    // retargeted to another branch → scanned again with the new target
-    expect(await syncPrBranchScans(db, cfg, 'acme/tests', [pr(7, 'feature/refunds', { base: 'core' })], ctx)).toMatchObject({ scanned: 1 });
-    expect(scans()).toContainEqual(expect.objectContaining({ branch: 'feature/refunds', label: 'acme/tests PR #7 → core' }));
 
-    // merged or closed → its scan goes; the route repo's branch of the same name and the hand-made scans stay
-    expect(await syncPrBranchScans(db, cfg, 'acme/tests', [pr(7, 'feature/refunds', { state: 'closed' })], ctx)).toMatchObject({ removed: 1 });
-    expect(scans().filter((s) => s.label?.startsWith('acme/tests PR #7'))).toEqual([]);
+    // retargeted → scanned again for the new target
+    openPrs['acme/tests'] = [pull(7, 'feature/refunds', 'core')];
+    expect((await run()).prs[0]).toMatchObject({ status: 'scanned', base: 'core' });
+
+    // merged or closed → its scan goes; the route repo's same-named branch and hand-made scans stay
+    openPrs['acme/tests'] = [];
+    expect(await run()).toMatchObject({ state: 'done', removed: 1, prs: [] });
+    expect(scans().filter((x) => x.label?.startsWith('acme/tests PR #7'))).toEqual([]);
     expect(scans()).toContainEqual(expect.objectContaining({ branch: 'feature/refunds', label: 'acme/camel' }));
     expect(scans()).toContainEqual(expect.objectContaining({ branch: 'main', label: 'acme/tests' }));
   });
