@@ -34,6 +34,8 @@ export interface RouteCoverage {
   routeBranches: string[];
   defaultBranch: string;
   testBranches: string[];
+  unmergedFrom: string[];
+  looseTestBranches: string[];
   /** Where the two halves came from: the trigger repo's scan and the test repo's scan. */
   triggerRepo: ScopeSource;
   testRepo: (ScopeSource & { tests: number; testsLinked: number }) | null;
@@ -80,8 +82,9 @@ export function routeCoverage(db: Db, branch?: string, testsBranch?: string): Ro
   const mainScan = routes.get(mainBranch)!;
   // tests: the test repo branch picked (default: the same name as the routes branch)
   const scope = testScope(testsBranch || mainBranch, testRows, new Set(routes.keys()));
+  // long-lived test branches only: the default ones and those also in the trigger repo (not PR or hand-scanned feature branches)
   const testBranches = [...testRows.values()]
-    .filter((r) => !parsePrLabel(r.label))
+    .filter((r) => !parsePrLabel(r.label) && (routes.has(r.branch) || rank(r.branch) < MAIN_BRANCHES.length))
     .map((r) => r.branch)
     .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
   const mainTests = scope.merged?.id ?? null;
@@ -145,6 +148,10 @@ export function routeCoverage(db: Db, branch?: string, testsBranch?: string): Ro
     routeBranches: byRank,
     defaultBranch,
     testBranches,
+    unmergedFrom: otherTests.map(([b]) => b),
+    looseTestBranches: [...testRows.values()]
+      .filter((r) => !parsePrLabel(r.label) && !routes.has(r.branch) && rank(r.branch) === MAIN_BRANCHES.length)
+      .map((r) => r.branch),
     triggerRepo: source(mainScan),
     testRepo: testScan ? { ...source(testScan), tests: mainTestLabels.length, testsLinked: linked.size } : null,
   };
@@ -188,6 +195,8 @@ export function routeOverview(db: Db, q: TriggerOverviewQuery): TriggerOverviewR
     routeBranches: cov?.routeBranches ?? [],
     defaultBranch: cov?.defaultBranch ?? null,
     testBranches: cov?.testBranches ?? [],
+    unmergedFrom: cov?.unmergedFrom ?? [],
+    looseTestBranches: cov?.looseTestBranches ?? [],
     folders: cov ? folderCounts(cov) : [],
     folder: q.folder ?? null,
     triggerRepo: cov
