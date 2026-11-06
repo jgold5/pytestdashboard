@@ -166,7 +166,7 @@ export default function TriggersPage() {
       ) : data ? (
         <>
           <Totals data={data} items={scoped} scope={[module ? `in ${module}/` : null, kind ? (kind === 'file' ? 'load file' : 'schedule') : null, search.trim() ? `matching “${search.trim()}”` : null].filter(Boolean).join(' · ')} />
-          <Sources data={data} />
+          <Sources data={data} routeBranches={routeBranches} />
           <div className="mt-4 mb-3 flex flex-wrap items-center gap-2">
             <div role="tablist" aria-label="Filter triggers" className="flex flex-wrap gap-1.5">
               {STATUS_FILTERS.filter((f) => !('compareOnly' in f) || compare).map((f) => (
@@ -256,7 +256,7 @@ export default function TriggersPage() {
 }
 
 /** Where the routes and the tests come from (they can be different repos, scanned per branch). */
-function Sources({ data }: { data: TriggerListResponse }) {
+function Sources({ data, routeBranches }: { data: TriggerListResponse; routeBranches: string[] }) {
   if (!data.branch) {
     return (
       <p className="mt-2 text-xs text-fg-3">
@@ -281,9 +281,24 @@ function Sources({ data }: { data: TriggerListResponse }) {
       {data.unmergedFrom.length > 0 ? (
         <span>
           {' '}
-          + {pluralize(data.unmergedFrom.length, 'PR branch', 'PR branches')} into <span className="font-mono">{data.testsFrom ?? data.branch}</span>, not merged yet
+          + {pluralize(data.unmergedFrom.length, 'PR branch', 'PR branches')} into <span className="font-mono">{data.branch}</span>, not merged yet
         </span>
-      ) : null}{' '}
+      ) : (
+        <span className="text-warn"> · no open PRs into {data.branch} scanned: use Scan open PRs</span>
+      )}
+      {(() => {
+        // test branches scanned by hand or from CI don't say which branch their PR goes into, so they count for the default only
+        const loose = data.branches.filter(
+          (b) => b.files.tests > 0 && b.files.xml === 0 && !routeBranches.includes(b.branch) && !['main', 'master', 'develop'].includes(b.branch) && !/ PR #\d+/.test(b.label ?? ''),
+        );
+        return loose.length > 0 ? (
+          <span className="text-warn">
+            {' '}
+            · {pluralize(loose.length, 'test branch', 'test branches')} scanned by hand ({loose.slice(0, 3).map((b) => b.branch).join(', ')}
+            {loose.length > 3 ? '…' : ''}) {loose.length === 1 ? "doesn't" : "don't"} say which branch {loose.length === 1 ? 'it goes' : 'they go'} into: run Scan open PRs
+          </span>
+        ) : null;
+      })()}{' '}
       ·{' '}
       <span className={data.tests.read > 0 && data.tests.linked === 0 ? 'text-warn' : undefined}>
         {pluralize(data.tests.read, 'test')} read, {fmtNumber(data.tests.linked)} linked to a trigger

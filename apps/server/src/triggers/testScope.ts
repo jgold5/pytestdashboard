@@ -33,7 +33,8 @@ export function testScope<T extends ScopeScan>(
   const unmerged = [...tests.values()].filter((s) => {
     if (s === merged) return false;
     const pr = parsePrLabel(s.label);
-    if (pr) return pr.base ? pr.base === base : base === defaultTestBranch;
+    // a PR into this branch counts even when the test repo has no branch of that name (its merged tests then come from the default)
+    if (pr) return pr.base ? pr.base === branch || pr.base === base : base === defaultTestBranch;
     if (routeBranches.has(s.branch) || MAIN_BRANCHES.includes(s.branch)) return false;
     return base === defaultTestBranch;
   });
