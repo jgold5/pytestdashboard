@@ -246,24 +246,20 @@ spreadsheet or Jira rows:
   not; the Overview says how many are not merged yet;
 - **No test yet**: the rest.
 
-**Routes and tests are picked separately.** The **Routes** picker chooses the trigger repo
-branch (whose triggers are the scope); the **Tests** picker chooses the test repo branch whose
-merged tests count, plus the open PRs into it. By default the tests branch has the same name as
-the routes branch (else the test repo's default), so "routes from core, tests from main" is one
-pick away.
+**One scope button** on the Overview, Triggers and Report reads like a sentence, e.g.
+`core · tests main · common/`. Click it to pick:
+- **Routes**: the trigger repo branch, whose triggers are the scope;
+- **Tests**: the test repo branch whose merged tests count, plus the open PRs into it. It
+  follows the routes branch's name (else the test repo's default) until you pick another;
+- **Folder**: all folders, or one, with how many of its triggers are tested.
 
-**Every page counts one branch of the trigger repo.** Picking `core` means `core`'s triggers,
-tested by `core`'s merged tests plus every open PR into `core` (scanned with Scan open PRs);
-other branches' tests never count. There is no "all branches" view. The Triggers page lists
-only trigger repo branches, follows the branch and folder picked on the Overview (and back),
-and marks a test that is only in a PR with that PR's branch.
+The panel also says how many open PRs are counted, and points to Scan open PRs when none are.
 
-**Pick the branch and folder** at the top of the Overview (and the Report) to count one branch
-of the trigger repo, or only one folder in it: the folder under `resources/` (e.g.
-`src/main/resources/common/…` is `common`). The pick stays until you change it, and the
-Report's **Copy link** carries it. A branch without its own test scan uses `main`'s tests.
-The coverage trend always follows the whole default branch. On Triggers, the tiles follow the
-folder, type and search filters.
+Other branches' tests never count, and there is no "all branches" view. A folder is the one
+under `resources/` (e.g. `src/main/resources/common/…` is `common`). The pick is the same on
+every page and stays until you change it; the Report's **Copy link** carries it. A test that
+is only in a PR shows that PR's branch. The coverage trend always follows the whole default
+branch. On Triggers, the tiles also follow the type and search filters.
 
 **Scan open PRs.** On Triggers, **Scan open PRs** scans the branch of every open PR in the
 test repo (same repo, not forks) as tests, 3 at a time, until all are done, with a live list.

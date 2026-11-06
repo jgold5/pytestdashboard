@@ -1421,6 +1421,10 @@ export const TriggerOverviewResponse = z.object({
   defaultBranch: z.string().nullable(),
   /** Test repo branches that can be the merged tests (PR branches left out), the default first. */
   testBranches: z.array(z.string()),
+  /** Test branches counted as not merged yet: the open PRs into the tests branch (and hand-scanned ones on the default line). */
+  unmergedFrom: z.array(z.string()),
+  /** Test branches scanned by hand or from CI that aren't linked to a PR target: they only count for the default branch. */
+  looseTestBranches: z.array(z.string()),
   /** Folders on the branch with their counts (tested includes unmerged), for the folder picker. */
   folders: z.array(z.object({ folder: z.string(), triggers: z.number().int(), tested: z.number().int(), unmerged: z.number().int() })),
   /** The folder the counts and items are limited to; null = the whole branch. */

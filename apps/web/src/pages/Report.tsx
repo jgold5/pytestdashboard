@@ -49,7 +49,7 @@ import { ChartTooltipBox, Legend } from '../components/charts/ChartTooltip';
 import { FoundResolvedChart } from '../components/charts/FoundResolvedChart';
 import { SEVERITY_META } from '../components/bugs';
 import { PIPELINE_META, REVIEW_META } from '../components/status';
-import { ScopePicker } from '../components/ScopeBranchPicker';
+import { ScopeButton } from '../components/ScopeButton';
 import { useScopeBranch, useScopeFolder, useScopeTests } from '../lib/scopeBranch';
 
 const PERIODS = [7, 30, 90, 180] as const;
@@ -136,13 +136,13 @@ export default function ReportPage() {
             ))}
           </div>
           {isEditor ? (
-            <ScopePicker
-              branch={r?.coverage.branch ?? branch}
-              folder={folder}
-              tests={tests}
-              onBranch={(b) => setScope('branch', b)}
-              onFolder={(f) => setScope('folder', f)}
-              onTests={(x) => setScope('tests', x)}
+            <ScopeButton
+              scope={{ branch, folder, tests }}
+              onChange={(p) => {
+                if ('branch' in p) setScope('branch', p.branch ?? null);
+                if ('folder' in p) setScope('folder', p.folder ?? null);
+                if ('tests' in p) setScope('tests', p.tests ?? null);
+              }}
             />
           ) : null}
           <Button variant="outline" size="sm" onClick={() => void copyLink()}>

@@ -11,6 +11,7 @@ import { Button } from '../components/ui/button';
 import { Card, CardBody, CardHeader } from '../components/ui/card';
 import { ConfirmDialog } from '../components/ui/confirm';
 import { PrScanButton } from '../components/PrScan';
+import { ScopeButton, type Scope } from '../components/ScopeButton';
 import { EmptyState, ErrorState } from '../components/ui/empty-state';
 import { Dialog } from '../components/ui/dialog';
 import { Field, Input } from '../components/ui/input';
@@ -63,7 +64,6 @@ export default function TriggersPage() {
   const [search, setSearch] = useState(params.get('q') ?? '');
   // the test repo branch whose merged tests (and PRs into it) count; none = the routes branch's name
   const tests = params.get('tests') || scopeTests || undefined;
-  const testBranches = routeInfo.data?.testBranches ?? [];
   const res = useTriggers({ branch, compare, tests }, !resolving);
 
   const set = (patch: Record<string, string | null>) =>
@@ -109,10 +109,13 @@ export default function TriggersPage() {
   // only trigger repo branches (dev, core…): PR branches of the test repo count inside them
   const branchOptions = routeBranches.map((b) => ({ value: b, label: b === defaultBranch ? `${b} (default)` : b }));
   if (branch && !routeBranches.includes(branch)) branchOptions.push({ value: branch, label: `${branch} · tests only` });
-  const pickBranch = (v: string | null) => {
-    if (!v) return;
-    set({ branch: v, compare: compare && compare !== v ? compare : null });
-    if (routeBranches.includes(v)) setScopeBranch(v === defaultBranch ? null : v);
+  // the scope button writes the choice shared with the Overview and Report; a link's own branch/folder/tests give way to it
+  const changeScope = (p: Partial<Scope>) => {
+    if ('branch' in p) setScopeBranch(p.branch ?? null);
+    if ('folder' in p) setScopeFolder(p.folder ?? null);
+    if ('tests' in p) setScopeTests(p.tests ?? null);
+    const nextBranch = 'branch' in p ? (p.branch ?? defaultBranch) : branch;
+    set({ branch: null, module: null, tests: null, compare: compare && compare !== nextBranch ? compare : null });
   };
 
   return (
@@ -134,26 +137,7 @@ export default function TriggersPage() {
                   }}
                 />
               ) : null}
-              <span className="inline-flex items-center gap-1.5 text-xs text-fg-3">
-                Routes
-                <Select size="sm" ariaLabel="Branch" value={branch ?? null} onValueChange={pickBranch} options={branchOptions} className="w-44" />
-              </span>
-              <span className="inline-flex items-center gap-1.5 text-xs text-fg-3" title="Test repo branch: its merged tests count, plus the open PRs into it">
-                Tests
-                <Select
-                  size="sm"
-                  ariaLabel="Tests branch"
-                  value={tests ?? null}
-                  onValueChange={(v) => {
-                    set({ tests: v });
-                    setScopeTests(v);
-                  }}
-                  options={[...new Set([...testBranches, ...(tests ? [tests] : [])])].map((b) => ({ value: b, label: b }))}
-                  allowNone
-                  noneLabel="same as routes"
-                  className="w-40"
-                />
-              </span>
+              <ScopeButton scope={{ branch: branchParam ?? scopeBranch, folder: module, tests: tests ?? null }} onChange={changeScope} />
               <Select
                 size="sm"
                 ariaLabel="Compare with branch"
@@ -208,7 +192,6 @@ export default function TriggersPage() {
             </div>
           ) : null}
           <Totals data={data} items={scoped} scope={[module ? `in ${module}/` : null, kind ? (kind === 'file' ? 'load file' : 'schedule') : null, search.trim() ? `matching “${search.trim()}”` : null].filter(Boolean).join(' · ')} />
-          <Sources data={data} routeBranches={routeBranches} prTarget={tests ?? data.branch ?? ''} />
           <div className="mt-4 mb-3 flex flex-wrap items-center gap-2">
             <div role="tablist" aria-label="Filter triggers" className="flex flex-wrap gap-1.5">
               {STATUS_FILTERS.filter((f) => !('compareOnly' in f) || compare).map((f) => (
@@ -228,21 +211,6 @@ export default function TriggersPage() {
               ))}
             </div>
             <div className="ml-auto flex flex-wrap gap-1.5">
-              {modules.length > 1 ? (
-                <Select
-                  size="sm"
-                  ariaLabel="Folder"
-                  value={module}
-                  onValueChange={(v) => {
-                    set({ module: v });
-                    setScopeFolder(v);
-                  }}
-                  options={modules.map((m) => ({ value: m, label: `${m} · ${fmtNumber((data?.items ?? []).filter((r) => r.module === m && r.change !== 'removed').length)}` }))}
-                  allowNone
-                  noneLabel="All folders"
-                  className="w-48"
-                />
-              ) : null}
               <Select
                 size="sm"
                 ariaLabel="Trigger type"
@@ -294,66 +262,6 @@ export default function TriggersPage() {
         </>
       ) : null}
     </>
-  );
-}
-
-/** Where the routes and the tests come from (they can be different repos, scanned per branch). */
-/** `prTarget`: the branch whose PRs count (the tests branch picked, else the routes branch). */
-function Sources({ data, routeBranches, prTarget }: { data: TriggerListResponse; routeBranches: string[]; prTarget: string }) {
-  if (!data.branch) {
-    return (
-      <p className="mt-2 text-xs text-fg-3">
-        All branches · {pluralize(data.tests.read, 'test')} read, {fmtNumber(data.tests.linked)} linked to a trigger
-      </p>
-    );
-  }
-  const part = (label: string, from: string | null, own: string) =>
-    from === null ? (
-      <span>
-        no {label} scanned yet
-      </span>
-    ) : (
-      <span>
-        {label} from <span className={cn('font-mono', from === own ? 'text-fg' : 'text-fg-2')}>{from}</span>
-        {from !== own ? ' (no scan on this branch)' : ''}
-      </span>
-    );
-  return (
-    <p className="mt-2 text-xs text-fg-3">
-      {part('Routes', data.routesFrom, data.branch)} · {part('tests', data.testsFrom, data.branch)}
-      {data.unmergedFrom.length > 0 ? (
-        <span>
-          {' '}
-          + {pluralize(data.unmergedFrom.length, 'PR branch', 'PR branches')} into <span className="font-mono">{prTarget}</span>, not merged yet
-        </span>
-      ) : (
-        <span className="text-warn"> · no open PRs into {prTarget} scanned: use Scan open PRs</span>
-      )}
-      {(() => {
-        // test branches scanned by hand or from CI don't say which branch their PR goes into, so they count for the default only
-        const loose = data.branches.filter(
-          (b) => b.files.tests > 0 && b.files.xml === 0 && !routeBranches.includes(b.branch) && !['main', 'master', 'develop'].includes(b.branch) && !/ PR #\d+/.test(b.label ?? ''),
-        );
-        return loose.length > 0 ? (
-          <span className="text-warn">
-            {' '}
-            · {pluralize(loose.length, 'test branch', 'test branches')} scanned by hand ({loose.slice(0, 3).map((b) => b.branch).join(', ')}
-            {loose.length > 3 ? '…' : ''}) {loose.length === 1 ? "doesn't" : "don't"} say which branch {loose.length === 1 ? 'it goes' : 'they go'} into: run Scan open PRs
-          </span>
-        ) : null;
-      })()}{' '}
-      ·{' '}
-      <span className={data.tests.read > 0 && data.tests.linked === 0 ? 'text-warn' : undefined}>
-        {pluralize(data.tests.read, 'test')} read, {fmtNumber(data.tests.linked)} linked to a trigger
-      </span>
-      {data.compare ? (
-        <>
-          {' '}
-          — compared with routes from <span className="font-mono">{data.compareRoutesFrom ?? '—'}</span>, tests from{' '}
-          <span className="font-mono">{data.compareTestsFrom ?? '—'}</span>
-        </>
-      ) : null}
-    </p>
   );
 }
 

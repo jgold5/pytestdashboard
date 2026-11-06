@@ -24,7 +24,7 @@ import { RunTrendChart } from '../components/charts/RunTrendChart';
 import { FlakyMeter, REVIEW_META, TRIAGE_META } from '../components/status';
 import { PipelineFunnel, stageHref } from '../components/pipeline';
 import { RunGroupChip } from '../components/RunGroup';
-import { ScopePicker } from '../components/ScopeBranchPicker';
+import { ScopeButton } from '../components/ScopeButton';
 import { useScopeBranch, useScopeFolder, useScopeTests } from '../lib/scopeBranch';
 import { cn, fmtNumber, fmtPct, fmtRelative, pluralize } from '../lib/utils';
 
@@ -46,7 +46,14 @@ export function OverviewPage() {
         description="Automation coverage and the health of your automated runs."
         actions={
           <>
-            <ScopePicker branch={s.coverage.branch ?? branch} folder={folder} tests={tests} onBranch={setBranch} onFolder={setFolder} onTests={setTests} />
+            <ScopeButton
+              scope={{ branch, folder, tests }}
+              onChange={(p) => {
+                if ('branch' in p) setBranch(p.branch ?? null);
+                if ('folder' in p) setFolder(p.folder ?? null);
+                if ('tests' in p) setTests(p.tests ?? null);
+              }}
+            />
             <Link to="/import" className={linkButton('outline')}>
               <Upload /> Import
             </Link>
