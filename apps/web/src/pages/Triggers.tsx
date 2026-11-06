@@ -1,7 +1,7 @@
 import { useId, useMemo, useState, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { toast } from 'sonner';
-import { CircleCheck, CircleDashed, Clock, Copy, FileInput, GitBranch, GitCompareArrows, Search, Terminal, Trash2, TriangleAlert, Zap } from 'lucide-react';
+import { ChevronRight, CircleCheck, CircleDashed, Clock, Copy, FileInput, GitBranch, GitCompareArrows, Search, Terminal, Trash2, TriangleAlert, Zap } from 'lucide-react';
 import type { TriggerChange, TriggerListResponse, TriggerRow } from '@ptd/shared';
 import { useDeleteTriggerBranch, useScanGithubBranch, useTriggerBranches, useTriggerGithub, useTriggerOverview, useTriggers } from '../api/hooks';
 import { useScopeBranch, useScopeFolder } from '../lib/scopeBranch';
@@ -100,6 +100,7 @@ export default function TriggersPage() {
       )
       .sort((a, b) => (compare ? CHANGE_ORDER[a.change ?? 'unchanged'] - CHANGE_ORDER[b.change ?? 'unchanged'] : 0));
   }, [scoped, status, compare]);
+  const groups = useMemo(() => groupByRoute(rows), [rows]);
 
   // only trigger repo branches (dev, core…): PR branches of the test repo count inside them
   const branchOptions = routeBranches.map((b) => ({ value: b, label: b === defaultBranch ? `${b} (default)` : b }));
@@ -234,11 +235,11 @@ export default function TriggersPage() {
               <EmptyState icon={<Zap />} title="No triggers match these filters" />
             ) : (
               <>
-                <TriggerTable rows={rows.slice(0, limit)} showBranches={!branch} compare={compare ?? null} />
-                {rows.length > limit ? (
+                <TriggerTable groups={groups.slice(0, limit)} showBranches={!branch} compare={compare ?? null} />
+                {groups.length > limit ? (
                   <div className="border-t border-border p-2 text-center">
                     <Button size="sm" variant="ghost" onClick={() => setLimit(limit + PAGE * 5)}>
-                      Show more ({fmtNumber(rows.length - limit)} not shown)
+                      Show more ({pluralize(groups.length - limit, 'route')} not shown)
                     </Button>
                   </div>
                 ) : null}
@@ -247,7 +248,7 @@ export default function TriggersPage() {
           </Card>
           {data.divergence ? <Divergence d={data.divergence} branch={data.branch ?? ''} compare={data.compare ?? ''} /> : null}
           <p className="mt-2 text-xs text-fg-3">
-            {pluralize(rows.length, 'trigger')} shown. A route with several inputs, several file patterns, or a choice on the file name counts each one as its own trigger. A test covers a trigger when one of its Allure labels or pytest markers names the route id, the schedule, the job a file is sent to, or a load file the trigger picks up.
+            {pluralize(rows.length, 'trigger')} in {pluralize(groups.length, 'route')} shown. A route with several inputs, several file patterns, or a choice on the file name counts each one as its own trigger. A test covers a trigger when one of its Allure labels or pytest markers names the route id, the schedule, the job a file is sent to, or a load file the trigger picks up.
           </p>
         </>
       ) : null}
@@ -387,13 +388,52 @@ function Tile({ label, value, sub, tone }: { label: string; value: ReactNode; su
   );
 }
 
-function TriggerTable({ rows, showBranches, compare }: { rows: TriggerRow[]; showBranches: boolean; compare: string | null }) {
+/** The triggers of one route (each file pattern, input or file-name branch is its own trigger), in list order. */
+interface RouteGroup {
+  key: string;
+  rows: TriggerRow[];
+}
+
+/** One group per route: a route with several patterns shows as one row that expands. */
+function groupByRoute(rows: TriggerRow[]): RouteGroup[] {
+  const groups = new Map<string, RouteGroup>();
+  for (const r of rows) {
+    const key = `${r.module ?? ''}\0${r.routeId ?? `${r.sourceFile}:${r.line}`}`;
+    const g = groups.get(key);
+    if (g) g.rows.push(r);
+    else groups.set(key, { key, rows: [r] });
+  }
+  return [...groups.values()];
+}
+
+function TriggerTable({ groups, showBranches, compare }: { groups: RouteGroup[]; showBranches: boolean; compare: string | null }) {
+  const [open, setOpen] = useState<Set<string>>(() => new Set());
+  const toggle = (key: string) =>
+    setOpen((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  const multi = groups.filter((g) => g.rows.length > 1);
+  const allOpen = multi.length > 0 && multi.every((g) => open.has(g.key));
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[860px] text-left text-[13px]">
         <thead>
           <tr className="border-b border-border text-xs text-fg-2">
-            <th className="px-4 py-2 font-medium">Route</th>
+            <th className="px-4 py-2 font-medium">
+              Route
+              {multi.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setOpen(allOpen ? new Set() : new Set(multi.map((g) => g.key)))}
+                  className="link ml-2 text-[11px] font-normal text-fg-3"
+                >
+                  {allOpen ? 'collapse all' : 'expand all'}
+                </button>
+              ) : null}
+            </th>
             <th className="px-2 py-2 font-medium">Trigger</th>
             <th className="px-2 py-2 font-medium">Tests</th>
             {showBranches ? <th className="px-2 py-2 font-medium">Branches</th> : null}
@@ -401,45 +441,170 @@ function TriggerTable({ rows, showBranches, compare }: { rows: TriggerRow[]; sho
           </tr>
         </thead>
         <tbody>
-          {rows.map((r) => (
-            <tr key={`${r.key}-${r.change ?? ''}`} className={cn('border-b border-border align-top last:border-0 hover:bg-surface-2/50', r.change === 'removed' && 'opacity-60')}>
-              <td className="max-w-[260px] px-4 py-2.5">
-                <div className="truncate font-medium text-fg">{r.routeId ?? <span className="text-fg-3 italic">no route id</span>}</div>
-                <div className="truncate font-mono text-[11px] text-fg-3" title={`${r.sourceFile}:${r.line}`}>
-                  {r.module ? <span className="font-sans text-fg-2">{r.module} · </span> : null}
-                  {r.sourceFile.split('/').pop()}:{r.line}
-                  {r.input > 1 ? <span className="ml-1.5 font-sans">· input {r.input}</span> : null}
-                </div>
-              </td>
-              <td className="max-w-[360px] px-2 py-2.5">
-                <TriggerSpec r={r} />
-              </td>
-              <td className="max-w-[300px] px-2 py-2.5">
-                <Coverage r={r} />
-              </td>
-              {showBranches ? (
-                <td className="max-w-[200px] px-2 py-2.5">
-                  <div className="flex flex-wrap gap-1">
-                    {r.branches.map((b) => (
-                      <Chip key={b} className="font-mono">
-                        {b}
-                      </Chip>
-                    ))}
-                  </div>
-                </td>
-              ) : null}
-              {compare ? (
-                <td className="px-2 py-2.5 pr-4 whitespace-nowrap">
-                  {r.change ? <span className={cn('inline-flex rounded-full border px-2 py-px text-[11px] font-medium', CHANGE_META[r.change].cls)}>{CHANGE_META[r.change].label}</span> : null}
-                  {newlyAutomated(r) ? <div className="mt-1 text-[11px] text-st-passed">newly automated</div> : null}
-                  {lostTest(r) ? <div className="mt-1 text-[11px] text-st-failed">lost its test</div> : null}
-                </td>
-              ) : null}
-            </tr>
-          ))}
+          {groups.map((g) =>
+            g.rows.length === 1 ? (
+              <TriggerLine key={g.key} r={g.rows[0]!} showBranches={showBranches} compare={compare} />
+            ) : (
+              <RouteGroupRows key={g.key} g={g} open={open.has(g.key)} onToggle={() => toggle(g.key)} showBranches={showBranches} compare={compare} />
+            ),
+          )}
         </tbody>
       </table>
     </div>
+  );
+}
+
+function RouteCell({ r, extra }: { r: TriggerRow; extra?: ReactNode }) {
+  return (
+    <>
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="truncate font-medium text-fg">{r.routeId ?? <span className="text-fg-3 italic">no route id</span>}</span>
+        {extra}
+      </div>
+      <div className="truncate font-mono text-[11px] text-fg-3" title={`${r.sourceFile}:${r.line}`}>
+        {r.module ? <span className="font-sans text-fg-2">{r.module} · </span> : null}
+        {r.sourceFile.split('/').pop()}:{r.line}
+        {r.input > 1 ? <span className="ml-1.5 font-sans">· input {r.input}</span> : null}
+      </div>
+    </>
+  );
+}
+
+function TriggerLine({ r, showBranches, compare, nested }: { r: TriggerRow; showBranches: boolean; compare: string | null; nested?: boolean }) {
+  return (
+    <tr className={cn('border-b border-border align-top last:border-0 hover:bg-surface-2/50', r.change === 'removed' && 'opacity-60', nested && 'bg-surface-2/40')}>
+      <td className={cn('max-w-[260px] py-2.5', nested ? 'pr-4 pl-10' : 'px-4')}>
+        {nested ? <div className="truncate font-mono text-[11px] text-fg-3">{r.filePattern ?? r.schedule ?? `input ${r.input}`}</div> : <RouteCell r={r} />}
+      </td>
+      <td className="max-w-[360px] px-2 py-2.5">
+        <TriggerSpec r={r} />
+      </td>
+      <td className="max-w-[300px] px-2 py-2.5">
+        <Coverage r={r} />
+      </td>
+      {showBranches ? (
+        <td className="max-w-[200px] px-2 py-2.5">
+          <div className="flex flex-wrap gap-1">
+            {r.branches.map((b) => (
+              <Chip key={b} className="font-mono">
+                {b}
+              </Chip>
+            ))}
+          </div>
+        </td>
+      ) : null}
+      {compare ? (
+        <td className="px-2 py-2.5 pr-4 whitespace-nowrap">
+          {r.change ? <span className={cn('inline-flex rounded-full border px-2 py-px text-[11px] font-medium', CHANGE_META[r.change].cls)}>{CHANGE_META[r.change].label}</span> : null}
+          {newlyAutomated(r) ? <div className="mt-1 text-[11px] text-st-passed">newly automated</div> : null}
+          {lostTest(r) ? <div className="mt-1 text-[11px] text-st-failed">lost its test</div> : null}
+        </td>
+      ) : null}
+    </tr>
+  );
+}
+
+/** A route with several triggers: one summary row (patterns, how many are tested), the triggers below when expanded. */
+function RouteGroupRows({
+  g,
+  open,
+  onToggle,
+  showBranches,
+  compare,
+}: {
+  g: RouteGroup;
+  open: boolean;
+  onToggle: () => void;
+  showBranches: boolean;
+  compare: string | null;
+}) {
+  const first = g.rows[0]!;
+  const live = g.rows.filter((r) => r.change !== 'removed');
+  const tested = live.filter(automated).length;
+  const unmergedOnly = live.filter((r) => r.coveredBy.length > 0 && r.coveredBy.every((c) => c.branch)).length;
+  const specs = g.rows.map((r) => r.filePattern ?? r.schedule ?? r.resolvedUri.split('?')[0] ?? '');
+  const dirs = [...new Set(g.rows.map((r) => r.directory).filter(Boolean))];
+  const unresolved = g.rows.find((r) => r.unresolved.length > 0);
+  const changes = compare
+    ? Object.entries(g.rows.reduce<Record<string, number>>((m, r) => (r.change && r.change !== 'unchanged' ? { ...m, [r.change]: (m[r.change] ?? 0) + 1 } : m), {}))
+    : [];
+  const branches = [...new Set(g.rows.flatMap((r) => r.branches))];
+  return (
+    <>
+      <tr className="cursor-pointer border-b border-border align-top last:border-0 hover:bg-surface-2/50" onClick={onToggle}>
+        <td className="max-w-[260px] px-4 py-2.5">
+          <RouteCell
+            r={first}
+            extra={
+              <button
+                type="button"
+                aria-expanded={open}
+                aria-label={`${open ? 'Hide' : 'Show'} the ${g.rows.length} triggers of ${first.routeId ?? 'this route'}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggle();
+                }}
+                className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border px-1.5 py-px text-[11px] text-fg-2 outline-none hover:bg-surface-3 focus-visible:ring-2 focus-visible:ring-ring/50"
+              >
+                <ChevronRight className={cn('size-3 transition-transform', open && 'rotate-90')} aria-hidden />
+                {g.rows.length} triggers
+              </button>
+            }
+          />
+        </td>
+        <td className="max-w-[360px] px-2 py-2.5">
+          <div className="flex flex-wrap gap-1">
+            {specs.slice(0, 4).map((x, i) => (
+              <span key={i} className="max-w-[160px] truncate rounded border border-border bg-surface-2 px-1.5 font-mono text-[11px] text-fg" title={x}>
+                {x}
+              </span>
+            ))}
+            {specs.length > 4 ? <span className="text-[11px] text-fg-3">+{specs.length - 4} more</span> : null}
+          </div>
+          {dirs.length === 1 ? (
+            <div className="mt-0.5 truncate font-mono text-[11px] text-fg-3" title={dirs[0] ?? undefined}>
+              {first.scheme !== 'file' ? `${first.scheme}: ` : ''}
+              {dirs[0]}
+            </div>
+          ) : null}
+          {unresolved ? (
+            <span className="mt-0.5 inline-flex items-center gap-1 text-[11px] text-warn">
+              <TriangleAlert className="size-3" aria-hidden /> {unresolved.unresolved.some((u) => u.values.length === 0) ? 'missing property' : 'differs per environment'}
+            </span>
+          ) : null}
+        </td>
+        <td className="max-w-[300px] px-2 py-2.5">
+          {tested === 0 ? (
+            <span className="inline-flex items-center gap-1.5 text-xs text-fg-3">
+              <CircleDashed className="size-3.5" aria-hidden /> No test yet (0 of {live.length})
+            </span>
+          ) : (
+            <span className={cn('inline-flex items-center gap-1.5 text-xs font-medium', tested === live.length ? 'text-st-passed' : 'text-fg')}>
+              {tested === live.length ? <CircleCheck className="size-3.5" aria-hidden /> : <CircleDashed className="size-3.5" aria-hidden />}
+              {tested} of {live.length} tested
+              {unmergedOnly > 0 ? <span className="font-normal text-fg-3">· {unmergedOnly} not merged</span> : null}
+            </span>
+          )}
+        </td>
+        {showBranches ? (
+          <td className="max-w-[200px] px-2 py-2.5">
+            <div className="flex flex-wrap gap-1">
+              {branches.map((b) => (
+                <Chip key={b} className="font-mono">
+                  {b}
+                </Chip>
+              ))}
+            </div>
+          </td>
+        ) : null}
+        {compare ? (
+          <td className="px-2 py-2.5 pr-4 text-[11px] whitespace-nowrap text-fg-2">
+            {changes.length ? changes.map(([c, n]) => `${n} ${CHANGE_META[c as TriggerChange].label.toLowerCase()}`).join(' · ') : null}
+          </td>
+        ) : null}
+      </tr>
+      {open ? g.rows.map((r) => <TriggerLine key={`${r.key}-${r.change ?? ''}`} r={r} showBranches={showBranches} compare={compare} nested />) : null}
+    </>
   );
 }
 
