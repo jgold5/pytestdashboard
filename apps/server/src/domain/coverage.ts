@@ -2,7 +2,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { CoverageTotals } from '@ptd/shared';
 import type { Db } from '../db/client.js';
 import { coverageSnapshots, pullRequests, testCasePullRequests, testCases } from '../db/schema.js';
-import { routeCoverage } from '../triggers/routeCoverage.js';
+import { routeCoverage, scopeCounts } from '../triggers/routeCoverage.js';
 import { isoDate } from '../util/time.js';
 
 export function automationRate(total: number, automated: number, notAutomatable: number): number | null {
@@ -10,22 +10,29 @@ export function automationRate(total: number, automated: number, notAutomatable:
   return denom > 0 ? automated / denom : null;
 }
 
-export function computeCoverage(db: Db): CoverageTotals {
+/**
+ * `branch`: the trigger repo branch to count, `folder`: only the triggers in that folder.
+ * Snapshots (the trend) always use the whole default branch.
+ */
+export function computeCoverage(db: Db, branch?: string, folder?: string): CoverageTotals {
   // the source code defines the scope once it has been scanned; nothing else adds to it.
   // A trigger counts as tested when a test covers it on any scanned branch, merged or not.
-  const routes = routeCoverage(db);
+  const routes = routeCoverage(db, branch);
   if (routes) {
-    const tested = routes.automated + routes.inProgress;
+    const n = scopeCounts(routes, folder);
+    const tested = n.tested + n.branch;
     return {
       unit: 'routes',
-      total: routes.total,
+      total: n.total,
       automated: tested,
       inProgress: 0,
-      notAutomated: routes.total - tested,
+      notAutomated: n.none,
       notAutomatable: 0,
       inOpenPr: 0,
-      automationRate: automationRate(routes.total, tested, 0),
-      unmerged: routes.inProgress,
+      automationRate: automationRate(n.total, tested, 0),
+      unmerged: n.branch,
+      branch: routes.branch,
+      ...(folder ? { folder } : {}),
     };
   }
   const rows = db

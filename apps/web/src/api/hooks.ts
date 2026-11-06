@@ -150,8 +150,13 @@ export function useLogout() {
 // Summary / meta / report / settings
 // ---------------------------------------------------------------------------
 
-export function useSummary() {
-  return useQuery({ queryKey: qk.summary, queryFn: ({ signal }) => api.get<Summary>('/api/summary', undefined, signal) });
+/** `branch`: the trigger repo branch to count (undefined = the default branch). */
+export function useSummary(branch?: string | null, folder?: string | null) {
+  return useQuery({
+    queryKey: [...qk.summary, branch ?? null, folder ?? null],
+    queryFn: ({ signal }) => api.get<Summary>('/api/summary', { ...(branch ? { branch } : {}), ...(folder ? { folder } : {}) }, signal),
+    placeholderData: keepPreviousData,
+  });
 }
 
 export function useMeta() {
@@ -162,10 +167,11 @@ export function useMeta() {
   });
 }
 
-export function useReport(periodDays: number) {
+export function useReport(periodDays: number, branch?: string | null, folder?: string | null) {
   return useQuery({
-    queryKey: qk.report(periodDays),
-    queryFn: ({ signal }) => api.get<Report>('/api/report', { periodDays }, signal),
+    queryKey: [...qk.report(periodDays), branch ?? null, folder ?? null],
+    queryFn: ({ signal }) =>
+      api.get<Report>('/api/report', { periodDays, ...(branch ? { branch } : {}), ...(folder ? { folder } : {}) }, signal),
     placeholderData: keepPreviousData,
   });
 }
@@ -534,11 +540,15 @@ export function useTriggers(q: TriggerQueryInput) {
 }
 
 /** The default branch's routes with one status (untested first), for the Overview. */
-export function useTriggerOverview(status: RouteStatus | undefined, limit = 8) {
+export function useTriggerOverview(status: RouteStatus | undefined, limit = 8, branch?: string | null, folder?: string | null) {
   return useQuery({
-    queryKey: ['triggers', 'overview', status ?? null, limit],
+    queryKey: ['triggers', 'overview', status ?? null, limit, branch ?? null, folder ?? null],
     queryFn: ({ signal }) =>
-      api.get<TriggerOverviewResponse>('/api/triggers/overview', { ...(status ? { status } : {}), limit: String(limit) }, signal),
+      api.get<TriggerOverviewResponse>(
+        '/api/triggers/overview',
+        { ...(status ? { status } : {}), limit: String(limit), ...(branch ? { branch } : {}), ...(folder ? { folder } : {}) },
+        signal,
+      ),
     placeholderData: keepPreviousData,
   });
 }

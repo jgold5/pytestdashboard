@@ -246,6 +246,13 @@ spreadsheet or Jira rows:
   not; the Overview says how many are not merged yet;
 - **No test yet**: the rest.
 
+**Pick the branch and folder** at the top of the Overview (and the Report) to count one branch
+of the trigger repo, or only one folder in it: the folder under `resources/` (e.g.
+`src/main/resources/common/…` is `common`). The pick stays until you change it, and the
+Report's **Copy link** carries it. A branch without its own test scan uses `main`'s tests.
+The coverage trend always follows the whole default branch. On Triggers, the tiles follow the
+folder, type and search filters.
+
 A branch's tests keep counting until its scans are removed: pick the branch on Triggers and
 use the bin icon (or `DELETE /api/triggers/branches/<branch>`) once it is abandoned.
 

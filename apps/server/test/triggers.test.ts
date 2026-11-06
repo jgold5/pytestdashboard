@@ -608,6 +608,46 @@ describe('routes in the source code are the scope', () => {
         items: [{ routeId: 'invoice-load', firesOn: 'INV.TXT', tests: [expect.stringContaining('test_invoice')] }],
       });
       expect((await t.app.inject({ url: '/api/triggers/overview?limit=0' })).statusCode).toBe(400);
+
+      // pick another branch of the trigger repo: its triggers, with main's tests (no test scan on core)
+      await upload({ branch: 'core', only: 'routes' }, 'file:camel', 'routes.xml', '<routes><route id="invoice-load"><from uri="file:/in?fileName=INV.TXT"/></route><route id="core-only"><from uri="file:/in?fileName=CORE.TXT"/></route></routes>');
+      const coreSummary = (await t.app.inject({ url: '/api/summary?branch=core' })).json<{ coverage: Record<string, unknown> }>().coverage;
+      expect(coreSummary).toMatchObject({ unit: 'routes', branch: 'core', total: 2, automated: 1, unmerged: 0, notAutomated: 1 });
+      expect(await summary()).toMatchObject({ branch: 'main', total: 3 }); // the default is unchanged
+      expect(await overview('?branch=core')).toMatchObject({
+        routeBranches: ['main', 'core'],
+        defaultBranch: 'main',
+        triggerRepo: { branch: 'core', triggers: 2 },
+        counts: { tested: 1, branch: 0, none: 1 },
+        items: [{ routeId: 'core-only' }],
+      });
+      // an unknown branch falls back to the default
+      expect(await overview('?branch=nope')).toMatchObject({ triggerRepo: { branch: 'main' } });
+      const coreReport = (await t.app.inject({ url: '/api/report?branch=core' })).json<{ coverage: { branch: string; total: number } }>();
+      expect(coreReport.coverage).toMatchObject({ branch: 'core', total: 2 });
+
+      // folders: the numbers for one folder of a branch, not the branch total
+      const mp = multipart({ branch: 'dev', only: 'routes' }, [
+        { field: 'file:src/main/resources/common/routes', filename: 'a.xml', content: '<routes><route id="invoice-load"><from uri="file:/in?fileName=INV.TXT"/></route><route id="purge"><from uri="quartz://p?cron=0+0+2+*+*+?"/></route></routes>' },
+        { field: 'file:src/main/resources/billing/routes', filename: 'b.xml', content: '<routes><route id="credit-load"><from uri="file:/in?fileName=CRN.TXT"/></route></routes>' },
+      ]);
+      expect((await t.app.inject({ method: 'POST', url: '/api/triggers/scan', payload: mp.payload, headers: mp.headers })).statusCode).toBe(201);
+      const devCommon = (await t.app.inject({ url: '/api/summary?branch=dev&folder=common' })).json<{ coverage: Record<string, unknown> }>().coverage;
+      expect(devCommon).toMatchObject({ branch: 'dev', folder: 'common', total: 2, automated: 1, unmerged: 0, notAutomated: 1 });
+      const devAll = (await t.app.inject({ url: '/api/summary?branch=dev' })).json<{ coverage: Record<string, unknown> }>().coverage;
+      expect(devAll).toMatchObject({ total: 3, automated: 2, unmerged: 1 }); // credit-load: only feature/credit tests it
+      expect(await overview('?branch=dev&folder=common&status=none')).toMatchObject({
+        folder: 'common',
+        folders: [
+          { folder: 'billing', triggers: 1, tested: 1, unmerged: 1 },
+          { folder: 'common', triggers: 2, tested: 1, unmerged: 0 },
+        ],
+        triggerRepo: { branch: 'dev', triggers: 2 },
+        counts: { tested: 1, branch: 0, none: 1 },
+        items: [{ routeId: 'purge' }],
+      });
+      // a folder the branch doesn't have counts nothing
+      expect((await t.app.inject({ url: '/api/summary?branch=core&folder=common' })).json<{ coverage: { total: number } }>().coverage.total).toBe(0);
     } finally {
       await t.close();
     }

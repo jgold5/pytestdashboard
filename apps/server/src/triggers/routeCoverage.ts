@@ -28,17 +28,25 @@ export interface RouteCoverage {
   scannedAt: string;
   /** Every trigger on that branch with its status, sorted by module then route. */
   rows: TriggerOverviewRow[];
+  /** Branches with a route scan, the default first, and the default (main/master/develop if scanned). */
+  routeBranches: string[];
+  defaultBranch: string;
   /** Where the two halves came from: the trigger repo's scan and the test repo's scan. */
   triggerRepo: ScopeSource;
   testRepo: (ScopeSource & { tests: number; testsLinked: number }) | null;
 }
 
-/** Per database: scan ids only identify a scan within one database. */
-const caches = new WeakMap<Db, { key: string; value: RouteCoverage }>();
+/** Per database (scan ids only identify a scan within one database), one entry per branch counted. */
+const caches = new WeakMap<Db, Map<string, { key: string; value: RouteCoverage }>>();
 
 const firesOn = (t: StoredTrigger): string => t.filePattern ?? t.schedule ?? t.condition ?? t.resolvedUri;
 
-export function routeCoverage(db: Db): RouteCoverage | null {
+/**
+ * `branch`: the trigger repo branch to count (falls back to the default when it has no route
+ * scan). Its tests come from the same branch of the test repo, else from the default branch's;
+ * every other branch's tests count as not merged yet.
+ */
+export function routeCoverage(db: Db, branch?: string): RouteCoverage | null {
   // latest scan per branch, separately for route and test scans (light columns first)
   const rows = db
     .select({
@@ -60,12 +68,17 @@ export function routeCoverage(db: Db): RouteCoverage | null {
     if (r.files.tests > 0 && !tests.has(r.branch)) tests.set(r.branch, r.id);
   }
   if (routes.size === 0) return null;
-  const [mainBranch, mainScan] = [...routes].sort((a, b) => rank(a[0]) - rank(b[0]))[0]!;
+  const byRank = [...routes.keys()].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+  const defaultBranch = byRank[0]!;
+  const mainBranch = branch && routes.has(branch) ? branch : defaultBranch;
+  const mainScan = routes.get(mainBranch)!;
   const mainTests = tests.get(mainBranch) ?? [...tests].sort((a, b) => rank(a[0]) - rank(b[0]))[0]?.[1] ?? null;
   const otherTests = [...tests].filter(([, id]) => id !== mainTests);
 
-  const key = `${mainScan.id}:${mainTests}:${otherTests.map(([, id]) => id).join(',')}`;
-  const cached = caches.get(db);
+  const key = `${mainScan.id}:${mainTests}:${otherTests.map(([, id]) => id).join(',')}:${byRank.join(',')}`;
+  let perBranch = caches.get(db);
+  if (!perBranch) caches.set(db, (perBranch = new Map()));
+  const cached = perBranch.get(mainBranch);
   if (cached?.key === key) return cached.value;
 
   const ids = [mainScan.id, ...(mainTests ? [mainTests] : []), ...otherTests.map(([, id]) => id)];
@@ -115,26 +128,59 @@ export function routeCoverage(db: Db): RouteCoverage | null {
     commit: mainScan.commit,
     scannedAt: mainScan.scannedAt,
     rows: out,
+    routeBranches: byRank,
+    defaultBranch,
     triggerRepo: source(mainScan),
     testRepo: testScan ? { ...source(testScan), tests: mainTestLabels.length, testsLinked: linked.size } : null,
   };
-  caches.set(db, { key, value });
+  perBranch.set(mainBranch, { key, value });
   return value;
+}
+
+/** Counts of a branch's triggers, optionally only those in one folder. */
+export function scopeCounts(cov: RouteCoverage, folder?: string): { total: number; tested: number; branch: number; none: number } {
+  const rows = folder ? cov.rows.filter((r) => r.module === folder) : cov.rows;
+  let tested = 0;
+  let branch = 0;
+  for (const r of rows) {
+    if (r.status === 'tested') tested++;
+    else if (r.status === 'branch') branch++;
+  }
+  return { total: rows.length, tested, branch, none: rows.length - tested - branch };
+}
+
+/** The branch's folders with their counts (tested = merged or not). */
+function folderCounts(cov: RouteCoverage): TriggerOverviewResponse['folders'] {
+  const by = new Map<string, { triggers: number; tested: number; unmerged: number }>();
+  for (const r of cov.rows) {
+    if (!r.module) continue;
+    const f = by.get(r.module) ?? { triggers: 0, tested: 0, unmerged: 0 };
+    f.triggers++;
+    if (r.status !== 'none') f.tested++;
+    if (r.status === 'branch') f.unmerged++;
+    by.set(r.module, f);
+  }
+  return [...by].map(([folder, c]) => ({ folder, ...c })).sort((a, b) => a.folder.localeCompare(b.folder));
 }
 
 /** The Overview's route table: one status at a time, the most urgent first by default. */
 export function routeOverview(db: Db, q: TriggerOverviewQuery): TriggerOverviewResponse {
-  const cov = routeCoverage(db);
-  const counts = { tested: cov?.automated ?? 0, branch: cov?.inProgress ?? 0, none: cov ? cov.total - cov.automated - cov.inProgress : 0 };
+  const cov = routeCoverage(db, q.branch);
+  const scoped = cov ? scopeCounts(cov, q.folder) : null;
+  const counts = { tested: scoped?.tested ?? 0, branch: scoped?.branch ?? 0, none: scoped?.none ?? 0 };
   const status: RouteStatus = q.status ?? (counts.none > 0 ? 'none' : counts.branch > 0 ? 'branch' : 'tested');
   return {
-    triggerRepo: cov ? { ...cov.triggerRepo, triggers: cov.total } : null,
-    testRepo: cov?.testRepo ? { ...cov.testRepo, triggersTested: cov.automated } : null,
+    routeBranches: cov?.routeBranches ?? [],
+    defaultBranch: cov?.defaultBranch ?? null,
+    folders: cov ? folderCounts(cov) : [],
+    folder: q.folder ?? null,
+    triggerRepo: cov ? { ...cov.triggerRepo, triggers: scoped!.total } : null,
+    testRepo: cov?.testRepo ? { ...cov.testRepo, triggersTested: scoped!.tested } : null,
     branch: cov?.branch ?? null,
     commit: cov?.commit ?? null,
     scannedAt: cov?.scannedAt ?? null,
     counts,
     status,
-    items: (cov?.rows ?? []).filter((r) => r.status === status).slice(0, q.limit),
+    items: (cov?.rows ?? []).filter((r) => r.status === status && (!q.folder || r.module === q.folder)).slice(0, q.limit),
   };
 }

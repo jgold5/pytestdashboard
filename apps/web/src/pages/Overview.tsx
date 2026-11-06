@@ -24,10 +24,14 @@ import { RunTrendChart } from '../components/charts/RunTrendChart';
 import { FlakyMeter, REVIEW_META, TRIAGE_META } from '../components/status';
 import { PipelineFunnel, stageHref } from '../components/pipeline';
 import { RunGroupChip } from '../components/RunGroup';
+import { ScopePicker } from '../components/ScopeBranchPicker';
+import { useScopeBranch, useScopeFolder } from '../lib/scopeBranch';
 import { cn, fmtNumber, fmtPct, fmtRelative, pluralize } from '../lib/utils';
 
 export function OverviewPage() {
-  const summary = useSummary();
+  const [branch, setBranch] = useScopeBranch();
+  const [folder, setFolder] = useScopeFolder();
+  const summary = useSummary(branch, folder);
 
   if (summary.isError) return <ErrorState error={summary.error} onRetry={() => void summary.refetch()} />;
   if (!summary.data) return <OverviewSkeleton />;
@@ -40,9 +44,12 @@ export function OverviewPage() {
         title="Overview"
         description="Automation coverage and the health of your automated runs."
         actions={
-          <Link to="/import" className={linkButton('outline')}>
-            <Upload /> Import
-          </Link>
+          <>
+            <ScopePicker branch={s.coverage.branch ?? branch} folder={folder} onBranch={setBranch} onFolder={setFolder} />
+            <Link to="/import" className={linkButton('outline')}>
+              <Upload /> Import
+            </Link>
+          </>
         }
       />
       {empty ? (
@@ -69,13 +76,16 @@ export function OverviewPage() {
         <div className="space-y-4">
           <KpiRow s={s} />
           <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
-            <RoutesCard />
+            <RoutesCard branch={branch} folder={folder} />
             <NeedsAttention s={s} />
           </div>
           <PipelineCard s={s} />
           <div className="grid gap-4 xl:grid-cols-2">
             <Card>
-              <CardHeader title="Coverage trend" description="Daily snapshot of total vs automated cases" />
+              <CardHeader
+                title="Coverage trend"
+                description={s.coverage.unit === 'routes' ? 'Daily snapshot of the default branch: triggers vs tested' : 'Daily snapshot of total vs automated cases'}
+              />
               <CardBody>
                 {s.coverageTrend.length > 1 ? (
                   <CoverageTrendChart data={s.coverageTrend} totalLabel={s.coverage.unit === 'routes' ? 'Triggers' : 'Total cases'} />
@@ -161,13 +171,26 @@ function Kpi({
   );
 }
 
+/** The Triggers page showing the same branch and folder as the numbers. */
+function triggersHref(c: Summary['coverage'], status?: 'automated' | 'missing'): string {
+  const p = new URLSearchParams({ branch: c.branch ?? 'main' });
+  if (c.folder) p.set('module', c.folder);
+  if (status) p.set('status', status);
+  return `/triggers?${p.toString()}`;
+}
+
 function KpiRow({ s }: { s: Summary }) {
   const c = s.coverage;
   const lr = s.latestRun;
   return (
     <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border bg-border md:grid-cols-3 xl:grid-cols-5">
       {c.unit === 'routes' ? (
-        <Kpi label="Unique triggers" value={fmtNumber(c.total)} sub="in the trigger repo on main" to="/triggers?branch=main" />
+        <Kpi
+          label="Unique triggers"
+          value={fmtNumber(c.total)}
+          sub={c.folder ? `in ${c.folder}/ on ${c.branch ?? 'main'}` : `in the trigger repo on ${c.branch ?? 'main'}`}
+          to={triggersHref(c)}
+        />
       ) : (
         <Kpi label="Total cases" value={fmtNumber(c.total)} sub={`${fmtNumber(c.notAutomatable)} not automatable`} to="/tests" />
       )}
@@ -185,7 +208,7 @@ function KpiRow({ s }: { s: Summary }) {
               ? `${fmtPct(c.automationRate, 1)} · ${fmtNumber(c.unmerged ?? 0)} not merged yet`
               : `${fmtPct(c.automationRate, 1)} have one or more tests`
           }
-          to="/triggers?branch=main&status=automated"
+          to={triggersHref(c, 'automated')}
         />
       ) : (
         <Kpi
@@ -201,7 +224,7 @@ function KpiRow({ s }: { s: Summary }) {
         />
       )}
       {c.unit === 'routes' ? (
-        <Kpi label="No test yet" value={fmtNumber(c.notAutomated)} sub="no test on any scanned branch" to="/triggers?branch=main&status=missing" />
+        <Kpi label="No test yet" value={fmtNumber(c.notAutomated)} sub="no test on any scanned branch" to={triggersHref(c, 'missing')} />
       ) : (
         <Kpi
           label="In progress"
@@ -608,7 +631,7 @@ function OwnerCard({ s }: { s: Summary }) {
 const ROUTE_STATUS: Record<RouteStatus, { label: string; tab: string; cls: string }> = {
   none: { label: 'No test', tab: 'No test', cls: 'text-fg-3' },
   branch: { label: 'Test not merged', tab: 'Not merged', cls: 'text-fg' },
-  tested: { label: 'Tested on main', tab: 'On main', cls: 'text-st-passed' },
+  tested: { label: 'Tested', tab: 'Merged', cls: 'text-st-passed' },
 };
 const shortTest = (nodeId: string) => nodeId.split('::').pop() ?? nodeId;
 
@@ -644,9 +667,9 @@ function SourceStep({
   );
 }
 
-function RoutesCard() {
+function RoutesCard({ branch, folder }: { branch: string | null; folder: string | null }) {
   const [status, setStatus] = useState<RouteStatus | undefined>(undefined);
-  const q = useTriggerOverview(status);
+  const q = useTriggerOverview(status, 8, branch, folder);
   const d = q.data;
   if (q.isPending) return <Skeleton className="h-[360px]" />;
   if (q.isError || !d) return <Card><ErrorState error={q.error} onRetry={() => void q.refetch()} /></Card>;
@@ -669,7 +692,11 @@ function RoutesCard() {
   }
   const shown = d.status;
   const total = d.counts[shown];
-  const allHref = `/triggers?branch=${encodeURIComponent(d.branch)}${shown === 'tested' ? '&status=automated' : shown === 'none' ? '&status=missing' : ''}`;
+  const allParams = new URLSearchParams({ branch: d.branch });
+  if (d.folder) allParams.set('module', d.folder);
+  if (shown !== 'branch') allParams.set('status', shown === 'tested' ? 'automated' : 'missing');
+  const allHref = `/triggers?${allParams.toString()}`;
+  const where = d.folder ? ` in ${d.folder}/` : '';
   return (
     <Card>
       <div className="grid gap-px border-b border-border bg-border sm:grid-cols-2">
@@ -677,16 +704,16 @@ function RoutesCard() {
           n={1}
           title="Trigger repo"
           source={d.triggerRepo}
-          big={d.triggerRepo ? `${fmtNumber(d.triggerRepo.triggers)} unique triggers` : '—'}
+          big={d.triggerRepo ? `${fmtNumber(d.triggerRepo.triggers)} unique triggers${where}` : '—'}
         />
         <SourceStep
           n={2}
           title="Test repo"
           source={d.testRepo}
-          big={d.testRepo ? `${fmtNumber(d.counts.tested + d.counts.branch)} triggers have one or more tests` : 'Not scanned yet'}
+          big={d.testRepo ? `${fmtNumber(d.counts.tested + d.counts.branch)} ${where ? 'of them' : 'triggers'} have one or more tests` : 'Not scanned yet'}
           detail={
             d.testRepo ? (
-              `${fmtNumber(d.counts.tested)} on main, ${fmtNumber(d.counts.branch)} only in unmerged branches · ${pluralize(d.testRepo.tests, 'test')} on main`
+              `${fmtNumber(d.counts.tested)} merged, ${fmtNumber(d.counts.branch)} only in unmerged branches · ${pluralize(d.testRepo.tests, 'test')} on ${d.testRepo.branch}`
             ) : (
               <Link to="/triggers" className="link">
                 Scan the test repo's {d.branch}
@@ -697,7 +724,7 @@ function RoutesCard() {
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2 px-4 pt-3 pb-2">
         <h2 className="text-[13px] font-semibold text-fg">
-          Triggers on <span className="font-mono">{d.branch}</span>
+          Triggers{d.folder ? <> in <span className="font-mono">{d.folder}/</span></> : null} on <span className="font-mono">{d.branch}</span>
         </h2>
         <div role="group" aria-label="Route status" className="inline-flex rounded-md border border-border bg-surface-2 p-0.5">
           {(['none', 'branch', 'tested'] as const).map((k) => (
@@ -719,7 +746,7 @@ function RoutesCard() {
       </div>
       {d.items.length === 0 ? (
         <p className="px-4 pt-2 pb-5 text-[13px] text-fg-3">
-          {shown === 'none' ? 'Every trigger on this branch has a test.' : shown === 'branch' ? 'No trigger is covered only by an unmerged branch.' : 'No trigger has a test on main yet.'}
+          {shown === 'none' ? 'Every trigger on this branch has a test.' : shown === 'branch' ? 'No trigger is covered only by an unmerged branch.' : 'No trigger has a merged test yet.'}
         </p>
       ) : (
         <div className="overflow-x-auto">

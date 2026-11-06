@@ -792,7 +792,21 @@ export const CoverageTotals = z.object({
   automationRate: z.number().nullable(),
   /** `routes` only: of `automated`, the triggers only tests on unmerged branches cover. */
   unmerged: z.number().int().optional(),
+  /** `routes` only: the branch of the trigger repo the numbers are for. */
+  branch: z.string().optional(),
+  /** `routes` only: the folder the numbers are limited to (none = the whole branch). */
+  folder: z.string().optional(),
 });
+
+/**
+ * `?branch=&folder=` on summary, report and the trigger overview: count the triggers of this
+ * branch (default: main/master/develop), only in this folder (the folder under `resources/`).
+ */
+export const ScopeBranchQuery = z.object({
+  branch: trimmed(LIMITS.shortTextMax).min(1).optional(),
+  folder: trimmed(LIMITS.shortTextMax).min(1).optional(),
+});
+export type ScopeBranchQuery = z.infer<typeof ScopeBranchQuery>;
 export type CoverageTotals = z.infer<typeof CoverageTotals>;
 
 /** Number of test cases in each PipelineStage (all stages present; sums to total cases). */
@@ -968,6 +982,10 @@ export type Settings = z.infer<typeof Settings>;
 
 export const ReportQuery = z.object({
   periodDays: z.coerce.number().int().refine((n) => [7, 30, 90, 180].includes(n)).default(30),
+  /** Trigger repo branch the coverage counts (default: main/master/develop). */
+  branch: trimmed(LIMITS.shortTextMax).min(1).optional(),
+  /** Only the triggers in this folder. */
+  folder: trimmed(LIMITS.shortTextMax).min(1).optional(),
 });
 export type ReportQuery = z.infer<typeof ReportQuery>;
 
@@ -1323,6 +1341,10 @@ export type RouteStatus = z.infer<typeof RouteStatus>;
 
 /** `GET /api/triggers/overview`: the default branch's routes with one status, for the Overview table. */
 export const TriggerOverviewQuery = z.object({
+  /** Trigger repo branch to count (default: main/master/develop). */
+  branch: trimmed(LIMITS.shortTextMax).min(1).optional(),
+  /** Only the triggers in this folder (the folder under `resources/`). */
+  folder: trimmed(LIMITS.shortTextMax).min(1).optional(),
   status: RouteStatus.optional(),
   limit: z.coerce.number().int().min(1).max(50).default(8),
 });
@@ -1355,6 +1377,13 @@ export const ScopeSource = z.object({
 export type ScopeSource = z.infer<typeof ScopeSource>;
 
 export const TriggerOverviewResponse = z.object({
+  /** Branches with a route scan, the default first: what the Overview's branch picker offers. */
+  routeBranches: z.array(z.string()),
+  defaultBranch: z.string().nullable(),
+  /** Folders on the branch with their counts (tested includes unmerged), for the folder picker. */
+  folders: z.array(z.object({ folder: z.string(), triggers: z.number().int(), tested: z.number().int(), unmerged: z.number().int() })),
+  /** The folder the counts and items are limited to; null = the whole branch. */
+  folder: z.string().nullable(),
   /** 1. The trigger repo: its scan on the default branch, and the unique triggers in it. */
   triggerRepo: ScopeSource.extend({ triggers: z.number().int() }).nullable(),
   /** 2. The test repo: its scan on the default branch, the tests read, and the triggers they cover. */
