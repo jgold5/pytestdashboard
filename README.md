@@ -401,6 +401,9 @@ python3 tools/search_prs.py your-org/pytest-repo 'INV_\d+' --regex -i --full --g
 ```
 
 It prints each PR (or branch) with the file, line number and line; `--json` for a script.
+`--state all` searches every PR. PRs are fetched 8 at a time (`--jobs`), and each PR's changes
+are cached in `~/.cache/search_prs`, so searching again for another word only fetches PRs that
+are new or changed; `--since 2026-01-01` skips older PRs.
 
 ### Run groups
 
