@@ -757,6 +757,33 @@ describe('PRs count for the branch they target', () => {
       await t.close();
     }
   });
+
+  it('a PR into core counts for core even when the test repo has no core branch', async () => {
+    const t = await createTestApp();
+    try {
+      const up = async (fields: Record<string, string>, dir: string, filename: string, content: string) => {
+        const mp = multipart(fields, [{ field: `file:${dir}`, filename, content }]);
+        const res = await t.app.inject({ method: 'POST', url: '/api/triggers/scan', payload: mp.payload, headers: mp.headers });
+        expect(res.statusCode, res.body).toBe(201);
+      };
+      const routes = '<routes><route id="core-a"><from uri="file:/in?fileName=A.TXT"/></route><route id="core-b"><from uri="file:/in?fileName=B.TXT"/></route></routes>';
+      const test = (name: string, route: string) => `def test_${name}():\n    start("${route}")\n`;
+      await up({ branch: 'core', only: 'routes', label: 'acme/camel' }, 'src/main/resources/common/routes', 'a.xml', routes);
+      // the test repo only has main (merged tests for core too) and a PR into core
+      await up({ branch: 'main', only: 'tests', label: 'acme/tests' }, 'src/route_test', 'a_route.py', test('a', 'core-a'));
+      await up({ branch: 'feature/b', only: 'tests', label: 'acme/tests PR #5 → core' }, 'src/route_test', 'b_route.py', test('b', 'core-b'));
+      const list = (await t.app.inject({ url: '/api/triggers?branch=core' })).json<TriggerListResponse>();
+      expect(list).toMatchObject({ testsFrom: 'main', unmergedFrom: ['feature/b'] });
+      expect(list.items.map((r) => [r.routeId, r.coveredBy.map((c) => c.branch ?? 'merged')])).toEqual([
+        ['core-a', ['merged']],
+        ['core-b', ['feature/b']],
+      ]);
+      const cov = (await t.app.inject({ url: '/api/summary?branch=core' })).json<{ coverage: Record<string, unknown> }>().coverage;
+      expect(cov).toMatchObject({ total: 2, automated: 2, unmerged: 1 });
+    } finally {
+      await t.close();
+    }
+  });
 });
 
 describe('scan a branch straight from GitHub', () => {
