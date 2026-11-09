@@ -49,8 +49,8 @@ import { ChartTooltipBox, Legend } from '../components/charts/ChartTooltip';
 import { FoundResolvedChart } from '../components/charts/FoundResolvedChart';
 import { SEVERITY_META } from '../components/bugs';
 import { PIPELINE_META, REVIEW_META } from '../components/status';
-import { ScopeButton } from '../components/ScopeButton';
-import { useScopeBranch, useScopeFolder, useScopeTests } from '../lib/scopeBranch';
+import { kindsLabel, ScopeButton } from '../components/ScopeButton';
+import { cleanKinds, useScopeBranch, useScopeFolder, useScopeKinds, useScopeTests } from '../lib/scopeBranch';
 
 const PERIODS = [7, 30, 90, 180] as const;
 
@@ -63,12 +63,14 @@ export default function ReportPage() {
   const [savedBranch, setSavedBranch] = useScopeBranch();
   const [savedFolder, setSavedFolder] = useScopeFolder();
   const [savedTests, setSavedTests] = useScopeTests();
+  const [savedKinds, setSavedKinds] = useScopeKinds();
   const branch = params.get('branch') ?? (isEditor ? savedBranch : null);
   const folder = params.get('folder') ?? (isEditor ? savedFolder : null);
   const tests = params.get('tests') ?? (isEditor ? savedTests : null);
-  const report = useReport(period, branch, folder, tests);
-  const setScope = (key: 'branch' | 'folder' | 'tests', v: string | null) => {
-    (key === 'branch' ? setSavedBranch : key === 'folder' ? setSavedFolder : setSavedTests)(v);
+  const kinds = params.has('kinds') ? cleanKinds(params.get('kinds')) : isEditor ? savedKinds : null;
+  const report = useReport(period, branch, folder, tests, kinds);
+  const setScope = (key: 'branch' | 'folder' | 'tests' | 'kinds', v: string | null) => {
+    ({ branch: setSavedBranch, folder: setSavedFolder, tests: setSavedTests, kinds: setSavedKinds })[key](v);
     setParams(
       (prev) => {
         const n = new URLSearchParams(prev);
@@ -88,6 +90,7 @@ export default function ReportPage() {
       if (branch) url.searchParams.set('branch', branch);
       if (folder) url.searchParams.set('folder', folder);
       if (tests) url.searchParams.set('tests', tests);
+      if (kinds) url.searchParams.set('kinds', kinds);
       await navigator.clipboard.writeText(url.toString());
       toast.success('Link copied');
     } catch {
@@ -137,11 +140,12 @@ export default function ReportPage() {
           </div>
           {isEditor ? (
             <ScopeButton
-              scope={{ branch, folder, tests }}
+              scope={{ branch, folder, tests, kinds }}
               onChange={(p) => {
                 if ('branch' in p) setScope('branch', p.branch ?? null);
                 if ('folder' in p) setScope('folder', p.folder ?? null);
                 if ('tests' in p) setScope('tests', p.tests ?? null);
+                if ('kinds' in p) setScope('kinds', p.kinds ?? null);
               }}
             />
           ) : null}
@@ -308,9 +312,9 @@ function Headline({ r, isEditor, onSetGoal }: { r: Report; isEditor: boolean; on
           <b className="font-semibold text-fg">{fmtNumber(c.automated)}</b> of{' '}
           {c.unit === 'routes' ? (
             <>
-              {fmtNumber(c.total)} unique triggers{c.folder ? <> in <span className="font-mono">{c.folder}/</span></> : null}{' '}
+              {fmtNumber(c.total)} unique triggers{c.kinds?.length ? ` (${kindsLabel(c.kinds.join(','))})` : ''}{c.folder ? <> in <span className="font-mono">{c.folder}/</span></> : null}{' '}
               on <span className="font-mono">{c.branch}</span> have one or more tests
-              {(c.unmerged ?? 0) > 0 ? <>, {fmtNumber(c.unmerged ?? 0)} of them in branches not merged yet</> : null} (file and schedule
+              {(c.unmerged ?? 0) > 0 ? <>, {fmtNumber(c.unmerged ?? 0)} of them in branches not merged yet</> : null} (route
               triggers in the source code)
             </>
           ) : (

@@ -3,8 +3,10 @@
  * cover them. Pure functions, no I/O: the upload code hands in file contents.
  *
  * - Routes come from Camel XML (`<route id="…"><from uri="…"/>`, any namespace
- *   prefix, `<from ref>` → `<endpoint id uri>`). Only routes started by a file
- *   (file/ftp/ftps/sftp/smb) or a schedule (quartz/cron/timer/scheduler) are triggers.
+ *   prefix, `<from ref>` → `<endpoint id uri>`). Routes started by a file
+ *   (file/ftp/ftps/sftp/smb), a schedule (quartz/cron/timer/scheduler), another route
+ *   (direct), a queue (seda/jms…), Kafka or HTTP (netty-http/rest…) are triggers, and so are
+ *   routes whose whole `from` URI is a property no properties file fills in.
  * - `{{key}}` / `${key}` placeholders (with `:default`) are filled in from every
  *   `.properties` file; a key with different values in different files (one file
  *   per environment) is reported with each value instead of guessing.
@@ -12,7 +14,7 @@
  *   markers) or an `allure.dynamic.*` call in its body names the route id, the
  *   schedule's name, or a file the trigger would pick up.
  */
-import type { Trigger, TriggerCoverage } from '@ptd/shared';
+import type { Trigger, TriggerCoverage, TriggerKind } from '@ptd/shared';
 
 export type PropertyIndex = Map<string, Array<{ file: string; value: string }>>;
 
@@ -152,6 +154,29 @@ export function resolvePlaceholders(input: string, props: PropertyIndex, near?: 
 
 const FILE_SCHEMES = new Set(['file', 'ftp', 'ftps', 'sftp', 'smb']);
 const SCHEDULE_SCHEMES = new Set(['quartz', 'quartz2', 'cron', 'timer', 'scheduler']);
+const DIRECT_SCHEMES = new Set(['direct', 'direct-vm']);
+const QUEUE_SCHEMES = new Set(['seda', 'vm', 'jms', 'activemq', 'amqp', 'sjms', 'sjms2', 'ibmmq', 'sqs', 'aws-sqs', 'aws2-sqs', 'rabbitmq', 'spring-rabbitmq', 'paho', 'paho-mqtt5', 'nats']);
+const REST_SCHEMES = new Set(['rest', 'rest-api', 'restlet', 'netty-http', 'netty4-http', 'jetty', 'servlet', 'platform-http', 'undertow', 'http', 'https', 'cxfrs', 'spark-rest', 'vertx-http', 'coap']);
+
+/** What kind of trigger a `from` endpoint is, or null for one that isn't (bean:, imaps:…). */
+export function kindOfScheme(scheme: string): TriggerKind | null {
+  if (FILE_SCHEMES.has(scheme)) return 'file';
+  if (SCHEDULE_SCHEMES.has(scheme)) return 'schedule';
+  if (DIRECT_SCHEMES.has(scheme)) return 'direct';
+  // custom JMS components are named after their connection: jmsComponentOrders:queue:X
+  if (QUEUE_SCHEMES.has(scheme) || scheme.startsWith('jms')) return 'queue';
+  if (scheme === 'kafka') return 'kafka';
+  if (REST_SCHEMES.has(scheme)) return 'rest';
+  return null;
+}
+
+/** A `from` URI that is nothing but a placeholder (`{{invoice.sftp.url}}`, `${in.uri}`), maybe with options after it. */
+const PROPERTY_ONLY = /^\s*(?:\{\{([^{}]+)\}\}|\$\{([^{}]+)\})/;
+/** The scheme a placeholder's key or default suggests (`{{sftp.invoice.url}}` → sftp), for a file poll the properties don't fill in. */
+function guessFileScheme(text: string): string | null {
+  const m = /(?:^|[^a-z])(sftp|ftps|ftp|smb)(?:[^a-z]|$)/i.exec(text) ?? /(sftp|ftps|ftp)/i.exec(text);
+  return m ? (m[1] as string).toLowerCase() : null;
+}
 
 function decode(v: string): string {
   const raw = /^RAW\((.*)\)$/s.exec(v) ?? /^RAW\{(.*)\}$/s.exec(v);
@@ -896,10 +921,33 @@ function triggerNames(t: StoredTrigger): string[] {
   // a <choice> branch's job: direct:invoiceJob ↔ label "invoiceJob"
   const job = t.target ? parseEndpoint(t.target)?.path.split(/[/?]/).filter(Boolean).pop() : null;
   if (job) names.push(job);
+  names.push(...endpointNames(t));
   if (t.kind === 'file') {
     for (const v of [t.filePattern, t.match?.pattern, t.doneFile, t.match?.doneFile]) if (v) names.push(v);
   }
   return [...new Set(names.map(norm).filter(Boolean))];
+}
+
+/**
+ * Names for a route started by another route, a queue, Kafka or HTTP: the endpoint's name
+ * (direct:invoiceJob → invoiceJob, jms:queue:ORDERS → ORDERS, kafka:invoices → invoices) or
+ * the HTTP path (netty-http:http://0.0.0.0:8080/api/orders → /api/orders).
+ */
+function endpointNames(t: StoredTrigger): string[] {
+  if (t.kind !== 'direct' && t.kind !== 'queue' && t.kind !== 'kafka' && t.kind !== 'rest') return [];
+  const ep = parseEndpoint(t.resolvedUri);
+  if (!ep || PROPERTY_ONLY.test(ep.path)) return [];
+  if (t.kind === 'rest') {
+    const url = /^[a-z][\w+.-]*:\/\/[^/]*(\/[^?#]*)?/i.exec(ep.path);
+    let p = url ? (url[1] ?? '') : ep.path.replace(/^(get|post|put|delete|patch|head|options):/i, '');
+    if (ep.params.contextPath) p = `${ep.params.contextPath.replace(/\/$/, '')}/${p.replace(/^\//, '')}`;
+    p = p.replace(/\/+$/, '');
+    if (!p || p === '/' || p.includes('{{')) return [];
+    const slash = p.startsWith('/') ? p : `/${p}`;
+    return [slash, slash.slice(1)];
+  }
+  const name = ep.path.split(/[/:]/).filter(Boolean).pop();
+  return name && !name.includes('{{') ? [name] : [];
 }
 
 const FILE_NAME_LIKE = /^[\w.-]+\.\w+$/;
@@ -1021,9 +1069,17 @@ export function scanRepository(input: ScanInput): ScanOutput {
         return;
       }
       const resolved = resolvePlaceholders(uri, props, r.file);
-      const ep = parseEndpoint(resolved.firstVariant);
-      const kind = ep && FILE_SCHEMES.has(ep.scheme) ? 'file' : ep && SCHEDULE_SCHEMES.has(ep.scheme) ? 'schedule' : null;
-      if (!ep || !kind) return;
+      let ep = parseEndpoint(resolved.firstVariant);
+      let kind = ep ? kindOfScheme(ep.scheme) : null;
+      if (!ep) {
+        // the whole URI is a property no properties file fills in: an SFTP/FTP poll when its key says so, else of unknown kind
+        const only = PROPERTY_ONLY.exec(resolved.firstVariant);
+        if (!only) return;
+        const guessed = guessFileScheme(only[1] ?? only[2] ?? '');
+        kind = guessed ? 'file' : 'property';
+        ep = { scheme: guessed ?? 'property', path: only[0].trim(), params: {} };
+      }
+      if (!kind) return;
       routeHasTrigger = true;
       // fields shown to people come from the single-valued resolution, so per-environment values stay visible as placeholders
       const shown = parseEndpoint(resolved.text) ?? ep;

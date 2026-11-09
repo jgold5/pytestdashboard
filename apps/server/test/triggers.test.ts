@@ -175,10 +175,12 @@ describe('pytest labels', () => {
 describe('scanRepository', () => {
   it('lists file and schedule triggers and the tests that cover them', () => {
     const out = scanRepository(repoFiles);
-    expect(out.otherRoutes).toBe(1); // direct:parseInvoice is not a trigger
+    expect(out.otherRoutes).toBe(0);
     expect(out.testsFound).toBe(4);
     const byId: Record<string, Trigger> = Object.fromEntries(out.triggers.map((t) => [t.routeId, t]));
-    expect(Object.keys(byId)).toEqual(['invoice-load', 'nightly-purge', 'statements', 'orders-load']);
+    expect(Object.keys(byId)).toEqual(['invoice-load', 'nightly-purge', 'statements', 'orders-load', 'parse-invoice']);
+    // called by invoice-load: a trigger of its own kind
+    expect(byId['parse-invoice']).toMatchObject({ kind: 'direct', scheme: 'direct' });
     expect(byId['invoice-load']).toMatchObject({
       kind: 'file',
       scheme: 'file',
@@ -401,7 +403,7 @@ describe('trigger API', () => {
   it('stores a scan per branch and compares a PR branch with main', async () => {
     const main = await scan('main', repoZip());
     expect(main.statusCode).toBe(201);
-    expect(main.json<TriggerScanResponse>()).toMatchObject({ branch: 'main', total: 4, automated: 4, files: { xml: 2, properties: 2, tests: 1 }, otherRoutes: 1 });
+    expect(main.json<TriggerScanResponse>()).toMatchObject({ branch: 'main', total: 5, automated: 4, files: { xml: 2, properties: 2, tests: 1 }, otherRoutes: 0 });
 
     const newRoute = `<route id="payments-load"><from uri="file:/data/payments?include=PAY_.*\\.csv"/><to uri="direct:pay"/></route>`;
     const newTest = `\n\n@allure.label("route", "payments-load")\ndef test_payment_file_is_loaded():\n    pass\n\n\n@allure.label("route", "statements")\ndef test_statements_run():\n    pass\n`;
@@ -419,12 +421,12 @@ describe('trigger API', () => {
 
     // all branches merged: the union of triggers
     const all = (await t.app.inject({ url: '/api/triggers' })).json<TriggerListResponse>();
-    expect(all.items.map((r) => r.routeId).sort()).toEqual(['invoice-load', 'nightly-purge', 'orders-load', 'payments-load', 'statements']);
+    expect(all.items.map((r) => r.routeId).sort()).toEqual(['invoice-load', 'nightly-purge', 'orders-load', 'parse-invoice', 'payments-load', 'statements']);
     expect(all.branches.map((b) => b.branch)).toEqual(['feature/payments', 'main']);
 
     // removing the branch's scans drops it from the scope
     expect((await t.app.inject({ method: 'DELETE', url: '/api/triggers/branches/feature%2Fpayments' })).statusCode).toBe(204);
-    expect((await t.app.inject({ url: '/api/triggers' })).json<TriggerListResponse>().items).toHaveLength(4);
+    expect((await t.app.inject({ url: '/api/triggers' })).json<TriggerListResponse>().items).toHaveLength(5);
   });
 
   it('links covering tests to dashboard test cases by Allure full name', async () => {
@@ -1002,7 +1004,96 @@ describe('trigger API auth', () => {
     const ingest = { authorization: `Bearer ${INGEST_TOKEN}` };
     const up = await t.app.inject({ method: 'POST', url: '/api/triggers/scan', payload: mp.payload, headers: { ...mp.headers, ...ingest } });
     expect(up.statusCode).toBe(201);
-    expect(up.json<TriggerScanResponse>().total).toBe(4);
+    expect(up.json<TriggerScanResponse>().total).toBe(5);
     expect((await t.app.inject({ url: '/api/triggers', headers: ingest })).statusCode).toBe(403);
+  });
+});
+
+describe('kinds of job', () => {
+  const xml = `<routes>
+    <route id="parse-invoice"><from uri="direct:parseInvoice"/><to uri="log:x"/></route>
+    <route id="order-worker"><from uri="seda:orders?concurrentConsumers=5"/><to uri="log:x"/></route>
+    <route id="ledger-in"><from uri="jmsComponentLedger:queue:LEDGER.IN"/><to uri="log:x"/></route>
+    <route id="events"><from uri="kafka:invoice-events?brokers={{kafka.brokers}}"/><to uri="log:x"/></route>
+    <route id="orders-api"><from uri="netty-http:http://0.0.0.0:{{http.port}}/api/orders"/><to uri="log:x"/></route>
+    <route id="statements-poll"><from uri="{{statements.sftp.url}}"/><to uri="log:x"/></route>
+    <route id="mystery"><from uri="{{mystery.uri}}"/><to uri="log:x"/></route>
+    <route id="resolved"><from uri="{{in.uri}}"/><to uri="log:x"/></route>
+    <route id="audit"><from uri="bean:audit"/><to uri="log:x"/></route>
+  </routes>`;
+  const properties = [{ path: 'app.properties', text: 'in.uri=seda:resolvedQueue\nhttp.port=8080\n' }];
+  const tests = [
+    {
+      path: 'tests/test_jobs.py',
+      text: [
+        '@allure.label("job", "parseInvoice")',
+        'def test_direct():\n    pass\n',
+        'def test_seda():\n    send("orders")\n',
+        'def test_jms():\n    put("LEDGER.IN")\n',
+        'def test_kafka():\n    publish("invoice-events")\n',
+        'def test_rest():\n    post("/api/orders")\n',
+        'def test_poll():\n    run_route("statements-poll")\n',
+      ].join('\n'),
+    },
+  ];
+
+  it('scans direct, queue, Kafka, REST and property-only routes as triggers, and links tests by their endpoint names', () => {
+    const out = scanRepository({ xml: [{ path: 'r.xml', text: xml }], properties, tests });
+    const by = Object.fromEntries(out.triggers.map((t) => [t.routeId, t]));
+    expect(Object.fromEntries(out.triggers.map((t) => [t.routeId, [t.kind, t.scheme]]))).toEqual({
+      'parse-invoice': ['direct', 'direct'],
+      'order-worker': ['queue', 'seda'],
+      'ledger-in': ['queue', 'jmscomponentledger'],
+      events: ['kafka', 'kafka'],
+      'orders-api': ['rest', 'netty-http'],
+      'statements-poll': ['file', 'sftp'], // its key says sftp
+      mystery: ['property', 'property'],
+      resolved: ['queue', 'seda'], // the property fills it in
+    });
+    expect(out.otherRoutes).toBe(1); // bean:audit
+    const cover = (id: string) => by[id]!.coveredBy.map((c) => c.test.split('::').pop());
+    expect(cover('parse-invoice')).toEqual(['test_direct']);
+    expect(cover('order-worker')).toEqual(['test_seda']);
+    expect(cover('ledger-in')).toEqual(['test_jms']);
+    expect(cover('events')).toEqual(['test_kafka']);
+    expect(cover('orders-api')).toEqual(['test_rest']);
+    expect(cover('statements-poll')).toEqual(['test_poll']);
+    expect(cover('mystery')).toEqual([]);
+    expect(by['mystery']!.unresolved).toEqual([{ key: 'mystery.uri', values: [] }]);
+  });
+
+  it('counts only the kinds picked, and lists every kind with its counts', async () => {
+    const t = await createTestApp();
+    try {
+      const mp = multipart({ branch: 'main' }, [
+        { field: 'file:src/main/resources/common/routes', filename: 'r.xml', content: xml },
+        { field: 'file:src/main/resources/common', filename: 'app.properties', content: properties[0]!.text },
+        { field: 'file:tests', filename: 'test_jobs.py', content: tests[0]!.text },
+      ]);
+      expect((await t.app.inject({ method: 'POST', url: '/api/triggers/scan', payload: mp.payload, headers: mp.headers })).statusCode).toBe(201);
+      const ov = (await t.app.inject({ url: '/api/triggers/overview?kinds=queue,kafka' })).json<Record<string, unknown>>();
+      expect(ov).toMatchObject({
+        kinds: ['queue', 'kafka'],
+        kindCounts: [
+          { kind: 'file', triggers: 1, tested: 1 },
+          { kind: 'direct', triggers: 1, tested: 1 },
+          { kind: 'queue', triggers: 3, tested: 2 },
+          { kind: 'kafka', triggers: 1, tested: 1 },
+          { kind: 'rest', triggers: 1, tested: 1 },
+          { kind: 'property', triggers: 1, tested: 0 },
+        ],
+        folders: [{ folder: 'common', triggers: 4, tested: 3 }],
+        triggerRepo: { triggers: 4, routes: 4 },
+        counts: { tested: 3, branch: 0, none: 1 },
+        items: [{ routeId: 'resolved' }],
+      });
+      const cov = (q: string) => t.app.inject({ url: `/api/summary${q}` }).then((r) => r.json<{ coverage: { total: number; automated: number; kinds?: string[] } }>().coverage);
+      expect(await cov('')).toMatchObject({ total: 8, automated: 6 });
+      expect(await cov('?kinds=file,rest')).toMatchObject({ total: 2, automated: 2, kinds: ['file', 'rest'] });
+      expect((await t.app.inject({ url: '/api/report?kinds=kafka' })).json<{ coverage: { total: number } }>().coverage.total).toBe(1);
+      expect((await t.app.inject({ url: '/api/summary?kinds=nope' })).statusCode).toBe(400);
+    } finally {
+      await t.close();
+    }
   });
 });

@@ -157,11 +157,12 @@ describe.skipIf(!hasPython)('distill_camel_repo.py', () => {
       })),
     });
     expect(shape(b)).toEqual(shape(a));
-    // the fixture really exercises every shape: 3 plain triggers, 2 file-name branches, 2 patterns + a schedule in one route
+    // the fixture really exercises every shape: 3 plain triggers, a direct route, 2 file-name branches, 2 patterns + a schedule in one route
     expect(a.triggers.map((t) => [t.patternKind, t.coveredBy.length])).toEqual([
       ['regex', 1],
       [null, 2], // a marker and a parametrize list both name acme-purge
       ['glob', 1],
+      [null, 0], // acme-internal: direct:acmeOrders, called by acme-orders
       ['condition', 1],
       ['condition', 1],
       ['regex', 0],
@@ -241,8 +242,8 @@ describe.skipIf(!hasPython)('distill_camel_repo.py with the routes and the tests
     const b = scanRepository(distilled);
     expect(shape(b)).toEqual(shape(a));
     expect(a.triggers.filter((t) => t.coveredBy.length > 0)).toHaveLength(7);
-    // 7 routes (choice branches, patterns and inputs of one route share its id); acme-2025/2026-load stay two
-    expect(new Set(b.triggers.map((t) => t.routeId)).size).toBe(7);
+    // 8 routes (choice branches, patterns and inputs of one route share its id); acme-2025/2026-load stay two
+    expect(new Set(b.triggers.map((t) => t.routeId)).size).toBe(8);
     for (const word of SENSITIVE) expect(distilled.all, word).not.toContain(word);
     expect(distilled.all).not.toContain('2026');
   });

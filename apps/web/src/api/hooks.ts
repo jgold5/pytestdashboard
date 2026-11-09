@@ -153,11 +153,11 @@ export function useLogout() {
 // ---------------------------------------------------------------------------
 
 /** `branch`: the trigger repo branch to count (undefined = the default branch). */
-export function useSummary(branch?: string | null, folder?: string | null, tests?: string | null) {
+export function useSummary(branch?: string | null, folder?: string | null, tests?: string | null, kinds?: string | null) {
   return useQuery({
-    queryKey: [...qk.summary, branch ?? null, folder ?? null, tests ?? null],
+    queryKey: [...qk.summary, branch ?? null, folder ?? null, tests ?? null, kinds ?? null],
     queryFn: ({ signal }) =>
-      api.get<Summary>('/api/summary', { ...(branch ? { branch } : {}), ...(folder ? { folder } : {}), ...(tests ? { tests } : {}) }, signal),
+      api.get<Summary>('/api/summary', { ...(branch ? { branch } : {}), ...(folder ? { folder } : {}), ...(tests ? { tests } : {}), ...(kinds ? { kinds } : {}) }, signal),
     placeholderData: keepPreviousData,
   });
 }
@@ -170,11 +170,11 @@ export function useMeta() {
   });
 }
 
-export function useReport(periodDays: number, branch?: string | null, folder?: string | null, tests?: string | null) {
+export function useReport(periodDays: number, branch?: string | null, folder?: string | null, tests?: string | null, kinds?: string | null) {
   return useQuery({
-    queryKey: [...qk.report(periodDays), branch ?? null, folder ?? null, tests ?? null],
+    queryKey: [...qk.report(periodDays), branch ?? null, folder ?? null, tests ?? null, kinds ?? null],
     queryFn: ({ signal }) =>
-      api.get<Report>('/api/report', { periodDays, ...(branch ? { branch } : {}), ...(folder ? { folder } : {}), ...(tests ? { tests } : {}) }, signal),
+      api.get<Report>('/api/report', { periodDays, ...(branch ? { branch } : {}), ...(folder ? { folder } : {}), ...(tests ? { tests } : {}), ...(kinds ? { kinds } : {}) }, signal),
     placeholderData: keepPreviousData,
   });
 }
@@ -544,13 +544,13 @@ export function useTriggers(q: TriggerQueryInput, enabled = true) {
 }
 
 /** The default branch's routes with one status (untested first), for the Overview. */
-export function useTriggerOverview(status: RouteStatus | undefined, limit = 8, branch?: string | null, folder?: string | null, tests?: string | null) {
+export function useTriggerOverview(status: RouteStatus | undefined, limit = 8, branch?: string | null, folder?: string | null, tests?: string | null, kinds?: string | null) {
   return useQuery({
-    queryKey: ['triggers', 'overview', status ?? null, limit, branch ?? null, folder ?? null, tests ?? null],
+    queryKey: ['triggers', 'overview', status ?? null, limit, branch ?? null, folder ?? null, tests ?? null, kinds ?? null],
     queryFn: ({ signal }) =>
       api.get<TriggerOverviewResponse>(
         '/api/triggers/overview',
-        { ...(status ? { status } : {}), limit: String(limit), ...(branch ? { branch } : {}), ...(folder ? { folder } : {}), ...(tests ? { tests } : {}) },
+        { ...(status ? { status } : {}), limit: String(limit), ...(branch ? { branch } : {}), ...(folder ? { folder } : {}), ...(tests ? { tests } : {}), ...(kinds ? { kinds } : {}) },
         signal,
       ),
     placeholderData: keepPreviousData,

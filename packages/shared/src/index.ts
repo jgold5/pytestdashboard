@@ -796,7 +796,40 @@ export const CoverageTotals = z.object({
   branch: z.string().optional(),
   /** `routes` only: the folder the numbers are limited to (none = the whole branch). */
   folder: z.string().optional(),
+  /** `routes` only: the kinds of trigger the numbers are limited to (none = every kind). */
+  kinds: z.array(z.string()).optional(),
 });
+
+/**
+ * What starts a Camel route:
+ * - `file`: a file landing in a folder (`file:`, `ftp:`, `sftp:`, `ftps:`, `smb:`), including an
+ *   SFTP/FTP poll whose whole URI is a placeholder the properties don't fill in;
+ * - `schedule`: `quartz:`, `cron:`, `timer:`, `scheduler:`;
+ * - `direct`: called by another route (`direct:`, `direct-vm:`);
+ * - `queue`: a queue worker (`seda:`, `vm:`, `jms:`, `activemq:`, `amqp:`, `sjms:`…);
+ * - `kafka`: a Kafka topic consumer;
+ * - `rest`: an HTTP endpoint (`netty-http:`, `rest:`, `restlet:`, `jetty:`, `servlet:`…);
+ * - `property`: the whole URI is a placeholder no properties file fills in, so its kind is unknown.
+ */
+export const TriggerKind = z.enum(['file', 'schedule', 'direct', 'queue', 'kafka', 'rest', 'property']);
+export type TriggerKind = z.infer<typeof TriggerKind>;
+export const TRIGGER_KIND_LABEL: Record<TriggerKind, string> = {
+  file: 'Load file',
+  schedule: 'Schedule',
+  direct: 'Direct',
+  queue: 'Queue (seda/jms)',
+  kafka: 'Kafka',
+  rest: 'REST',
+  property: 'Property-only URI',
+};
+
+/** `?kinds=file,schedule`: only these kinds of trigger (absent = every kind). */
+export const TriggerKindsParam = z
+  .string()
+  .max(200)
+  .transform((s) => [...new Set(s.split(',').map((x) => x.trim()).filter(Boolean))])
+  .pipe(z.array(TriggerKind))
+  .optional();
 
 /**
  * `?branch=&folder=` on summary, report and the trigger overview: count the triggers of this
@@ -807,6 +840,7 @@ export const ScopeBranchQuery = z.object({
   /** Test repo branch whose merged tests count (plus the PRs into it); default: the same as the routes branch. */
   tests: trimmed(LIMITS.shortTextMax).min(1).optional(),
   folder: trimmed(LIMITS.shortTextMax).min(1).optional(),
+  kinds: TriggerKindsParam,
 });
 export type ScopeBranchQuery = z.infer<typeof ScopeBranchQuery>;
 export type CoverageTotals = z.infer<typeof CoverageTotals>;
@@ -990,6 +1024,8 @@ export const ReportQuery = z.object({
   folder: trimmed(LIMITS.shortTextMax).min(1).optional(),
   /** Test repo branch whose merged tests count (plus the PRs into it); default: the same as the routes branch. */
   tests: trimmed(LIMITS.shortTextMax).min(1).optional(),
+  /** Only these kinds of trigger. */
+  kinds: TriggerKindsParam,
 });
 export type ReportQuery = z.infer<typeof ReportQuery>;
 
@@ -1220,12 +1256,6 @@ export const TRIAGE_LABELS: Record<TriageCategory, string> = {
 // Camel route triggers (scope of what can be automated, scanned from the repo)
 // ---------------------------------------------------------------------------
 
-/**
- * What starts a Camel route: a file landing in a folder (`file:`, `ftp:`, `sftp:`,
- * `ftps:`), or a schedule (`quartz:`, `cron:`, `timer:`, `scheduler:`).
- */
-export const TriggerKind = z.enum(['file', 'schedule']);
-export type TriggerKind = z.infer<typeof TriggerKind>;
 
 export const TriggerCoverage = z.object({
   /** pytest node id, e.g. `tests/routes/test_invoice.py::TestLoad::test_loads_file`. */
@@ -1384,6 +1414,8 @@ export const TriggerOverviewQuery = z.object({
   folder: trimmed(LIMITS.shortTextMax).min(1).optional(),
   /** Test repo branch whose merged tests count (plus the PRs into it); default: the same as the routes branch. */
   tests: trimmed(LIMITS.shortTextMax).min(1).optional(),
+  /** Only these kinds of trigger. */
+  kinds: TriggerKindsParam,
   status: RouteStatus.optional(),
   limit: z.coerce.number().int().min(1).max(50).default(8),
 });
@@ -1429,6 +1461,10 @@ export const TriggerOverviewResponse = z.object({
   folders: z.array(z.object({ folder: z.string(), triggers: z.number().int(), tested: z.number().int(), unmerged: z.number().int() })),
   /** The folder the counts and items are limited to; null = the whole branch. */
   folder: z.string().nullable(),
+  /** Kinds of trigger on the branch (and folder) with their counts, whatever kinds are picked, for the type picker. */
+  kindCounts: z.array(z.object({ kind: TriggerKind, triggers: z.number().int(), tested: z.number().int() })),
+  /** The kinds the counts and items are limited to; null = every kind. */
+  kinds: z.array(TriggerKind).nullable(),
   /** 1. The trigger repo: its scan on the default branch, and the unique triggers in it. */
   triggerRepo: ScopeSource.extend({ triggers: z.number().int(), /** Routes they belong to (a route with several patterns has several triggers). */ routes: z.number().int() }).nullable(),
   /** 2. The test repo: its scan on the default branch, the tests read, and the triggers they cover. */
