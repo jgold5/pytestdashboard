@@ -40,3 +40,24 @@ describe('folder picks', () => {
     expect(folderLabel('')).toBeNull();
   });
 });
+
+describe('leaving routes out and saved filters', () => {
+  it('a word is a start (any case); * stands for anything', async () => {
+    const { excludedBy, excludeLabel } = await import('@ptd/shared');
+    expect(excludedBy('download-invoices', 'download')).toBe('download');
+    expect(excludedBy('Download_Credits', 'download')).toBe('download');
+    expect(excludedBy('invoice-download', 'download')).toBeNull();
+    expect(excludedBy('invoice-download', '*download*')).toBe('*download*');
+    expect(excludedBy('invoice-load', 'download, *-load')).toBe('*-load');
+    expect(excludedBy(null, 'download')).toBeNull();
+    expect(excludeLabel('download, *-test')).toBe('not download… or *-test');
+  });
+  it('a saved filter is the one picked when folders, types and exclusion are the same, in any order', async () => {
+    const { activePreset } = await import('../components/ScopeButton');
+    const p = { id: 'a', name: 'Loads', folder: 'common,billing', kinds: ['file', 'schedule'] as const, exclude: 'download', baseline: null };
+    const presets = [{ ...p, kinds: [...p.kinds] }];
+    expect(activePreset(presets, { folder: 'billing,common', kinds: 'schedule,file', exclude: 'Download' })?.id).toBe('a');
+    expect(activePreset(presets, { folder: 'common', kinds: 'schedule,file', exclude: 'download' })).toBeNull();
+    expect(activePreset(presets, { folder: 'billing,common', kinds: 'schedule,file', exclude: null })).toBeNull();
+  });
+});

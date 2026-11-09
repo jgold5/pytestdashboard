@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
 import { ArrowLeft, Download, FileSpreadsheet, KeyRound, Search, Share2, Sheet } from 'lucide-react';
-import { folderLabel, type SheetCompareColumns, type SheetComparePreviewResponse, type SheetCompareResponse, type SheetCompareRow, type TriggerKind } from '@ptd/shared';
+import { excludeLabel, folderLabel, type SheetCompareColumns, type SheetComparePreviewResponse, type SheetCompareResponse, type SheetCompareRow, type TriggerKind } from '@ptd/shared';
 import { api, errorMessage, uploadWithProgress } from '../api/client';
 import { Anonymizer, anonymizeDeep, foldersOf } from '../lib/anonymize';
 import { cn, fmtNumber, pluralize } from '../lib/utils';
@@ -34,6 +34,7 @@ export interface SheetScope {
   tests: string | null;
   folder: string | null;
   kinds: string | null;
+  exclude?: string | null;
 }
 
 /** "Compare with my sheet": upload a spreadsheet of routes and see where it and the dashboard disagree, and why. */
@@ -91,6 +92,7 @@ function SheetCompareDialog({ scope, onClose }: { scope: SheetScope; onClose: ()
         ...(scope.tests ? { tests: scope.tests } : {}),
         ...(scope.folder ? { folder: scope.folder } : {}),
         ...(scope.kinds ? { kinds: scope.kinds.split(',') as TriggerKind[] } : {}),
+        ...(scope.exclude ? { exclude: scope.exclude } : {}),
       };
       setResult(await api.post<SheetCompareResponse>('/api/triggers/compare-sheet', body));
     } catch (e) {
@@ -194,7 +196,8 @@ function SheetCompareDialog({ scope, onClose }: { scope: SheetScope; onClose: ()
           <p className="text-xs text-fg-3">
             Compared with what the scope button picks: routes on {scope.branch ?? 'the default branch'}, tests {scope.tests ? `from ${scope.tests}` : 'of the same branch'}
             {scope.folder ? `, ${folderLabel(scope.folder)} only` : ''}
-            {scope.kinds ? `, ${scope.kinds.split(',').join(' + ')} only` : ''}.
+            {scope.kinds ? `, ${scope.kinds.split(',').join(' + ')} only` : ''}
+            {excludeLabel(scope.exclude) ? `, ${excludeLabel(scope.exclude)}` : ''}.
           </p>
         </div>
       ) : (
@@ -256,7 +259,8 @@ function Result({ result }: { result: SheetCompareResponse }) {
             , <span className="font-mono">{folderLabel(result.folder)}</span> only
           </>
         ) : null}
-        {result.kinds ? `, ${result.kinds.join(' + ')} only` : ''}.
+        {result.kinds ? `, ${result.kinds.join(' + ')} only` : ''}
+        {excludeLabel(result.exclude) ? `, ${excludeLabel(result.exclude)}` : ''}.
       </p>
       <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
         {tiles.map((t) => (

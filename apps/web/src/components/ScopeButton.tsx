@@ -1,9 +1,9 @@
 import * as P from '@radix-ui/react-popover';
-import { Check, ChevronDown } from 'lucide-react';
+import { Bookmark, Check, ChevronDown, Plus, X } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
-import { folderLabel, splitFolders, TRIGGER_KIND_LABEL, type TriggerKind } from '@ptd/shared';
-import { useTriggerOverview } from '../api/hooks';
-import { cn, fmtNumber, pluralize } from '../lib/utils';
+import { excludeLabel, folderLabel, splitExclude, splitFolders, TRIGGER_KIND_LABEL, type ScopePreset, type TriggerKind } from '@ptd/shared';
+import { useMarkPresetSeen, useSaveScopePresets, useScopePresets, useSession, useTriggerOverview } from '../api/hooks';
+import { cn, fmtDate, fmtNumber, pluralize } from '../lib/utils';
 import { UnlinkedTestsDialog } from './UnlinkedTests';
 
 /**
@@ -17,6 +17,28 @@ export interface Scope {
   folder: string | null;
   tests: string | null;
   kinds: string | null;
+  /** Route ids left out: patterns, comma-separated (`download` = ids starting with download). */
+  exclude?: string | null;
+}
+
+/** A fresh id for a saved filter. */
+function newPresetId(): string {
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+}
+
+const sameSet = (a: string[], b: string[]) => a.length === b.length && a.every((x) => b.includes(x));
+
+/** The saved filter the scope's folders, kinds and exclusion are exactly (the branches don't matter), if any. */
+export function activePreset(presets: readonly ScopePreset[] | undefined, scope: Pick<Scope, 'folder' | 'kinds' | 'exclude'>): ScopePreset | null {
+  const kinds = (scope.kinds ?? '').split(',').filter(Boolean);
+  return (
+    presets?.find(
+      (p) =>
+        sameSet(splitFolders(p.folder), splitFolders(scope.folder)) &&
+        sameSet(p.kinds ?? [], kinds) &&
+        sameSet(splitExclude(p.exclude), splitExclude(scope.exclude)),
+    ) ?? null
+  );
 }
 
 /** Short names for the button's label. */
@@ -69,8 +91,20 @@ export function ScopeButton({
   onChange: (patch: Partial<Scope>) => void;
   className?: string;
 }) {
-  const q = useTriggerOverview(undefined, 1, scope.branch, scope.folder, scope.tests, scope.kinds);
+  const presetsQ = useScopePresets();
+  const presets = presetsQ.data?.presets ?? [];
+  const active = activePreset(presets, scope);
+  const q = useTriggerOverview(undefined, 1, scope.branch, scope.folder, scope.tests, scope.kinds, scope.exclude, active?.id);
+  const session = useSession();
+  const isEditor = session.data?.role !== 'viewer';
+  const savePresets = useSaveScopePresets();
+  const markSeen = useMarkPresetSeen();
   const [showUnlinked, setShowUnlinked] = useState(false);
+  const [naming, setNaming] = useState<string | null>(null);
+  // what is typed in "Leave out", until applied; a new exclusion picked elsewhere replaces it
+  const [draft, setDraft] = useState<{ base: string | null; text: string } | null>(null);
+  const excludeDraft = draft && draft.base === (scope.exclude ?? null) ? draft.text : (scope.exclude ?? '');
+  const setExcludeDraft = (text: string) => setDraft({ base: scope.exclude ?? null, text });
   const d = q.data;
   if (!d || d.routeBranches.length === 0) return null;
 
@@ -97,7 +131,28 @@ export function ScopeButton({
     const ordered = all.filter((x) => next.includes(x)).concat(next.filter((x) => !all.includes(x as TriggerKind)) as TriggerKind[]);
     onChange({ kinds: ordered.length === 0 || all.every((x) => ordered.includes(x)) ? null : ordered.join(',') });
   };
-  const label = `${routes} · tests ${tests ?? '—'} · ${folderLabel(scope.folder) ?? 'all folders'} · ${kindsLabel(scope.kinds)}`;
+  const notLabel = excludeLabel(scope.exclude);
+  const label = active
+    ? `${routes} · tests ${tests ?? '—'} · ${active.name}`
+    : `${routes} · tests ${tests ?? '—'} · ${folderLabel(scope.folder) ?? 'all folders'} · ${kindsLabel(scope.kinds)}${notLabel ? ` · ${notLabel}` : ''}`;
+  const applyExclude = () => {
+    const next = splitExclude(excludeDraft).join(',') || null;
+    setDraft(null); // applied: the box shows the scope's exclusion again (also when a saved filter changes it)
+    if (next !== (splitExclude(scope.exclude).join(',') || null)) onChange({ exclude: next });
+  };
+  const applyPreset = (p: ScopePreset) => onChange({ folder: p.folder, kinds: p.kinds?.length ? p.kinds.join(',') : null, exclude: p.exclude });
+  const saveCurrent = (name: string) => {
+    const preset: ScopePreset = {
+      id: newPresetId(),
+      name: name.trim(),
+      folder: splitFolders(scope.folder).join(',') || null,
+      kinds: picked.length ? (picked as TriggerKind[]) : null,
+      exclude: splitExclude(scope.exclude).join(',') || null,
+      baseline: null,
+    };
+    savePresets.mutate({ presets: [...presets, preset], branch: routes }, { onSuccess: () => setNaming(null) });
+  };
+  const fresh = active && d.fresh?.preset === active.id ? d.fresh : null;
 
   return (
     <>
@@ -112,7 +167,7 @@ export function ScopeButton({
         <P.Trigger asChild>
           <button
             type="button"
-            aria-label={`Scope: routes from ${routes}, tests from ${tests ?? 'none'}, ${pickedFolders.length ? `${pluralize(pickedFolders.length, 'folder', 'folders')} ${pickedFolders.join(', ')}` : 'all folders'}, ${kindsLabel(scope.kinds)}. Change`}
+            aria-label={`Scope: routes from ${routes}, tests from ${tests ?? 'none'}, ${pickedFolders.length ? `${pluralize(pickedFolders.length, 'folder', 'folders')} ${pickedFolders.join(', ')}` : 'all folders'}, ${kindsLabel(scope.kinds)}${notLabel ? `, ${notLabel}` : ''}${active ? `, saved filter ${active.name}` : ''}. Change`}
             className={cn(
               'inline-flex h-8 max-w-full min-w-0 items-center gap-2 rounded-md border border-border-strong/70 bg-surface px-3 text-[13px] font-medium text-fg shadow-sm outline-none hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-ring/50 data-[state=open]:bg-surface-2',
               className,
@@ -129,6 +184,103 @@ export function ScopeButton({
             collisionPadding={12}
             className="z-50 w-[min(820px,calc(100vw-24px))] rounded-lg border border-border bg-surface p-3 shadow-lg outline-none"
           >
+            <div className="mb-3 border-b border-border pb-2.5">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="mr-1 text-[11px] font-semibold tracking-[0.07em] text-fg-3 uppercase">Saved</span>
+                {presets.length === 0 && naming === null ? (
+                  <span className="text-xs text-fg-3">Pick folders, types and what to leave out, then save them under a name.</span>
+                ) : null}
+                {presets.map((p) => (
+                  <span
+                    key={p.id}
+                    className={cn(
+                      'inline-flex h-7 items-center rounded-md border text-[12.5px]',
+                      active?.id === p.id ? 'border-accent bg-surface-3 text-fg' : 'border-border text-fg-2 hover:bg-surface-2',
+                    )}
+                  >
+                    <button type="button" aria-pressed={active?.id === p.id} className="inline-flex h-full items-center gap-1.5 px-2 outline-none focus-visible:ring-2 focus-visible:ring-ring/50" onClick={() => applyPreset(p)}>
+                      <Bookmark className={cn('size-3', active?.id === p.id ? 'text-accent' : 'text-fg-3')} aria-hidden />
+                      {p.name}
+                    </button>
+                    {isEditor && active?.id === p.id ? (
+                      <button
+                        type="button"
+                        aria-label={`Delete saved filter ${p.name}`}
+                        className="mr-1 grid size-5 place-items-center rounded text-fg-3 hover:bg-surface-2 hover:text-fg"
+                        onClick={() => savePresets.mutate({ presets: presets.filter((x) => x.id !== p.id), branch: routes })}
+                      >
+                        <X className="size-3" aria-hidden />
+                      </button>
+                    ) : null}
+                  </span>
+                ))}
+                {isEditor && !active ? (
+                  naming === null ? (
+                    <button type="button" className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[12.5px] text-fg-2 hover:bg-surface-2 hover:text-fg" onClick={() => setNaming('')}>
+                      <Plus className="size-3" aria-hidden /> Save these as…
+                    </button>
+                  ) : (
+                    <form
+                      className="inline-flex items-center gap-1"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        if (naming.trim()) saveCurrent(naming);
+                      }}
+                    >
+                      <input
+                        autoFocus
+                        aria-label="Name for this filter"
+                        value={naming}
+                        maxLength={80}
+                        onChange={(e) => setNaming(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Escape' && (e.stopPropagation(), setNaming(null))}
+                        placeholder="e.g. Loads + schedules, no downloads"
+                        className="h-7 w-64 rounded-md border border-border-strong/70 bg-surface px-2 text-[12.5px] outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                      />
+                      <button type="submit" disabled={!naming.trim() || savePresets.isPending} className="h-7 rounded-md bg-accent px-2.5 text-[12.5px] font-medium text-surface disabled:opacity-50">
+                        Save
+                      </button>
+                      <button type="button" className="h-7 rounded-md px-2 text-[12.5px] text-fg-2 hover:bg-surface-2" onClick={() => setNaming(null)}>
+                        Cancel
+                      </button>
+                    </form>
+                  )
+                ) : null}
+              </div>
+              {active ? (
+                <p className="mt-1.5 text-xs text-fg-2">
+                  {fresh ? (
+                    fresh.added.length || fresh.gone.length ? (
+                      <>
+                        <span className="font-medium text-accent">{pluralize(fresh.added.length, 'new route', 'new routes')}</span>
+                        {fresh.gone.length ? <>, {pluralize(fresh.gone.length, 'route', 'routes')} gone</> : null} since {fmtDate(fresh.at)}
+                        {fresh.added.length ? (
+                          <span className="text-fg-3">
+                            {' '}
+                            ({fresh.added.slice(0, 3).map((k) => k.split('/').pop()).join(', ')}
+                            {fresh.added.length > 3 ? '…' : ''})
+                          </span>
+                        ) : null}
+                        {isEditor ? (
+                          <>
+                            {' · '}
+                            <button type="button" className="link" disabled={markSeen.isPending} onClick={() => markSeen.mutate({ id: active.id, branch: routes })}>
+                              Mark as seen
+                            </button>
+                          </>
+                        ) : null}
+                      </>
+                    ) : (
+                      <span className="text-fg-3">No new routes since {fmtDate(fresh.at)}.</span>
+                    )
+                  ) : active.baseline ? (
+                    <span className="text-fg-3">
+                      Saved on {active.baseline.branch}: new routes show on that branch.
+                    </span>
+                  ) : null}
+                </p>
+              ) : null}
+            </div>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <Column title="Routes" hint="trigger repo branch">
                 {d.routeBranches.map((b) => (
@@ -198,6 +350,28 @@ export function ScopeButton({
                 ) : null}
               </Column>
             </div>
+            <form
+              className="mt-3 flex flex-wrap items-center gap-2 border-t border-border pt-2.5"
+              onSubmit={(e) => {
+                e.preventDefault();
+                applyExclude();
+              }}
+            >
+              <label htmlFor="scope-exclude" className="text-[11px] font-semibold tracking-[0.07em] text-fg-3 uppercase">
+                Leave out
+              </label>
+              <input
+                id="scope-exclude"
+                value={excludeDraft}
+                onChange={(e) => setExcludeDraft(e.target.value)}
+                onBlur={applyExclude}
+                placeholder="route ids starting with… e.g. download, test-"
+                className="h-7 min-w-0 flex-1 rounded-md border border-border-strong/70 bg-surface px-2 font-mono text-[12.5px] outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              />
+              <span className="text-[11px] text-fg-3">
+                {splitExclude(scope.exclude).length ? `${pluralize(d.excluded, 'trigger')} left out · ` : ''}comma-separated; * for anywhere (*download*)
+              </span>
+            </form>
             <div className={cn('mt-3 space-y-0.5 border-t border-border pt-2.5 text-xs text-fg-2', updating && 'opacity-60')} aria-busy={updating}>
               {updating ? <p className="text-fg-3">Updating counts…</p> : null}
               {tests ? (

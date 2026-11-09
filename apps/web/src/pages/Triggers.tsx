@@ -1,10 +1,10 @@
-import { useId, useMemo, useState, type ReactNode } from 'react';
+import { createContext, useContext, useId, useMemo, useState, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { toast } from 'sonner';
 import { Braces, ChevronRight, CircleCheck, CircleDashed, Clock, Copy, CornerDownRight, FileInput, GitBranch, GitCompareArrows, Globe, Inbox, Radio, Search, Terminal, Trash2, TriangleAlert, Zap } from 'lucide-react';
-import { folderLabel, splitFolders, TRIGGER_KIND_LABEL, type TriggerChange, type TriggerKind, type TriggerListResponse, type TriggerRow } from '@ptd/shared';
-import { useDeleteTriggerBranch, useScanGithubBranch, useTriggerBranches, useTriggerGithub, useTriggerOverview, useTriggers } from '../api/hooks';
-import { cleanKinds, useScopeBranch, useScopeFolder, useScopeKinds, useScopeTests } from '../lib/scopeBranch';
+import { excludedBy, excludeLabel, folderLabel, routeKey, splitFolders, TRIGGER_KIND_LABEL, type TriggerChange, type TriggerKind, type TriggerListResponse, type TriggerRow } from '@ptd/shared';
+import { useDeleteTriggerBranch, useScanGithubBranch, useScopePresets, useTriggerBranches, useTriggerGithub, useTriggerOverview, useTriggers } from '../api/hooks';
+import { cleanKinds, useScopeBranch, useScopeExclude, useScopeFolder, useScopeKinds, useScopeTests } from '../lib/scopeBranch';
 import { errorMessage } from '../api/client';
 import { cn, fmtNumber, fmtPct, fmtRelative, pluralize } from '../lib/utils';
 import { Button } from '../components/ui/button';
@@ -12,7 +12,7 @@ import { Card, CardBody, CardHeader } from '../components/ui/card';
 import { ConfirmDialog } from '../components/ui/confirm';
 import { PrScanButton } from '../components/PrScan';
 import { SheetCompareButton } from '../components/SheetCompare';
-import { kindsLabel, ScopeButton, type Scope } from '../components/ScopeButton';
+import { activePreset, kindsLabel, ScopeButton, type Scope } from '../components/ScopeButton';
 import { EmptyState, ErrorState } from '../components/ui/empty-state';
 import { Dialog } from '../components/ui/dialog';
 import { Field, Input } from '../components/ui/input';
@@ -26,7 +26,11 @@ const STATUS_FILTERS = [
   { key: 'automated', label: 'Tested' },
   { key: 'missing', label: 'No test yet' },
   { key: 'changes', label: 'Changed on this branch', compareOnly: true },
+  { key: 'new', label: 'New to the saved filter', freshOnly: true },
 ] as const;
+
+/** The routes (routeKeys) a saved filter didn't have when it was saved: marked New in the list. */
+const FreshContext = createContext<ReadonlySet<string>>(new Set());
 type StatusKey = (typeof STATUS_FILTERS)[number]['key'];
 
 const CHANGE_META: Record<TriggerChange, { label: string; cls: string }> = {
@@ -52,6 +56,7 @@ export default function TriggersPage() {
   const [scopeFolder, setScopeFolder] = useScopeFolder();
   const [scopeTests, setScopeTests] = useScopeTests();
   const [scopeKinds, setScopeKinds] = useScopeKinds();
+  const [scopeExclude, setScopeExclude] = useScopeExclude();
   const routeInfo = useTriggerOverview(undefined, 1);
   const routeBranches = routeInfo.data?.routeBranches ?? [];
   const defaultBranch = routeInfo.data?.defaultBranch ?? null;
@@ -69,6 +74,8 @@ export default function TriggersPage() {
   const [search, setSearch] = useState(params.get('q') ?? '');
   // the test repo branch whose merged tests (and PRs into it) count; none = the routes branch's name
   const tests = params.get('tests') || scopeTests || undefined;
+  // route ids left out: a link's ?exclude=, else the pick shared with the Overview
+  const exclude = params.get('exclude') ?? scopeExclude;
   const res = useTriggers({ branch, compare, tests }, !resolving);
 
   const set = (patch: Record<string, string | null>) =>
@@ -97,8 +104,14 @@ export default function TriggersPage() {
     return (data?.items ?? [])
       .filter((r) => !kindSet || kindSet.has(r.kind))
       .filter((r) => moduleSet.size === 0 || (!!r.module && moduleSet.has(r.module)))
+      .filter((r) => !excludedBy(r.routeId, exclude))
       .filter((r) => !q || [r.routeId, r.resolvedUri, r.sourceFile, r.filePattern, r.schedule, r.target, r.doneFile].some((v) => v?.toLowerCase().includes(q)));
-  }, [data, kindSet, moduleSet, search]);
+  }, [data, kindSet, moduleSet, exclude, search]);
+  // a saved filter picked: the routes in it that it didn't have when saved
+  const presets = useScopePresets().data?.presets;
+  const active = activePreset(presets, { folder: module, kinds, exclude });
+  const freshQ = useTriggerOverview(undefined, 1, branch ?? null, module, tests ?? null, kinds, exclude, active?.id ?? null);
+  const fresh = useMemo(() => new Set(active && freshQ.data?.fresh?.preset === active.id ? freshQ.data.fresh.added : []), [active, freshQ.data]);
   const rows = useMemo(() => {
     return scoped
       .filter((r) =>
@@ -108,10 +121,12 @@ export default function TriggersPage() {
             ? !automated(r) && r.change !== 'removed'
             : status === 'changes'
               ? r.change !== 'unchanged' || newlyAutomated(r) || lostTest(r)
-              : true,
+              : status === 'new'
+                ? !!r.routeId && fresh.has(routeKey(r.module, r.routeId))
+                : true,
       )
       .sort((a, b) => (compare ? CHANGE_ORDER[a.change ?? 'unchanged'] - CHANGE_ORDER[b.change ?? 'unchanged'] : 0));
-  }, [scoped, status, compare]);
+  }, [scoped, status, compare, fresh]);
   const groups = useMemo(() => groupByRoute(rows), [rows]);
 
   // only trigger repo branches (dev, core…): PR branches of the test repo count inside them
@@ -123,12 +138,13 @@ export default function TriggersPage() {
     if ('folder' in p) setScopeFolder(p.folder ?? null);
     if ('tests' in p) setScopeTests(p.tests ?? null);
     if ('kinds' in p) setScopeKinds(p.kinds ?? null);
+    if ('exclude' in p) setScopeExclude(p.exclude ?? null);
     const nextBranch = 'branch' in p ? (p.branch ?? defaultBranch) : branch;
-    set({ branch: null, module: null, tests: null, kind: null, kinds: null, compare: compare && compare !== nextBranch ? compare : null });
+    set({ branch: null, module: null, tests: null, kind: null, kinds: null, exclude: null, compare: compare && compare !== nextBranch ? compare : null });
   };
 
   return (
-    <>
+    <FreshContext.Provider value={fresh}>
       <PageHeader
         title="Triggers"
         description="Camel routes started by a load file, a schedule, another route, a queue, Kafka or HTTP, scanned from the repo — the scope to automate, and which of it has tests."
@@ -137,7 +153,7 @@ export default function TriggersPage() {
             <>
               <ScanBranchButton onScanned={(b) => set({ branch: b, compare: b === 'main' ? null : compare ?? (b !== 'main' && branchOptions.some((o) => o.value === 'main') ? 'main' : null) })} />
               <PrScanButton />
-              <SheetCompareButton scope={{ branch: branch ?? null, tests: tests ?? null, folder: module, kinds }} />
+              <SheetCompareButton scope={{ branch: branch ?? null, tests: tests ?? null, folder: module, kinds, exclude }} />
               {branch && !DEFAULT_BRANCHES.includes(branch) ? (
                 <RemoveBranchButton
                   branch={branch}
@@ -147,7 +163,7 @@ export default function TriggersPage() {
                   }}
                 />
               ) : null}
-              <ScopeButton scope={{ branch: branchParam ?? scopeBranch, folder: module, tests: tests ?? null, kinds }} onChange={changeScope} />
+              <ScopeButton scope={{ branch: branchParam ?? scopeBranch, folder: module, tests: tests ?? null, kinds, exclude }} onChange={changeScope} />
               <Select
                 size="sm"
                 ariaLabel="Compare with branch"
@@ -202,10 +218,10 @@ export default function TriggersPage() {
               </Button>
             </div>
           ) : null}
-          <Totals data={data} items={scoped} scope={[module ? `in ${folderLabel(module)}` : null, kinds ? `(${kindsLabel(kinds)})` : null, search.trim() ? `matching “${search.trim()}”` : null].filter(Boolean).join(' · ')} />
+          <Totals data={data} items={scoped} scope={[module ? `in ${folderLabel(module)}` : null, kinds ? `(${kindsLabel(kinds)})` : null, excludeLabel(exclude), search.trim() ? `matching “${search.trim()}”` : null].filter(Boolean).join(' · ')} />
           <div className="mt-4 mb-3 flex flex-wrap items-center gap-2">
             <div role="tablist" aria-label="Filter triggers" className="flex flex-wrap gap-1.5">
-              {STATUS_FILTERS.filter((f) => !('compareOnly' in f) || compare).map((f) => (
+              {STATUS_FILTERS.filter((f) => (!('compareOnly' in f) || compare) && (!('freshOnly' in f) || fresh.size > 0 || status === 'new')).map((f) => (
                 <button
                   key={f.key}
                   type="button"
@@ -218,6 +234,7 @@ export default function TriggersPage() {
                   )}
                 >
                   {f.label}
+                  {f.key === 'new' ? <span className="tabular text-accent">{fresh.size}</span> : null}
                 </button>
               ))}
             </div>
@@ -259,7 +276,7 @@ export default function TriggersPage() {
           </p>
         </>
       ) : null}
-    </>
+    </FreshContext.Provider>
   );
 }
 
@@ -418,10 +435,16 @@ function TriggerTable({ groups, showBranches, compare }: { groups: RouteGroup[];
 }
 
 function RouteCell({ r, extra }: { r: TriggerRow; extra?: ReactNode }) {
+  const fresh = useContext(FreshContext);
   return (
     <>
       <div className="flex min-w-0 items-center gap-1.5">
         <span className="truncate font-medium text-fg">{r.routeId ?? <span className="text-fg-3 italic">no route id</span>}</span>
+        {r.routeId && fresh.has(routeKey(r.module, r.routeId)) ? (
+          <span className="shrink-0 rounded-full border border-accent/50 bg-accent-soft px-1.5 py-px text-[10.5px] font-medium text-accent" title="Not in the saved filter when it was saved (or last marked as seen)">
+            New
+          </span>
+        ) : null}
         {extra}
       </div>
       <div className="truncate font-mono text-[11px] text-fg-3" title={`${r.sourceFile}:${r.line}`}>

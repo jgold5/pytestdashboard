@@ -43,3 +43,6 @@ export function cleanKinds(raw: string | null | undefined): string | null {
   const known = (raw ?? '').split(',').filter((k): k is TriggerKind => (TriggerKind.options as string[]).includes(k));
   return known.length ? [...new Set(known)].join(',') : null;
 }
+
+/** Route ids left out (patterns, comma-separated; `download` = ids starting with download); null = none. */
+export const useScopeExclude = () => useStored('ptd-scope-exclude');

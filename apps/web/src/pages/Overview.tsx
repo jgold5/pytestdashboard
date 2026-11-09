@@ -25,7 +25,7 @@ import { FlakyMeter, REVIEW_META, TRIAGE_META } from '../components/status';
 import { PipelineFunnel, stageHref } from '../components/pipeline';
 import { RunGroupChip } from '../components/RunGroup';
 import { kindsLabel, ScopeButton } from '../components/ScopeButton';
-import { useScopeBranch, useScopeFolder, useScopeKinds, useScopeTests } from '../lib/scopeBranch';
+import { useScopeBranch, useScopeExclude, useScopeFolder, useScopeKinds, useScopeTests } from '../lib/scopeBranch';
 import { cn, fmtNumber, fmtPct, fmtRelative, pluralize } from '../lib/utils';
 
 export function OverviewPage() {
@@ -33,7 +33,8 @@ export function OverviewPage() {
   const [folder, setFolder] = useScopeFolder();
   const [tests, setTests] = useScopeTests();
   const [kinds, setKinds] = useScopeKinds();
-  const summary = useSummary(branch, folder, tests, kinds);
+  const [exclude, setExclude] = useScopeExclude();
+  const summary = useSummary(branch, folder, tests, kinds, exclude);
 
   if (summary.isError) return <ErrorState error={summary.error} onRetry={() => void summary.refetch()} />;
   if (!summary.data) return <OverviewSkeleton />;
@@ -48,12 +49,13 @@ export function OverviewPage() {
         actions={
           <>
             <ScopeButton
-              scope={{ branch, folder, tests, kinds }}
+              scope={{ branch, folder, tests, kinds, exclude }}
               onChange={(p) => {
                 if ('branch' in p) setBranch(p.branch ?? null);
                 if ('folder' in p) setFolder(p.folder ?? null);
                 if ('tests' in p) setTests(p.tests ?? null);
                 if ('kinds' in p) setKinds(p.kinds ?? null);
+                if ('exclude' in p) setExclude(p.exclude ?? null);
               }}
             />
             <Link to="/import" className={linkButton('outline')}>
@@ -86,7 +88,7 @@ export function OverviewPage() {
         <div className="space-y-4">
           <KpiRow s={s} />
           <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
-            <RoutesCard branch={branch} folder={folder} tests={tests} kinds={kinds} />
+            <RoutesCard branch={branch} folder={folder} tests={tests} kinds={kinds} exclude={exclude} />
             <NeedsAttention s={s} />
           </div>
           <PipelineCard s={s} />
@@ -186,6 +188,7 @@ function triggersHref(c: Summary['coverage'], status?: 'automated' | 'missing'):
   const p = new URLSearchParams({ branch: c.branch ?? 'main' });
   if (c.folder) p.set('module', c.folder);
   if (c.kinds?.length) p.set('kinds', c.kinds.join(','));
+  if (c.exclude) p.set('exclude', c.exclude);
   if (status) p.set('status', status);
   return `/triggers?${p.toString()}`;
 }
@@ -678,9 +681,9 @@ function SourceStep({
   );
 }
 
-function RoutesCard({ branch, folder, tests, kinds }: { branch: string | null; folder: string | null; tests: string | null; kinds: string | null }) {
+function RoutesCard({ branch, folder, tests, kinds, exclude }: { branch: string | null; folder: string | null; tests: string | null; kinds: string | null; exclude: string | null }) {
   const [status, setStatus] = useState<RouteStatus | undefined>(undefined);
-  const q = useTriggerOverview(status, 8, branch, folder, tests, kinds);
+  const q = useTriggerOverview(status, 8, branch, folder, tests, kinds, exclude);
   const d = q.data;
   if (q.isPending) return <Skeleton className="h-[360px]" />;
   if (q.isError || !d) return <Card><ErrorState error={q.error} onRetry={() => void q.refetch()} /></Card>;
@@ -706,6 +709,7 @@ function RoutesCard({ branch, folder, tests, kinds }: { branch: string | null; f
   const allParams = new URLSearchParams({ branch: d.branch });
   if (d.folder) allParams.set('module', d.folder);
   if (d.kinds) allParams.set('kinds', d.kinds.join(','));
+  if (d.exclude) allParams.set('exclude', d.exclude);
   if (shown !== 'branch') allParams.set('status', shown === 'tested' ? 'automated' : 'missing');
   const allHref = `/triggers?${allParams.toString()}`;
   const where = `${d.kinds ? ` (${kindsLabel(d.kinds.join(','))})` : ''}${d.folder ? ` in ${folderLabel(d.folder)}` : ''}`;

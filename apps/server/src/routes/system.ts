@@ -1,11 +1,13 @@
 import type { FastifyInstance } from 'fastify';
-import { LoginRequest, ReportQuery, ScopeBranchQuery, Settings, type SessionInfo } from '@ptd/shared';
+import { z } from 'zod';
+import { LoginRequest, ReportQuery, ScopeBranchQuery, ScopePresets, Settings, type SessionInfo } from '@ptd/shared';
 import { SESSION_COOKIE, createSession } from '../auth/session.js';
 import { roleForToken, sessionRole } from '../auth/plugin.js';
 import type { Deps } from '../deps.js';
 import { parseWith, unauthorized } from '../errors.js';
 import { getMeta } from '../domain/meta.js';
 import { getReport } from '../domain/report.js';
+import { getScopePresets, putScopePresets, resetScopePresetBaseline } from '../domain/scopePresets.js';
 import { getSettings, putSettings } from '../domain/settings.js';
 import { getSummary } from '../domain/summary.js';
 
@@ -52,14 +54,22 @@ export function systemRoutes(app: FastifyInstance, { config, db }: Deps): void {
 
   app.get('/api/summary', async (req) => {
     const q = parseWith(ScopeBranchQuery, req.query);
-    return getSummary(db, q.branch, q.folder, q.tests, q.kinds);
+    return getSummary(db, q.branch, q.folder, q.tests, q.kinds, q.exclude);
   });
   app.get('/api/meta', async () => getMeta(db));
 
   app.get('/api/report', { config: { access: 'viewer' } }, async (req) => {
     const q = parseWith(ReportQuery, req.query);
-    return getReport(db, q.periodDays, new Date(), q.branch, q.folder, q.tests, q.kinds);
+    return getReport(db, q.periodDays, new Date(), q.branch, q.folder, q.tests, q.kinds, q.exclude);
   });
   app.get('/api/settings', { config: { access: 'viewer' } }, async () => getSettings(db));
   app.put('/api/settings', async (req) => putSettings(db, parseWith(Settings, req.body)));
+
+  // saved filters (folders + kinds + exclusion, with the routes they held when saved): everyone reads, editors change
+  const BranchOnly = z.object({ branch: z.string().trim().min(1).max(200).optional() });
+  app.get('/api/scope-presets', { config: { access: 'viewer' } }, async () => getScopePresets(db));
+  app.put('/api/scope-presets', async (req) => putScopePresets(db, parseWith(ScopePresets, req.body), parseWith(BranchOnly, req.query).branch));
+  app.post('/api/scope-presets/:id/seen', async (req) =>
+    resetScopePresetBaseline(db, parseWith(z.object({ id: z.string().min(1).max(64) }), req.params).id, parseWith(BranchOnly, req.query).branch),
+  );
 }

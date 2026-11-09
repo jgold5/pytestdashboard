@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { SheetCompareRequest, TriggerGithubScanRequest, TriggerOverviewQuery, TriggerQuery, type SheetComparePreviewResponse, type TriggerGithubInfo } from '@ptd/shared';
 import type { Deps } from '../deps.js';
 import { recordCoverageSnapshot } from '../domain/coverage.js';
+import { freshRoutes } from '../domain/scopePresets.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -42,7 +43,11 @@ export function triggerRoutes(app: FastifyInstance, { db, config, uploads }: Dep
   });
 
   app.get('/api/triggers', async (req) => listTriggers(db, parseWith(TriggerQuery, req.query)));
-  app.get('/api/triggers/overview', async (req) => routeOverview(db, parseWith(TriggerOverviewQuery, req.query)));
+  app.get('/api/triggers/overview', async (req) => {
+    const q = parseWith(TriggerOverviewQuery, req.query);
+    const res = routeOverview(db, q);
+    return q.preset ? { ...res, fresh: freshRoutes(db, q) } : res;
+  });
   app.get('/api/triggers/unlinked-tests', async (req) => unlinkedTests(db, parseWith(TriggerQuery, req.query)));
 
   // Compare with my sheet: upload a spreadsheet of routes, then compare it with what the dashboard counts
