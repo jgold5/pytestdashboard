@@ -410,7 +410,10 @@ curl --fail-with-body -sS -X POST "$DASHBOARD_URL/api/triggers/scan" \
   only says why: not in the XML (closest id, Java DSL, another branch), started by something
   that isn't a trigger (`bean:`…), outside the folder or types picked, or for a route your
   sheet lacks, a type it never lists, an XML file it doesn't cover, no route id. Download the
-  comparison as CSV.
+  comparison as CSV, or **Download for sharing**: the same comparison with every route, file,
+  test and branch name replaced by a made-up word of the same length (the same everywhere; the
+  reasons still read as sentences), done in your browser. **Save the key** to turn the made-up
+  names back into yours, and keep it to yourself.
 - **`pnpm verify-counts --repo <camel-repo> --tests <test-repo>`** runs an independent
   implementation of the counting rules on your repos and lists every trigger it and the
   dashboard disagree on. Add `--share` for `verify-counts-share.zip`: the result with every

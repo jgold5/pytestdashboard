@@ -1,7 +1,8 @@
 import { useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Download, FileSpreadsheet, Search, Sheet } from 'lucide-react';
+import { ArrowLeft, Download, FileSpreadsheet, KeyRound, Search, Share2, Sheet } from 'lucide-react';
 import type { SheetCompareColumns, SheetComparePreviewResponse, SheetCompareResponse, SheetCompareRow, TriggerKind } from '@ptd/shared';
 import { api, errorMessage, uploadWithProgress } from '../api/client';
+import { Anonymizer, anonymizeDeep } from '../lib/anonymize';
 import { cn, fmtNumber, pluralize } from '../lib/utils';
 import { Button } from './ui/button';
 import { Dialog } from './ui/dialog';
@@ -138,7 +139,10 @@ function SheetCompareDialog({ scope, onClose }: { scope: SheetScope; onClose: ()
     >
       {error ? <p className="mb-3 text-[13px] text-bad">{error}</p> : null}
       {result ? (
-        <Result result={result} />
+        <>
+          <Result result={result} />
+          <ShareBar result={result} fileName={preview?.fileName ?? 'sheet'} />
+        </>
       ) : preview ? (
         <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-2 text-[13px]">
@@ -381,4 +385,48 @@ function downloadCsv(result: SheetCompareResponse, fileName: string) {
   a.download = `${fileName.replace(/\.[^.]+$/, '')}-vs-dashboard.csv`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+/** Fields whose values are the dashboard's own vocabulary, not names. */
+const NOT_NAMES = new Set(['status', 'field', 'kinds', 'kind', 'schemes', 'columns', 'sheetRow', 'line']);
+
+/**
+ * "Download for sharing": the comparison with every name renamed (the same everywhere), plus a
+ * private key to turn the made-up names back into yours. Done here in the browser.
+ */
+function ShareBar({ result, fileName }: { result: SheetCompareResponse; fileName: string }) {
+  const [key, setKey] = useState<ReturnType<Anonymizer['key']> | null>(null);
+  const base = fileName.replace(/\.[^.]+$/, '');
+  const save = (name: string, data: unknown) => {
+    const blob = new Blob([`${JSON.stringify(data, null, 1)}\n`], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
+  const share = () => {
+    const anon = new Anonymizer();
+    const renamed = anonymizeDeep(result, anon, NOT_NAMES);
+    save(`${anon.text(base)}-vs-dashboard-share.json`, {
+      about:
+        'Compare with my sheet: a spreadsheet of routes against what the dashboard counts. Every name is replaced by a made-up word of the same length, the same everywhere; the dashboard’s own words are kept.',
+      ...renamed,
+    });
+    setKey(anon.key());
+  };
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs text-fg-2">
+      <Share2 className="size-3.5 text-fg-3" aria-hidden />
+      <span className="mr-auto">Share this comparison without your route, file or test names: every name is replaced by a made-up one, in your browser.</span>
+      <Button size="sm" variant="outline" onClick={share}>
+        <Download /> Download for sharing
+      </Button>
+      {key ? (
+        <Button size="sm" variant="ghost" onClick={() => save(`${base}-share-key.json`, { about: 'Made-up name → your name. Keep this file to yourself.', ...key })}>
+          <KeyRound /> Save the key (keep it private)
+        </Button>
+      ) : null}
+    </div>
+  );
 }
