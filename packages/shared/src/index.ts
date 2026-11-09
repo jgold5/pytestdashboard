@@ -107,9 +107,10 @@ export function splitFolders(folder: string | null | undefined): string[] {
 }
 
 /**
- * Routes left out by id: comma-separated patterns, case-insensitive. A pattern without `*` is a
- * start (`download` = ids starting with download); with `*` it is the whole id (`*-download`,
- * `*download*`).
+ * Triggers left out by name: comma-separated patterns, case-insensitive, matched against the route
+ * id, the file name or pattern, and the endpoint name (see triggerNamesForExclude). A pattern
+ * without `*` is a start (`download` = names starting with download); with `*` it is the whole
+ * name (`*-download`, `*download*`).
  */
 const ExcludeParam = trimmed(4000).min(1);
 
@@ -129,10 +130,45 @@ function excludeRegex(pattern: string): RegExp {
   return re;
 }
 
-/** The pattern of `exclude` that leaves this route id out, else null. */
-export function excludedBy(routeId: string | null | undefined, exclude: string | null | undefined): string | null {
-  if (!routeId || !exclude) return null;
-  for (const p of splitExclude(exclude)) if (excludeRegex(p).test(routeId)) return p;
+/**
+ * What Leave out matches a trigger by: its route id, its file name or pattern (a regex's leading
+ * `^`/`(` dropped), and the name in its endpoint (`direct:downloadJob` → downloadJob, a queue or
+ * Kafka topic, a REST path, a quartz job).
+ */
+export function triggerNamesForExclude(t: { routeId?: string | null; filePattern?: string | null; firesOn?: string | null; resolvedUri?: string | null }): string[] {
+  const out: string[] = [];
+  const add = (x: string | null | undefined) => {
+    const v = x?.replace(/^[\^(/]+/, '').trim();
+    if (v) out.push(v);
+  };
+  add(t.routeId);
+  add(t.filePattern);
+  for (const uri of [t.resolvedUri, t.firesOn]) {
+    if (!uri) continue;
+    const m = /^([a-z][\w+.-]*):(\/\/)?(.*)$/i.exec(uri);
+    if (!m) {
+      add(uri); // a file pattern or a schedule
+      continue;
+    }
+    if (/^(file|sftp|ftps?|smb)$/i.test(m[1]!)) continue; // the folder watched isn't the trigger's name
+    const rest = (m[3] ?? '').split('?')[0]!.replace(/^(get|post|put|delete|patch):/i, '');
+    add(rest);
+    add(rest.split('/').filter(Boolean).pop());
+  }
+  return [...new Set(out)];
+}
+
+/**
+ * The pattern of `exclude` that leaves this out, else null: a route id, or a trigger (whose
+ * route id, file name or endpoint name any pattern matches, see triggerNamesForExclude).
+ */
+export function excludedBy(
+  what: string | null | undefined | { routeId?: string | null; filePattern?: string | null; firesOn?: string | null; resolvedUri?: string | null },
+  exclude: string | null | undefined,
+): string | null {
+  if (!what || !exclude) return null;
+  const names = typeof what === 'string' ? [what] : triggerNamesForExclude(what);
+  for (const p of splitExclude(exclude)) if (names.some((n) => excludeRegex(p).test(n))) return p;
   return null;
 }
 

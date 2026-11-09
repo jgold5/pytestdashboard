@@ -42,6 +42,24 @@ describe('leaving routes out, and saved filters', () => {
     expect((await t.app.inject({ url: '/api/report?exclude=download' })).json<{ coverage: { total: number } }>().coverage.total).toBe(4);
   });
 
+  it('leaves out a trigger whose file name or endpoint name starts with the word, whatever the route id', async () => {
+    await scan(
+      [
+        '<route id="invoice-load"><from uri="file:/in?include=DOWNLOAD_INV.*\\.csv"/></route>',
+        '<route id="credit-pull"><from uri="file:/download?fileName=CRN.TXT"/></route>',
+        '<route id="job-a"><from uri="direct:downloadJob"/></route>',
+        '<route id="two-files"><from uri="file:/in?include=(Download_A|KEEP_B).*"/></route>',
+        '<route id="purge"><from uri="quartz://p?cron=0+0+2+*+*+?"/></route>',
+      ].join(''),
+    );
+    const all = (await total('')).total;
+    const left = (await total('exclude=download')).total;
+    // DOWNLOAD_INV.*, direct:downloadJob and the (Download_A|KEEP_B) pattern start with download; CRN.TXT in /download doesn't
+    expect(all - left).toBe(3);
+    const ov = await overview('exclude=download');
+    expect(ov.excluded).toBe(3);
+  });
+
   it('a saved filter keeps the routes it held when saved, so routes added later can be told apart', async () => {
     await scan(COMMON.join(''));
     const preset = { id: 'loads', name: 'Common loads', folder: 'common', kinds: ['file', 'schedule'], exclude: 'download', baseline: null };

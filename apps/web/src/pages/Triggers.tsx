@@ -104,7 +104,7 @@ export default function TriggersPage() {
     return (data?.items ?? [])
       .filter((r) => !kindSet || kindSet.has(r.kind))
       .filter((r) => moduleSet.size === 0 || (!!r.module && moduleSet.has(r.module)))
-      .filter((r) => !excludedBy(r.routeId, exclude))
+      .filter((r) => !excludedBy(r, exclude))
       .filter((r) => !q || [r.routeId, r.resolvedUri, r.sourceFile, r.filePattern, r.schedule, r.target, r.doneFile].some((v) => v?.toLowerCase().includes(q)));
   }, [data, kindSet, moduleSet, exclude, search]);
   // a saved filter picked: the routes in it that it didn't have when saved

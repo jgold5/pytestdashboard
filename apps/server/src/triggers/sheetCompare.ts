@@ -178,7 +178,7 @@ export function compareSheet(db: Db, sheet: ParsedSheet, req: SheetCompareReques
     const pr = parsePrLabel(s.label);
     if (pr) prOf.set(s.branch, pr.number);
   }
-  const inScope = (t: TriggerRow) => inFolders(t.module, req.folder) && (!req.kinds?.length || req.kinds.includes(t.kind)) && !excludedBy(t.routeId, req.exclude);
+  const inScope = (t: TriggerRow) => inFolders(t.module, req.folder) && (!req.kinds?.length || req.kinds.includes(t.kind)) && !excludedBy(t, req.exclude);
   const all = routesOf(list.items, (b) => prOf.get(b) ?? null);
   const scoped = routesOf(list.items.filter(inScope), (b) => prOf.get(b) ?? null);
   const byId = new Map<string, RouteAcc[]>();
@@ -231,8 +231,8 @@ export function compareSheet(db: Db, sheet: ParsedSheet, req: SheetCompareReques
   const whyNotCounted = (routeId: string): string => {
     const n = norm(routeId);
     const elsewhere = anyById.get(n);
-    const left = elsewhere?.length ? excludedBy(elsewhere[0]!.routeId, req.exclude) : null;
-    if (left) return `Counted on ${branch}, but left out by the exclusion picked (${left.includes('*') ? left : `ids starting with ${left}`})`;
+    const left = elsewhere?.length ? list.items.filter((t) => t.routeId && norm(t.routeId) === n).map((t) => excludedBy(t, req.exclude)).find(Boolean) : null;
+    if (left) return `Counted on ${branch}, but left out by the exclusion picked (${left.includes('*') ? left : `names starting with ${left}`})`;
     if (elsewhere?.length)
       return `Counted on ${branch}, but outside the folder/types picked: ${elsewhere.map((r) => `${r.module ? `${r.module}/` : ''} ${r.kinds.map((k) => TRIGGER_KIND_LABEL[k]).join(', ')}`.trim()).join('; ')}`;
     const skip = skippedById.get(n);
