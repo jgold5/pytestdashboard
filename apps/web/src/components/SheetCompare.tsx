@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from 'react';
 import { ArrowLeft, Download, FileSpreadsheet, KeyRound, Search, Share2, Sheet } from 'lucide-react';
 import type { SheetCompareColumns, SheetComparePreviewResponse, SheetCompareResponse, SheetCompareRow, TriggerKind } from '@ptd/shared';
 import { api, errorMessage, uploadWithProgress } from '../api/client';
-import { Anonymizer, anonymizeDeep } from '../lib/anonymize';
+import { Anonymizer, anonymizeDeep, foldersOf } from '../lib/anonymize';
 import { cn, fmtNumber, pluralize } from '../lib/utils';
 import { Button } from './ui/button';
 import { Dialog } from './ui/dialog';
@@ -119,6 +119,7 @@ function SheetCompareDialog({ scope, onClose }: { scope: SheetScope; onClose: ()
             <Button variant="outline" onClick={() => downloadCsv(result, preview?.fileName ?? 'sheet')}>
               <Download /> Download comparison (.csv)
             </Button>
+            <ShareButtons result={result} fileName={preview?.fileName ?? 'sheet'} />
             <Button variant="primary" onClick={onClose}>
               Done
             </Button>
@@ -141,7 +142,11 @@ function SheetCompareDialog({ scope, onClose }: { scope: SheetScope; onClose: ()
       {result ? (
         <>
           <Result result={result} />
-          <ShareBar result={result} fileName={preview?.fileName ?? 'sheet'} />
+          <p className="mt-2 text-xs text-fg-3">
+            <Share2 className="mr-1 inline size-3.5 align-[-2px]" aria-hidden />
+            <span className="font-medium text-fg-2">Download for sharing</span> saves this comparison with every route, file, test and branch name replaced by a
+            made-up one, in your browser. <span className="font-medium text-fg-2">Save the key</span> keeps the way back to your names: don’t send it.
+          </p>
         </>
       ) : preview ? (
         <div className="space-y-3">
@@ -394,7 +399,7 @@ const NOT_NAMES = new Set(['status', 'field', 'kinds', 'kind', 'schemes', 'colum
  * "Download for sharing": the comparison with every name renamed (the same everywhere), plus a
  * private key to turn the made-up names back into yours. Done here in the browser.
  */
-function ShareBar({ result, fileName }: { result: SheetCompareResponse; fileName: string }) {
+function ShareButtons({ result, fileName }: { result: SheetCompareResponse; fileName: string }) {
   const [key, setKey] = useState<ReturnType<Anonymizer['key']> | null>(null);
   const base = fileName.replace(/\.[^.]+$/, '');
   const save = (name: string, data: unknown) => {
@@ -407,7 +412,7 @@ function ShareBar({ result, fileName }: { result: SheetCompareResponse; fileName
   };
   const share = () => {
     const anon = new Anonymizer();
-    const renamed = anonymizeDeep(result, anon, NOT_NAMES);
+    const renamed = anonymizeDeep(result, anon, NOT_NAMES, false, foldersOf(result));
     save(`${anon.text(base)}-vs-dashboard-share.json`, {
       about:
         'Compare with my sheet: a spreadsheet of routes against what the dashboard counts. Every name is replaced by a made-up word of the same length, the same everywhere; the dashboard’s own words are kept.',
@@ -416,17 +421,15 @@ function ShareBar({ result, fileName }: { result: SheetCompareResponse; fileName
     setKey(anon.key());
   };
   return (
-    <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs text-fg-2">
-      <Share2 className="size-3.5 text-fg-3" aria-hidden />
-      <span className="mr-auto">Share this comparison without your route, file or test names: every name is replaced by a made-up one, in your browser.</span>
-      <Button size="sm" variant="outline" onClick={share}>
-        <Download /> Download for sharing
+    <>
+      <Button variant="outline" onClick={share}>
+        <Share2 /> Download for sharing
       </Button>
       {key ? (
-        <Button size="sm" variant="ghost" onClick={() => save(`${base}-share-key.json`, { about: 'Made-up name → your name. Keep this file to yourself.', ...key })}>
-          <KeyRound /> Save the key (keep it private)
+        <Button variant="outline" onClick={() => save(`${base}-share-key.json`, { about: 'Made-up name → your name. Keep this file to yourself.', ...key })}>
+          <KeyRound /> Save the key (keep private)
         </Button>
       ) : null}
-    </div>
+    </>
   );
 }

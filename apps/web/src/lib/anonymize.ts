@@ -44,6 +44,14 @@ const KEEP = new Set(
   upload uppercase var visible warn whitespace wire wrap write yourself`.split(/\s+/).filter(Boolean),
 );
 
+/** File extensions kept on renamed paths (the type of a file is not a name). */
+const EXTENSIONS = new Set('xml py csv tsv txt json properties yaml yml xlsx java kt groovy sql md'.split(' '));
+/** In free text: a path with a folder (a/b/c.xml, a/b:12) or a file name with a known extension (test_jobs.py). */
+const PATH_LIKE = /(?:[\w.-]+\/)+[\w.-]*[\w-](?::\d+)?|\b[\w.-]+\/(?![\w.-])|\b[\w-]+\.(?:xml|py|csv|tsv|txt|json|properties|yaml|yml|xlsx|java|kt|groovy|sql)\b(?::\d+)?/g;
+
+/** Slash-joined words the dashboard writes in its own reasons: not paths of the repo. */
+const OWN_PATHS = new Set(['java/kotlin', 'src/test', 'seda/jms', 'merged/pr']);
+
 const CONSONANTS = 'bdfgklmnprstvz';
 const VOWELS = 'aeiou';
 
@@ -72,9 +80,9 @@ export class Anonymizer {
     }
   }
 
-  private one(w: string): string {
+  private one(w: string, strict = false): string {
     const low = w.toLowerCase();
-    if (low.length <= 2 || KEEP.has(low)) return w;
+    if (low.length <= 2 || (!strict && KEEP.has(low))) return w;
     let g = this.words.get(low);
     if (!g) {
       g = this.madeUp(low.length);
@@ -84,10 +92,10 @@ export class Anonymizer {
     return w[0] === w[0]!.toUpperCase() ? g[0]!.toUpperCase() + g.slice(1) : g;
   }
 
-  private word(run: string): string {
-    if (KEEP.has(run.toLowerCase())) return run;
+  private word(run: string, strict = false): string {
+    if (!strict && KEEP.has(run.toLowerCase())) return run;
     const parts = run.match(/[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[A-Z]+/g) ?? [run];
-    return parts.join('') === run ? parts.map((p) => this.one(p)).join('') : this.one(run);
+    return parts.join('') === run ? parts.map((p) => this.one(p, strict)).join('') : this.one(run, strict);
   }
 
   private number(run: string): string {
@@ -100,13 +108,39 @@ export class Anonymizer {
     return g;
   }
 
-  /** Any text: letters runs and long digit runs renamed, everything else as it is. */
+  private words_(s: string, strict: boolean): string {
+    return s.replace(/[A-Za-z]+|\d+/g, (m) => (/\d/.test(m[0]!) ? this.number(m) : this.word(m, strict)));
+  }
+
+  /**
+   * A file path, folder or branch: every word renamed, generic ones too (src, main, common…), so no
+   * part of the layout shows; only the file extension and the separators stay.
+   */
+  path(s: string): string;
+  path(s: string | null): string | null;
+  path(s: string | null | undefined): string | null | undefined;
+  path(s: string | null | undefined): string | null | undefined {
+    if (s === null || s === undefined) return s;
+    const ext = /\.([A-Za-z0-9]{1,10})(:\d+)?$/.exec(s);
+    const keepExt = ext && EXTENSIONS.has(ext[1]!.toLowerCase());
+    const body = keepExt ? s.slice(0, ext!.index) : s;
+    return this.words_(body, true) + (keepExt ? `.${ext![1]}${ext![2] ?? ''}` : '');
+  }
+
+  /** Any text: file paths in it as paths, other letter runs and long digit runs renamed, the dashboard's words kept. */
   text(s: string): string;
   text(s: string | null): string | null;
   text(s: string | null | undefined): string | null | undefined;
   text(s: string | null | undefined): string | null | undefined {
     if (s === null || s === undefined) return s;
-    return s.replace(/[A-Za-z]+|\d+/g, (m) => (/\d/.test(m[0]!) ? this.number(m) : this.word(m)));
+    let out = '';
+    let last = 0;
+    for (const m of s.matchAll(PATH_LIKE)) {
+      if (OWN_PATHS.has(m[0].toLowerCase())) continue; // the dashboard's own words (Java/Kotlin, src/test)
+      out += this.words_(s.slice(last, m.index), false) + this.path(m[0]);
+      last = (m.index ?? 0) + m[0].length;
+    }
+    return out + this.words_(s.slice(last), false);
   }
 
   /** made-up → original, for the person sharing (keep it private). */
@@ -119,14 +153,25 @@ export class Anonymizer {
   }
 }
 
+/** Fields that hold a file path, folder or branch: renamed as paths (every word). */
+export const PATH_FIELDS = new Set(['sourceFile', 'testFiles', 'xml', 'module', 'folder', 'file']);
+
 /** Rename every string in a JSON value (keys of objects stay: they are field names). */
-export function anonymizeDeep<T>(value: T, a: Anonymizer, skipKeys: ReadonlySet<string> = new Set()): T {
-  if (typeof value === 'string') return a.text(value) as T;
-  if (Array.isArray(value)) return value.map((v) => anonymizeDeep(v, a, skipKeys)) as T;
+export function anonymizeDeep<T>(value: T, a: Anonymizer, skipKeys: ReadonlySet<string> = new Set(), asPath = false, folders: ReadonlySet<string> = new Set()): T {
+  if (typeof value === 'string') return (asPath || folders.has(value.toLowerCase().replace(/\/$/, '')) ? a.path(value) : a.text(value)) as T;
+  if (Array.isArray(value)) return value.map((v) => anonymizeDeep(v, a, skipKeys, asPath, folders)) as T;
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value)) out[k] = skipKeys.has(k) ? v : anonymizeDeep(v, a, skipKeys);
+    for (const [k, v] of Object.entries(value)) out[k] = skipKeys.has(k) ? v : anonymizeDeep(v, a, skipKeys, asPath || PATH_FIELDS.has(k), folders);
     return out as T;
   }
   return value;
+}
+
+/** The folder names a comparison mentions: a sheet value equal to one (its "where" column) is renamed like the folder. */
+export function foldersOf(result: { folder?: string | null; rows: Array<{ dashboard?: { module?: string | null } | null }> }): Set<string> {
+  const out = new Set<string>();
+  if (result.folder) out.add(result.folder.toLowerCase());
+  for (const r of result.rows) if (r.dashboard?.module) out.add(r.dashboard.module.toLowerCase());
+  return out;
 }
