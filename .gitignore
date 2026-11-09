@@ -19,3 +19,5 @@ e2e/.auth/
 verify-counts-share/
 verify-counts-share.zip
 verify-counts-share.map.json
+__pycache__/
+*.pyc
