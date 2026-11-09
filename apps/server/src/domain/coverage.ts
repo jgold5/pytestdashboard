@@ -1,5 +1,5 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
-import { splitFolders, type CoverageTotals, type TriggerKind } from '@ptd/shared';
+import { splitExclude, splitFolders, type CoverageTotals, type TriggerKind } from '@ptd/shared';
 import type { Db } from '../db/client.js';
 import { coverageSnapshots, pullRequests, testCasePullRequests, testCases } from '../db/schema.js';
 import { routeCoverage, scopeCounts } from '../triggers/routeCoverage.js';
@@ -12,15 +12,15 @@ export function automationRate(total: number, automated: number, notAutomatable:
 
 /**
  * `branch`: the trigger repo branch to count, `folder`: only the triggers in those folders (several joined with commas),
- * `kinds`: only those kinds of trigger (none = every kind).
+ * `kinds`: only those kinds of trigger (none = every kind), `exclude`: route ids left out (patterns).
  * Snapshots (the trend) always use the whole default branch.
  */
-export function computeCoverage(db: Db, branch?: string, folder?: string, tests?: string, kinds?: readonly TriggerKind[]): CoverageTotals {
+export function computeCoverage(db: Db, branch?: string, folder?: string, tests?: string, kinds?: readonly TriggerKind[], exclude?: string): CoverageTotals {
   // the source code defines the scope once it has been scanned; nothing else adds to it.
   // A trigger counts as tested when a test covers it on any scanned branch, merged or not.
   const routes = routeCoverage(db, branch, tests);
   if (routes) {
-    const n = scopeCounts(routes, { folder, kinds });
+    const n = scopeCounts(routes, { folder, kinds, exclude });
     const tested = n.tested + n.branch;
     return {
       unit: 'routes',
@@ -35,6 +35,7 @@ export function computeCoverage(db: Db, branch?: string, folder?: string, tests?
       branch: routes.branch,
       ...(splitFolders(folder).length ? { folder: splitFolders(folder).join(',') } : {}),
       ...(kinds?.length ? { kinds: [...kinds] } : {}),
+      ...(splitExclude(exclude).length ? { exclude: splitExclude(exclude).join(',') } : {}),
     };
   }
   const rows = db

@@ -80,13 +80,13 @@ function pooledPassRate(rs: RunRow[]): number | null {
   return executed > 0 ? passed / executed : null;
 }
 
-export function getReport(db: Db, periodDays: number, today: Date = new Date(), branch?: string, folder?: string, tests?: string, kinds?: readonly TriggerKind[]): Report {
+export function getReport(db: Db, periodDays: number, today: Date = new Date(), branch?: string, folder?: string, tests?: string, kinds?: readonly TriggerKind[], exclude?: string): Report {
   const settings = getSettings(db);
   const startDate = addDays(today, -periodDays);
   const startIso = startDate.toISOString();
   const startDay = isoDate(startDate);
   const prevStartIso = addDays(today, -2 * periodDays).toISOString();
-  const coverage = computeCoverage(db, branch, folder, tests, kinds);
+  const coverage = computeCoverage(db, branch, folder, tests, kinds, exclude);
 
   // coverage at period start: latest snapshot on/before start, else earliest one after it
   const startSnap =

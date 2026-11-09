@@ -106,6 +106,44 @@ export function splitFolders(folder: string | null | undefined): string[] {
   return [...new Set((folder ?? '').split(',').map((f) => f.trim()).filter(Boolean))];
 }
 
+/**
+ * Routes left out by id: comma-separated patterns, case-insensitive. A pattern without `*` is a
+ * start (`download` = ids starting with download); with `*` it is the whole id (`*-download`,
+ * `*download*`).
+ */
+const ExcludeParam = trimmed(4000).min(1);
+
+/** The patterns of an exclusion (`download, *-test` → [download, *-test]); [] = nothing left out. */
+export function splitExclude(exclude: string | null | undefined): string[] {
+  return [...new Set((exclude ?? '').split(',').map((p) => p.trim().toLowerCase()).filter(Boolean))];
+}
+
+const excludeRegexCache = new Map<string, RegExp>();
+function excludeRegex(pattern: string): RegExp {
+  let re = excludeRegexCache.get(pattern);
+  if (!re) {
+    const body = pattern.split('*').map((x) => x.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*');
+    re = new RegExp(pattern.includes('*') ? `^${body}$` : `^${body}`, 'i');
+    excludeRegexCache.set(pattern, re);
+  }
+  return re;
+}
+
+/** The pattern of `exclude` that leaves this route id out, else null. */
+export function excludedBy(routeId: string | null | undefined, exclude: string | null | undefined): string | null {
+  if (!routeId || !exclude) return null;
+  for (const p of splitExclude(exclude)) if (excludeRegex(p).test(routeId)) return p;
+  return null;
+}
+
+/** "not download…", "not download… or *-test"; null when nothing is left out. */
+export function excludeLabel(exclude: string | null | undefined): string | null {
+  const list = splitExclude(exclude);
+  if (list.length === 0) return null;
+  const one = (p: string) => (p.includes('*') ? p : `${p}…`);
+  return list.length <= 2 ? `not ${list.map(one).join(' or ')}` : `not ${list.length} patterns`;
+}
+
 /** "common/", "common/ + ingest/", "3 folders"; null for every folder. */
 export function folderLabel(folder: string | null | undefined): string | null {
   const list = splitFolders(folder);
@@ -816,6 +854,8 @@ export const CoverageTotals = z.object({
   folder: z.string().optional(),
   /** `routes` only: the kinds of trigger the numbers are limited to (none = every kind). */
   kinds: z.array(z.string()).optional(),
+  /** `routes` only: the route ids left out (patterns, comma-separated). */
+  exclude: z.string().optional(),
 });
 
 /**
@@ -859,6 +899,7 @@ export const ScopeBranchQuery = z.object({
   tests: trimmed(LIMITS.shortTextMax).min(1).optional(),
   folder: FolderParam.optional(),
   kinds: TriggerKindsParam,
+  exclude: ExcludeParam.optional(),
 });
 export type ScopeBranchQuery = z.infer<typeof ScopeBranchQuery>;
 export type CoverageTotals = z.infer<typeof CoverageTotals>;
@@ -1034,6 +1075,35 @@ export const Settings = z.object({
 });
 export type Settings = z.infer<typeof Settings>;
 
+/**
+ * A saved filter: folders, kinds of trigger and route ids left out, under a name, so a combination
+ * ("load files + schedules in common, not download…") is one click. The branches stay as picked.
+ */
+export const ScopePreset = z.object({
+  id: trimmed(64).min(1),
+  name: trimmed(80).min(1),
+  folder: FolderParam.nullable(),
+  kinds: z.array(TriggerKind).max(20).nullable(),
+  exclude: ExcludeParam.nullable(),
+  /**
+   * The routes in it when it was saved (or last marked as seen), as `routeKey`s: a route in it now
+   * that isn't here is new. Set by the server; null until then.
+   */
+  baseline: z
+    .object({ at: z.string(), branch: z.string(), routes: z.array(z.string().max(1000)).max(20_000) })
+    .nullable()
+    .default(null),
+});
+export type ScopePreset = z.infer<typeof ScopePreset>;
+
+/** How a route is known across scans (its folder and id): what a saved filter's baseline holds. */
+export function routeKey(module: string | null | undefined, routeId: string): string {
+  return `${module ?? ''}/${routeId}`;
+}
+/** GET/PUT /api/scope-presets: everyone's saved filters (editors change them). */
+export const ScopePresets = z.object({ presets: z.array(ScopePreset).max(50) });
+export type ScopePresets = z.infer<typeof ScopePresets>;
+
 export const ReportQuery = z.object({
   periodDays: z.coerce.number().int().refine((n) => [7, 30, 90, 180].includes(n)).default(30),
   /** Trigger repo branch the coverage counts (default: main/master/develop). */
@@ -1044,6 +1114,8 @@ export const ReportQuery = z.object({
   tests: trimmed(LIMITS.shortTextMax).min(1).optional(),
   /** Only these kinds of trigger. */
   kinds: TriggerKindsParam,
+  /** Leave out the route ids matching these patterns. */
+  exclude: ExcludeParam.optional(),
 });
 export type ReportQuery = z.infer<typeof ReportQuery>;
 
@@ -1442,6 +1514,10 @@ export const TriggerOverviewQuery = z.object({
   tests: trimmed(LIMITS.shortTextMax).min(1).optional(),
   /** Only these kinds of trigger. */
   kinds: TriggerKindsParam,
+  /** Leave out the route ids matching these patterns. */
+  exclude: ExcludeParam.optional(),
+  /** A saved filter's id: say which routes in scope weren't in it when it was saved (`fresh`). */
+  preset: z.string().trim().min(1).max(64).optional(),
   status: RouteStatus.optional(),
   limit: z.coerce.number().int().min(1).max(50).default(8),
 });
@@ -1491,6 +1567,18 @@ export const TriggerOverviewResponse = z.object({
   kindCounts: z.array(z.object({ kind: TriggerKind, triggers: z.number().int(), tested: z.number().int() })),
   /** The kinds the counts and items are limited to; null = every kind. */
   kinds: z.array(TriggerKind).nullable(),
+  /** The route ids left out (patterns); null = none. */
+  exclude: z.string().nullable(),
+  /** Triggers the exclusion leaves out (of the folders and kinds picked). */
+  excluded: z.number().int(),
+  /**
+   * With `?preset=`: the routes in scope now (as routeKeys) that weren't when the saved filter was
+   * saved or last marked as seen, and those it had that are gone. Null without a baseline on this branch.
+   */
+  fresh: z
+    .object({ preset: z.string(), at: z.string(), branch: z.string(), added: z.array(z.string()), gone: z.array(z.string()) })
+    .nullable()
+    .optional(),
   /**
    * Scans counted here that were made before the current counting rules: rescan them for exact
    * numbers. `routes`/`tests`: the branch scanned; `prs`: how many PR scans (Scan open PRs).
@@ -1625,6 +1713,7 @@ export const SheetCompareRequest = z.object({
   tests: trimmed(LIMITS.shortTextMax).min(1).optional(),
   folder: FolderParam.optional(),
   kinds: z.array(TriggerKind).max(20).optional(),
+  exclude: ExcludeParam.optional(),
 });
 export type SheetCompareRequest = z.infer<typeof SheetCompareRequest>;
 
@@ -1677,6 +1766,7 @@ export const SheetCompareResponse = z.object({
   testsFrom: z.string().nullable(),
   folder: z.string().nullable(),
   kinds: z.array(TriggerKind).nullable(),
+  exclude: z.string().nullable(),
   columns: SheetCompareColumns,
   counts: z.object({ sheetRows: z.number().int(), routes: z.number().int(), match: z.number().int(), differs: z.number().int(), sheetOnly: z.number().int(), dashboardOnly: z.number().int() }),
   /** Routes in both whose field disagrees, per field. */

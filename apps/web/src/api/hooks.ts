@@ -48,6 +48,8 @@ import type {
   RunQuery,
   RunResultsQuery,
   SessionInfo,
+  ScopePreset,
+  ScopePresets,
   Settings,
   Summary,
   TestCase,
@@ -153,11 +155,11 @@ export function useLogout() {
 // ---------------------------------------------------------------------------
 
 /** `branch`: the trigger repo branch to count (undefined = the default branch). */
-export function useSummary(branch?: string | null, folder?: string | null, tests?: string | null, kinds?: string | null) {
+export function useSummary(branch?: string | null, folder?: string | null, tests?: string | null, kinds?: string | null, exclude?: string | null) {
   return useQuery({
-    queryKey: [...qk.summary, branch ?? null, folder ?? null, tests ?? null, kinds ?? null],
+    queryKey: [...qk.summary, branch ?? null, folder ?? null, tests ?? null, kinds ?? null, exclude ?? null],
     queryFn: ({ signal }) =>
-      api.get<Summary>('/api/summary', { ...(branch ? { branch } : {}), ...(folder ? { folder } : {}), ...(tests ? { tests } : {}), ...(kinds ? { kinds } : {}) }, signal),
+      api.get<Summary>('/api/summary', { ...(branch ? { branch } : {}), ...(folder ? { folder } : {}), ...(tests ? { tests } : {}), ...(kinds ? { kinds } : {}), ...(exclude ? { exclude } : {}) }, signal),
     placeholderData: keepPreviousData,
   });
 }
@@ -170,17 +172,48 @@ export function useMeta() {
   });
 }
 
-export function useReport(periodDays: number, branch?: string | null, folder?: string | null, tests?: string | null, kinds?: string | null) {
+export function useReport(periodDays: number, branch?: string | null, folder?: string | null, tests?: string | null, kinds?: string | null, exclude?: string | null) {
   return useQuery({
-    queryKey: [...qk.report(periodDays), branch ?? null, folder ?? null, tests ?? null, kinds ?? null],
+    queryKey: [...qk.report(periodDays), branch ?? null, folder ?? null, tests ?? null, kinds ?? null, exclude ?? null],
     queryFn: ({ signal }) =>
-      api.get<Report>('/api/report', { periodDays, ...(branch ? { branch } : {}), ...(folder ? { folder } : {}), ...(tests ? { tests } : {}), ...(kinds ? { kinds } : {}) }, signal),
+      api.get<Report>('/api/report', { periodDays, ...(branch ? { branch } : {}), ...(folder ? { folder } : {}), ...(tests ? { tests } : {}), ...(kinds ? { kinds } : {}), ...(exclude ? { exclude } : {}) }, signal),
     placeholderData: keepPreviousData,
   });
 }
 
 export function useSettings() {
   return useQuery({ queryKey: qk.settings, queryFn: ({ signal }) => api.get<Settings>('/api/settings', undefined, signal) });
+}
+
+/** Saved filters: folders + kinds + exclusion under a name, with the routes they held when saved. */
+export function useScopePresets() {
+  return useQuery({ queryKey: ['scope-presets'], queryFn: ({ signal }) => api.get<ScopePresets>('/api/scope-presets', undefined, signal) });
+}
+
+/** Replace the saved filters (a new or changed one gets its baseline on `branch`). */
+export function useSaveScopePresets() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ presets, branch }: { presets: ScopePreset[]; branch?: string | null }) =>
+      api.put<ScopePresets>(`/api/scope-presets${branch ? `?branch=${encodeURIComponent(branch)}` : ''}`, { presets }),
+    onSuccess: (data) => {
+      qc.setQueryData(['scope-presets'], data);
+      void qc.invalidateQueries({ queryKey: ['triggers', 'overview'] });
+    },
+  });
+}
+
+/** "Mark as seen": a saved filter's routes now become its baseline. */
+export function useMarkPresetSeen() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, branch }: { id: string; branch?: string | null }) =>
+      api.post<ScopePresets>(`/api/scope-presets/${encodeURIComponent(id)}/seen${branch ? `?branch=${encodeURIComponent(branch)}` : ''}`),
+    onSuccess: (data) => {
+      qc.setQueryData(['scope-presets'], data);
+      void qc.invalidateQueries({ queryKey: ['triggers', 'overview'] });
+    },
+  });
 }
 
 export function useUpdateSettings() {
@@ -544,13 +577,31 @@ export function useTriggers(q: TriggerQueryInput, enabled = true) {
 }
 
 /** The default branch's routes with one status (untested first), for the Overview. */
-export function useTriggerOverview(status: RouteStatus | undefined, limit = 8, branch?: string | null, folder?: string | null, tests?: string | null, kinds?: string | null) {
+export function useTriggerOverview(
+  status: RouteStatus | undefined,
+  limit = 8,
+  branch?: string | null,
+  folder?: string | null,
+  tests?: string | null,
+  kinds?: string | null,
+  exclude?: string | null,
+  preset?: string | null,
+) {
   return useQuery({
-    queryKey: ['triggers', 'overview', status ?? null, limit, branch ?? null, folder ?? null, tests ?? null, kinds ?? null],
+    queryKey: ['triggers', 'overview', status ?? null, limit, branch ?? null, folder ?? null, tests ?? null, kinds ?? null, exclude ?? null, preset ?? null],
     queryFn: ({ signal }) =>
       api.get<TriggerOverviewResponse>(
         '/api/triggers/overview',
-        { ...(status ? { status } : {}), limit: String(limit), ...(branch ? { branch } : {}), ...(folder ? { folder } : {}), ...(tests ? { tests } : {}), ...(kinds ? { kinds } : {}) },
+        {
+          ...(status ? { status } : {}),
+          limit: String(limit),
+          ...(branch ? { branch } : {}),
+          ...(folder ? { folder } : {}),
+          ...(tests ? { tests } : {}),
+          ...(kinds ? { kinds } : {}),
+          ...(exclude ? { exclude } : {}),
+          ...(preset ? { preset } : {}),
+        },
         signal,
       ),
     placeholderData: keepPreviousData,

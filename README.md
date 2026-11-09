@@ -251,7 +251,17 @@ spreadsheet or Jira rows:
 - **Routes**: the trigger repo branch, whose triggers are the scope;
 - **Tests**: the test repo branch whose merged tests count, plus the open PRs into it. It
   follows the routes branch's name (else the test repo's default) until you pick another;
-- **Folder**: all folders, or one, with how many of its triggers are tested.
+- **Folder**: all folders, or any you tick, with how many of their triggers are tested;
+- **Types**: every kind of trigger, or the ones you tick;
+- **Leave out**: route ids to drop, comma-separated. A word is a start (`download` drops
+  `download-invoices`, any case); `*` stands for anything (`*-download`, `*download*`).
+
+**Saved filters**: once folders, types and Leave out are set, **Save these as…** names the
+combination; it then shows at the top of the panel for everyone, one click to pick (the
+branches stay as picked). A saved filter remembers the routes it held when saved: routes
+that match it later are marked **New** on Triggers (and counted in the panel and a **New to
+the saved filter** tab) until someone clicks **Mark as seen**. Routes it had that are gone are
+counted too. Changing a saved filter's folders, types or Leave out starts it afresh.
 
 The panel also says how many open PRs are counted, and points to Scan open PRs when none are.
 

@@ -36,7 +36,7 @@ import {
   TriangleAlert,
   type LucideIcon,
 } from 'lucide-react';
-import { BugSeverity, folderLabel, LIMITS, Settings, type Report } from '@ptd/shared';
+import { BugSeverity, excludeLabel, folderLabel, LIMITS, Settings, type Report } from '@ptd/shared';
 import { useReport, useSession, useSettings, useUpdateSettings } from '../api/hooks';
 import { useCssVars } from '../lib/theme';
 import { cn, fmtDate, fmtNumber, fmtPct, pluralize } from '../lib/utils';
@@ -50,7 +50,7 @@ import { FoundResolvedChart } from '../components/charts/FoundResolvedChart';
 import { SEVERITY_META } from '../components/bugs';
 import { PIPELINE_META, REVIEW_META } from '../components/status';
 import { kindsLabel, ScopeButton } from '../components/ScopeButton';
-import { cleanKinds, useScopeBranch, useScopeFolder, useScopeKinds, useScopeTests } from '../lib/scopeBranch';
+import { cleanKinds, useScopeBranch, useScopeExclude, useScopeFolder, useScopeKinds, useScopeTests } from '../lib/scopeBranch';
 
 const PERIODS = [7, 30, 90, 180] as const;
 
@@ -64,13 +64,15 @@ export default function ReportPage() {
   const [savedFolder, setSavedFolder] = useScopeFolder();
   const [savedTests, setSavedTests] = useScopeTests();
   const [savedKinds, setSavedKinds] = useScopeKinds();
+  const [savedExclude, setSavedExclude] = useScopeExclude();
   const branch = params.get('branch') ?? (isEditor ? savedBranch : null);
   const folder = params.get('folder') ?? (isEditor ? savedFolder : null);
   const tests = params.get('tests') ?? (isEditor ? savedTests : null);
   const kinds = params.has('kinds') ? cleanKinds(params.get('kinds')) : isEditor ? savedKinds : null;
-  const report = useReport(period, branch, folder, tests, kinds);
-  const setScope = (key: 'branch' | 'folder' | 'tests' | 'kinds', v: string | null) => {
-    ({ branch: setSavedBranch, folder: setSavedFolder, tests: setSavedTests, kinds: setSavedKinds })[key](v);
+  const exclude = params.get('exclude') ?? (isEditor ? savedExclude : null);
+  const report = useReport(period, branch, folder, tests, kinds, exclude);
+  const setScope = (key: 'branch' | 'folder' | 'tests' | 'kinds' | 'exclude', v: string | null) => {
+    ({ branch: setSavedBranch, folder: setSavedFolder, tests: setSavedTests, kinds: setSavedKinds, exclude: setSavedExclude })[key](v);
     setParams(
       (prev) => {
         const n = new URLSearchParams(prev);
@@ -91,6 +93,7 @@ export default function ReportPage() {
       if (folder) url.searchParams.set('folder', folder);
       if (tests) url.searchParams.set('tests', tests);
       if (kinds) url.searchParams.set('kinds', kinds);
+      if (exclude) url.searchParams.set('exclude', exclude);
       await navigator.clipboard.writeText(url.toString());
       toast.success('Link copied');
     } catch {
@@ -140,12 +143,13 @@ export default function ReportPage() {
           </div>
           {isEditor ? (
             <ScopeButton
-              scope={{ branch, folder, tests, kinds }}
+              scope={{ branch, folder, tests, kinds, exclude }}
               onChange={(p) => {
                 if ('branch' in p) setScope('branch', p.branch ?? null);
                 if ('folder' in p) setScope('folder', p.folder ?? null);
                 if ('tests' in p) setScope('tests', p.tests ?? null);
                 if ('kinds' in p) setScope('kinds', p.kinds ?? null);
+                if ('exclude' in p) setScope('exclude', p.exclude ?? null);
               }}
             />
           ) : null}
@@ -312,7 +316,7 @@ function Headline({ r, isEditor, onSetGoal }: { r: Report; isEditor: boolean; on
           <b className="font-semibold text-fg">{fmtNumber(c.automated)}</b> of{' '}
           {c.unit === 'routes' ? (
             <>
-              {fmtNumber(c.total)} unique triggers{c.kinds?.length ? ` (${kindsLabel(c.kinds.join(','))})` : ''}{c.folder ? <> in <span className="font-mono">{folderLabel(c.folder)}</span></> : null}{' '}
+              {fmtNumber(c.total)} unique triggers{c.kinds?.length ? ` (${kindsLabel(c.kinds.join(','))})` : ''}{c.folder ? <> in <span className="font-mono">{folderLabel(c.folder)}</span></> : null}{c.exclude ? `, ${excludeLabel(c.exclude)}` : ''}{' '}
               on <span className="font-mono">{c.branch}</span> have one or more tests
               {(c.unmerged ?? 0) > 0 ? <>, {fmtNumber(c.unmerged ?? 0)} of them in branches not merged yet</> : null} (route
               triggers in the source code)
