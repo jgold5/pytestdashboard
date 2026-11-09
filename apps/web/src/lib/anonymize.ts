@@ -50,7 +50,7 @@ const EXTENSIONS = new Set('xml py csv tsv txt json properties yaml yml xlsx jav
 const PATH_LIKE = /(?:[\w.-]+\/)+[\w.-]*[\w-](?::\d+)?|\b[\w.-]+\/(?![\w.-])|\b[\w-]+\.(?:xml|py|csv|tsv|txt|json|properties|yaml|yml|xlsx|java|kt|groovy|sql)\b(?::\d+)?/g;
 
 /** Slash-joined words the dashboard writes in its own reasons: not paths of the repo. */
-const OWN_PATHS = new Set(['java/kotlin', 'src/test', 'seda/jms', 'merged/pr']);
+const OWN_PATHS = new Set(['java/kotlin', 'src/test', 'seda/jms', 'merged/pr', 'folder/types', 'queue/topic', 'port/path', 'file/simple']);
 
 const CONSONANTS = 'bdfgklmnprstvz';
 const VOWELS = 'aeiou';
