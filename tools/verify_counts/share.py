@@ -776,16 +776,131 @@ def build_examples(routes_repo: str, tests_repo: str, pairs: List[tuple], out_di
     return {'examples': len(written), 'problems': problems, 'zip': zip_path, 'map': out_dir + '.map.json'}
 
 
+# ---------------------------------------------------------------------------
+# Picking the examples from the sheet: routes it says are automated that the dashboard doesn't link
+# ---------------------------------------------------------------------------
+
+def read_sheet(path: str) -> List[List[str]]:
+    """Rows of a .csv/.tsv, or of the first sheet of an .xlsx with a route id column (stdlib only)."""
+    import csv
+    if not path.lower().endswith(('.xlsx', '.xlsm')):
+        with open(path, newline='', encoding='utf-8-sig', errors='replace') as f:
+            sample = f.read(4096)
+            f.seek(0)
+            dialect = csv.Sniffer().sniff(sample, delimiters=',;\t') if sample else csv.excel
+            return [row for row in csv.reader(f, dialect)]
+    import xml.etree.ElementTree as ET
+    ns = {'m': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main',
+          'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'}
+    with zipfile.ZipFile(path) as z:
+        names = set(z.namelist())
+        shared: List[str] = []
+        if 'xl/sharedStrings.xml' in names:
+            for si in ET.fromstring(z.read('xl/sharedStrings.xml')).findall('m:si', ns):
+                shared.append(''.join(t.text or '' for t in si.iter('{%s}t' % ns['m'])))
+        wb = ET.fromstring(z.read('xl/workbook.xml'))
+        rels = ET.fromstring(z.read('xl/_rels/workbook.xml.rels'))
+        target = {r.get('Id'): r.get('Target') for r in rels}
+        sheets = []
+        for sh in wb.find('m:sheets', ns):
+            t = target.get(sh.get('{%s}id' % ns['r']), '')
+            sheets.append('xl/' + t.lstrip('/').replace('xl/', '', 1) if not t.startswith('xl/') else t)
+
+        def rows_of(sheet_path: str) -> List[List[str]]:
+            out: List[List[str]] = []
+            for row in ET.fromstring(z.read(sheet_path)).iter('{%s}row' % ns['m']):
+                cells: Dict[int, str] = {}
+                for c in row.findall('m:c', ns):
+                    ref = re.match(r'([A-Z]+)', c.get('r', 'A'))
+                    col = 0
+                    for ch in ref.group(1) if ref else 'A':
+                        col = col * 26 + ord(ch) - 64
+                    v = c.find('m:v', ns)
+                    t = c.get('t')
+                    if t == 's' and v is not None:
+                        text = shared[int(v.text)]
+                    elif t == 'inlineStr':
+                        text = ''.join(x.text or '' for x in c.iter('{%s}t' % ns['m']))
+                    else:
+                        text = v.text if v is not None and v.text else ''
+                    cells[col - 1] = text
+                if cells:
+                    out.append([cells.get(i, '') for i in range(max(cells) + 1)])
+            return out
+
+        for sp in sheets:
+            if sp in names:
+                rows = rows_of(sp)
+                if rows and any(re.sub(r'[^a-z]', '', h.lower()) in ('routeid', 'route') for h in rows[0]):
+                    return rows
+        return rows_of(sheets[0]) if sheets and sheets[0] in names else []
+
+
+def pairs_from_sheet(sheet: str, routes_repo: str, tests_repo: str, limit: int) -> tuple:
+    """Routes the sheet calls automated, with the test files it lists, that the dashboard's scanner links to no test."""
+    rows = read_sheet(sheet)
+    if not rows:
+        raise SystemExit(f'{sheet}: no rows')
+    canon = [re.sub(r'[^a-z]', '', h.lower()) for h in rows[0]]
+    def col(*names):
+        for n in names:
+            if n in canon:
+                return canon.index(n)
+        return -1
+    c_id, c_files, c_auto = col('routeid', 'route', 'id'), col('testfiles', 'tests', 'testfile'), col('automated', 'tested', 'covered')
+    if c_id < 0 or c_files < 0:
+        raise SystemExit(f'{sheet}: needs a route id column and a test files column (found: {", ".join(rows[0])})')
+    # what the dashboard makes of the real repos: which route ids a test names
+    import tempfile
+    import compare  # noqa: E402
+    case = tempfile.mkdtemp(prefix='ptd-sheet-')
+    os.makedirs(os.path.join(case, 'repo'))
+    os.symlink(os.path.abspath(routes_repo), os.path.join(case, 'repo', '__routes__'))
+    os.symlink(os.path.abspath(tests_repo), os.path.join(case, 'repo', '__tests__'))
+    scan = compare.run_scanner([case])[case]
+    shutil.rmtree(case, ignore_errors=True)
+    tested = {t['routeId'] for t in scan['triggers'] if t['routeId'] and t['coveredBy']}
+    known = {t['routeId'] for t in scan['triggers'] if t['routeId']}
+    yes = re.compile(r'^(y|yes|true|1|x|✓|✔|done|automated|tested|covered)$', re.I)
+    pairs, stats = [], collections.Counter()
+    for r in rows[1:]:
+        cell = lambda i: (r[i] if 0 <= i < len(r) else '').strip()  # noqa: E731
+        rid, files = cell(c_id), [f for f in re.split(r'[;,\s]+', cell(c_files)) if f]
+        if not rid:
+            continue
+        auto = cell(c_auto)
+        if c_auto >= 0 and not (yes.match(auto) or re.match(r'^[1-9]\d*', auto)):
+            continue
+        if rid not in known:
+            stats['not a counted route'] += 1
+        elif rid in tested:
+            stats['already linked'] += 1
+        elif not files:
+            stats['no test file listed'] += 1
+        else:
+            pairs.append((rid, files))
+    stats['to package'] = len(pairs)
+    return pairs[:limit], stats
+
+
 if __name__ == '__main__' and len(sys.argv) > 1 and sys.argv[1] == '--examples':
     import argparse
     ap = argparse.ArgumentParser(prog='share.py --examples', description='Package routes with the tests meant to test them, renamed, to send.')
     ap.add_argument('--examples', action='store_true')
     ap.add_argument('--repo', required=True, help='the Camel routes repo')
     ap.add_argument('--tests', required=True, help='the test repo')
-    ap.add_argument('--route', action='append', required=True, metavar='ROUTE_ID=test_a.py,test_b.py',
+    ap.add_argument('--route', action='append', default=[], metavar='ROUTE_ID=test_a.py,test_b.py',
                     help='a route id and its test files (paths in the test repo, or file names); repeat for each route')
+    ap.add_argument('--sheet', help='your spreadsheet (.xlsx/.csv): every route it marks automated that the dashboard links to no test, with the test files it lists')
+    ap.add_argument('--max', type=int, default=25, help='with --sheet: at most this many routes (default 25)')
     a = ap.parse_args()
     pairs = [(r.split('=', 1)[0], [f for f in (r.split('=', 1)[1] if '=' in r else '').split(',') if f]) for r in a.route]
+    if a.sheet:
+        found, stats = pairs_from_sheet(a.sheet, a.repo, a.tests, a.max)
+        print('from the sheet:', ', '.join(f'{k} {v}' for k, v in stats.items()))
+        pairs += found
+    if not pairs:
+        raise SystemExit('nothing to package: give --sheet or --route')
     res = build_examples(a.repo, a.tests, pairs, os.path.join(os.getcwd(), 'route-test-examples'))
     for rid, msg in res['problems']:
         print(f'warning: route "{rid}": {msg}')

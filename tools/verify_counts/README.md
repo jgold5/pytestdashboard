@@ -46,19 +46,21 @@ Renaming never changes a count: CI anonymizes generated repos and checks they sc
 Send the zip. Keep **`verify-counts-share.map.json`** (generic words → your names) to
 yourself: it is what turns a fix's explanation back into your route names.
 
-### Sending a few routes with the tests meant to test them
-
-When the dashboard doesn't link a test you know tests a route (Compare with my sheet shows them),
-package a few such pairs, renamed the same way, to show how those tests exercise their routes:
+### Sending the routes your sheet says are tested but the dashboard doesn't link
 
 ```bash
-pnpm share-examples --repo /path/to/camel-repo --tests /path/to/test-repo \
-  --route some-route-id=test_some_route.py --route other-route=tests/x/test_other.py,test_more.py
+pnpm share-examples --repo /path/to/camel-repo --tests /path/to/test-repo --sheet your-sheet.xlsx
 ```
 
-Each example holds the route's XML file and the properties it uses, the test files with the
-`conftest.py` files and modules they import, and what the dashboard makes of it. Send
+reads your spreadsheet (.xlsx or .csv, with a route id column and a test files column; an
+`automated` column limits it to the rows marked yes), scans both repos the way the dashboard does,
+and packages every route the sheet calls automated that the dashboard links to no test (up to
+`--max`, default 25), each with the test files the sheet lists. Each example holds the route's XML
+file and the properties it uses, the test files with the `conftest.py` files and modules they
+import, and what the dashboard makes of it; all renamed like `--share`. Send
 `route-test-examples.zip`; keep `route-test-examples.map.json` to yourself.
+
+To pick routes by hand instead (or as well): `--route some-route-id=test_some_route.py`, repeated.
 
 `python3 tools/verify_counts/oracle.py <repo> --summary` prints the oracle's own counts (per
 kind and folder) for one checkout.
