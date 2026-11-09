@@ -20,7 +20,7 @@
 import { parsePrLabel } from './prLabel.js';
 
 /** Bumped when the scanner's rules change in a way that changes counts: older scans are flagged for a rescan. */
-export const SCANNER_VERSION = 2;
+export const SCANNER_VERSION = 3;
 
 export const MAIN_BRANCHES = ['main', 'master', 'develop'];
 export const branchRank = (b: string): number => {
