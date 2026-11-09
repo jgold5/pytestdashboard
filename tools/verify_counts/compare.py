@@ -67,11 +67,26 @@ def ssigs(triggers):
     return out
 
 
+def tsx_command():
+    """How to run TypeScript here: the tsx `pnpm install` put in the project, else pnpm exec, else npx."""
+    import shutil
+    for base in (SERVER, os.path.normpath(os.path.join(SERVER, '..', '..'))):
+        for name in ('tsx.cmd', 'tsx') if os.name == 'nt' else ('tsx',):
+            local = os.path.join(base, 'node_modules', '.bin', name)
+            if os.path.exists(local):
+                return [local]
+    if shutil.which('pnpm'):
+        return ['pnpm', 'exec', 'tsx']
+    if shutil.which('npx'):
+        return ['npx', 'tsx']
+    raise SystemExit('Cannot run the dashboard\'s scanner: run `pnpm install --ignore-scripts` in the dashboard folder first (it installs tsx).')
+
+
 def run_scanner(dirs):
     res = {}
     for i in range(0, len(dirs), 40):
         chunk = dirs[i:i + 40]
-        p = subprocess.run(['npx', 'tsx', os.path.join(HERE, 'run_scanner.ts'), *chunk], cwd=SERVER, capture_output=True, text=True)
+        p = subprocess.run([*tsx_command(), os.path.join(HERE, 'run_scanner.ts'), *chunk], cwd=SERVER, capture_output=True, text=True)
         if p.returncode != 0:
             print(p.stderr[-3000:], file=sys.stderr)
             raise SystemExit('scanner run failed')

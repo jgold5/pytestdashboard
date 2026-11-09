@@ -1,7 +1,7 @@
 /**
  * Runs the dashboard's scanner (and the Overview's coverage/status code) on generated cases.
  *
- *   cd apps/server && npx tsx ../../tools/verify_counts/run_scanner.ts <case-dir>...   (compare.py runs it)
+ *   cd apps/server && node_modules/.bin/tsx ../../tools/verify_counts/run_scanner.ts <case-dir>...   (compare.py runs it)
  *
  * Each <case-dir> holds repo/ (routes, properties, tests on main) and optionally pr/ (the test
  * repo's files on an open PR into main). Prints one JSON line per case: the scanner's triggers

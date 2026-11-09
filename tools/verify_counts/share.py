@@ -860,6 +860,11 @@ def pairs_from_sheet(sheet: str, routes_repo: str, tests_repo: str, limit: int) 
     scan = compare.run_scanner([case])[case]
     shutil.rmtree(case, ignore_errors=True)
     tested = {t['routeId'] for t in scan['triggers'] if t['routeId'] and t['coveredBy']}
+    # the test files in this checkout of the test repo (an open PR's files are only on its branch)
+    present = set()
+    for dp, dns, fns in os.walk(tests_repo):
+        dns[:] = [d for d in dns if d not in distill.SKIP_DIRS]
+        present.update(f for f in fns if f.endswith('.py'))
     known = {t['routeId'] for t in scan['triggers'] if t['routeId']}
     yes = re.compile(r'^(y|yes|true|1|x|✓|✔|done|automated|tested|covered)$', re.I)
     pairs, stats = [], collections.Counter()
@@ -877,6 +882,8 @@ def pairs_from_sheet(sheet: str, routes_repo: str, tests_repo: str, limit: int) 
             stats['already linked'] += 1
         elif not files:
             stats['no test file listed'] += 1
+        elif not any(f.replace('\\', '/').split('/')[-1] in present for f in files):
+            stats['test files not in this checkout (only on a PR branch?)'] += 1
         else:
             pairs.append((rid, files))
     stats['to package'] = len(pairs)
