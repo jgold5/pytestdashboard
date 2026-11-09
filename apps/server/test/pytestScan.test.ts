@@ -198,4 +198,71 @@ describe('pytest scanning: what each test names', () => {
       [4, 'z = 1 +    2', []],
     ]);
   });
+
+  describe('what a test class runs around its tests', () => {
+    // a shared base class (another file) runs the route named by the subclass's ROUTE_ID in its class setup
+    const base = {
+      path: 'src/route_test/PasaRouteTest.py',
+      text: [
+        'class PasaRouteTest:',
+        '    ROUTE_ID = None',
+        '    TRIGGER_FILENAME = None',
+        '    GENERIC = "generic-shared-route"',
+        '',
+        '    @classmethod',
+        '    def setup_class(cls):',
+        '        cls._run_route(cls.ROUTE_ID)',
+        '',
+        '    def _drop_trigger(self):',
+        '        drop(self.TRIGGER_FILENAME, "shared-helper-string")',
+        '',
+      ].join('\n'),
+    };
+    const t = (text: string) => Object.fromEntries(scanPytestFiles([base, { path: 'src/route_test/common/x.py', text }]).map((x) => [x.name, x]));
+
+    it('counts the attributes its base classes read (ROUTE_ID), and the helper code of classes in its own file', () => {
+      const tests = t(
+        [
+          'from route_test.PasaRouteTest import PasaRouteTest',
+          '',
+          'ROUTE_ID = "invoice-load-route"',
+          'CSV_FILENAME = "INVOICE_LOAD.csv"',
+          'UNUSED = "never-read-route"',
+          '',
+          'class _InvoiceHelper(PasaRouteTest):',
+          '    ROUTE_ID = ROUTE_ID',
+          '    TRIGGER_FILENAME = "INVOICE_DONE"',
+          '    NOT_READ = "class-attr-nobody-reads"',
+          '',
+          '    def _drop_files(self):',
+          '        drop(CSV_FILENAME)',
+          '',
+          'class TestInvoice(_InvoiceHelper):',
+          '    def test_rows(self):',
+          '        self._check_rows()',
+          '',
+          '    def test_errors(self):',
+          '        pass',
+          '',
+        ].join('\n'),
+      );
+      for (const name of ['test_rows', 'test_errors']) {
+        expect(tests[name]!.strings, name).toEqual(expect.arrayContaining(['invoice-load-route', 'INVOICE_DONE', 'INVOICE_LOAD.csv']));
+        // what nothing in the class reads, and the shared base class's own strings, don't count
+        for (const no of ['never-read-route', 'class-attr-nobody-reads', 'generic-shared-route', 'shared-helper-string']) expect(tests[name]!.strings, `${name} ${no}`).not.toContain(no);
+        expect(tests[name]!.labels).toEqual([]);
+      }
+    });
+
+    it('a name used inside an f-string is used', () => {
+      const tests = t(['ROUTE = "downstream-route"', '', 'def test_a():', '    assert ok, f"{ROUTE} did not finish"', ''].join('\n'));
+      expect(tests.test_a!.strings).toContain('downstream-route');
+    });
+
+    it('a test method reading a class constant still counts it for that test only', () => {
+      const tests = t(['class TestA:', '    ONE = "route-one"', '    TWO = "route-two"', '', '    def test_one(self):', '        run(self.ONE)', '', '    def test_two(self):', '        run(self.TWO)', ''].join('\n'));
+      expect(tests.test_one!.strings).toEqual(['route-one']);
+      expect(tests.test_two!.strings).toEqual(['route-two']);
+    });
+  });
 });

@@ -106,6 +106,33 @@ interface LogicalLine {
   commentOnly: boolean;
 }
 
+/** The {expressions} of an f-string literal (quotes included), space-separated, for reading the names they use. */
+export function fstringExprs(lit: string): string {
+  const q = lit.startsWith('"""') || lit.startsWith("'''") ? 3 : 1;
+  const body = lit.slice(q, lit.length - q);
+  const out: string[] = [];
+  for (let k = 0; k < body.length; k++) {
+    if (body[k] === '{') {
+      if (body[k + 1] === '{') {
+        k++;
+        continue;
+      }
+      let depth = 1;
+      let e = '';
+      for (k++; k < body.length && depth > 0; k++) {
+        const c = body[k] as string;
+        if (c === '{') depth++;
+        else if (c === '}') depth--;
+        if (depth > 0) e += c;
+      }
+      k--;
+      // the expression before a !conversion or :format spec at its own level
+      out.push(e.replace(/(![rsa])?(:[^\])]*)?\s*$/, '').replace(/['"][^'"]*['"]/g, '""'));
+    }
+  }
+  return out.length ? ` ${out.join(' ')} ` : '';
+}
+
 /** Python source → logical lines: brackets, triple-quoted strings and `\` continuations join physical lines. */
 export function logicalLines(source: string): LogicalLine[] {
   const src = source.replace(/\r\n?/g, '\n').replace(/^﻿/, '');
@@ -166,7 +193,9 @@ export function logicalLines(source: string): LogicalLine[] {
         const lit = src.slice(i, Math.min(j, n));
         for (const ch of lit) if (ch === '\n') lineNo++;
         text += lit;
-        bare += '""';
+        // an f-string's {expressions} are code: the names in them are used (f"{ROUTE_ID} failed")
+        const prefix = /[rRbBuUfF]{1,2}$/.exec(text.slice(0, text.length - lit.length))?.[0] ?? '';
+        bare += /[fF]/.test(prefix) ? `""${fstringExprs(lit)}` : '""';
         i = j;
         continue;
       }
@@ -238,6 +267,8 @@ interface RawTest extends Strings {
   id: string;
   file: string;
   cls: string | null;
+  /** The top-level class it is in (its class hierarchy is resolved once every file is read). */
+  topClass: string | null;
   name: string;
   params: string[];
   keys: string[];
@@ -251,6 +282,8 @@ interface FileModel {
   /** Local name → what it imports: a module (`name` null) or a name in a module. */
   imports: Map<string, { module: string; name: string | null; level: number }>;
   tests: RawTest[];
+  /** Top-level classes, Test* or not (helpers and base classes a test class extends). */
+  classes: Map<string, ClassScope>;
   moduleMarks: string[];
   moduleMarkRefs: string[];
   moduleKeys: string[];
@@ -258,7 +291,11 @@ interface FileModel {
 
 const STRING_AT = new RegExp(STRING_LIT.source, 'y');
 /** Code with every string literal replaced by "" (prefix letters kept), as in LogicalLine.bare. */
-const bareOf = (text: string): string => text.replace(STRING_LIT, (whole: string, lit: string) => `${whole.slice(0, whole.length - lit.length)}""`);
+const bareOf = (text: string): string =>
+  text.replace(STRING_LIT, (whole: string, lit: string) => {
+    const prefix = whole.slice(0, whole.length - lit.length);
+    return `${prefix}""${/[fF]/.test(prefix) ? fstringExprs(lit) : ''}`;
+  });
 
 /** Walk code outside string literals, with the bracket depth before each character; stop when `visit` returns true. */
 function walkCode(text: string, visit: (c: string, at: number, depth: number) => boolean | void): void {
@@ -336,11 +373,17 @@ interface ClassScope {
   strongRefs: string[];
   keys: string[];
   consts: Map<string, Value>;
+  /** The classes it extends, as written (`PasaRouteTest`, `base.Helper`). */
+  bases: string[];
+  /** Strings and names in its methods other than tests (setup, helpers): the code its tests run. */
+  code: { strings: string[]; refs: string[] };
+  /** Attributes its methods read through self./cls. (ROUTE_ID, TRIGGER_FILENAME…). */
+  selfRefs: Set<string>;
 }
 
 function parseFile(file: string, source: string): FileModel {
   const lines = logicalLines(source);
-  const model: FileModel = { path: file, consts: new Map(), fixtures: new Map(), imports: new Map(), tests: [], moduleMarks: [], moduleMarkRefs: [], moduleKeys: [] };
+  const model: FileModel = { path: file, consts: new Map(), fixtures: new Map(), imports: new Map(), tests: [], classes: new Map(), moduleMarks: [], moduleMarkRefs: [], moduleKeys: [] };
   const classes: ClassScope[] = [];
   let decorators: LogicalLine[] = [];
   /** Keys in the comments directly above the next def/class. */
@@ -394,30 +437,35 @@ function parseFile(file: string, source: string): FileModel {
       continue;
     }
 
-    const c = /^class\s+(\w+)/.exec(t);
+    const c = /^class\s+(\w+)\s*(?:\(([^)]*)\))?/.exec(l.bare.trim());
     if (c) {
       const name = c[1] as string;
-      // pytest collects Test* classes (nested ones too, inside a Test* class)
+      // pytest collects Test* classes (nested ones too, inside a Test* class); other classes are read for
+      // what a test class extending them inherits (its attributes, its helpers), but hold no tests
       const isTest = /^Test/.test(name) && (!top || top.isTest);
-      if (!isTest) {
-        flushPendingKeys(l.indent);
-        decorators = [];
-        i = blockEnd(i + 1, l.indent) - 1;
-        continue;
-      }
-      const decoStrong = decorators.flatMap((d) => decoratorStrings(d.text.trim()));
-      const decoRefs = decorators.filter((d) => !IGNORED_DECORATORS.test(d.text.trim())).flatMap((d) => namesIn(d.bare));
-      classes.push({
+      const bases = (c[2] ?? '')
+        .split(',')
+        .map((b) => b.trim())
+        .filter((b) => /^[A-Za-z_][\w.]*$/.test(b) && b !== 'object');
+      const decoStrong = isTest ? decorators.flatMap((d) => decoratorStrings(d.text.trim())) : [];
+      const decoRefs = isTest ? decorators.filter((d) => !IGNORED_DECORATORS.test(d.text.trim())).flatMap((d) => namesIn(d.bare)) : [];
+      if (!isTest) flushPendingKeys(l.indent);
+      const scope: ClassScope = {
         name,
         indent: l.indent,
-        isTest: true,
-        strong: [...(top?.strong ?? []), ...decoStrong],
-        strongRefs: [...(top?.strongRefs ?? []), ...decoRefs],
-        keys: [...(top?.keys ?? []), ...pendingKeys, ...lineKeys],
+        isTest,
+        strong: isTest ? [...(top?.strong ?? []), ...decoStrong] : [],
+        strongRefs: isTest ? [...(top?.strongRefs ?? []), ...decoRefs] : [],
+        keys: isTest ? [...(top?.keys ?? []), ...pendingKeys, ...lineKeys] : [],
         consts: new Map(),
-      });
+        bases,
+        code: { strings: [], refs: [] },
+        selfRefs: new Set(),
+      };
+      if (classes.length === 0 && l.indent === 0) model.classes.set(name, scope);
+      classes.push(scope);
       decorators = [];
-      pendingKeys = [];
+      if (isTest) pendingKeys = [];
       continue;
     }
 
@@ -430,6 +478,19 @@ function parseFile(file: string, source: string): FileModel {
       const isFixture = decorators.some((x) => FIXTURE_DECORATOR.test(x.text.trim()));
       const atTop = l.indent === 0 && !inClass;
       const inTestClass = top !== undefined && top.isTest && l.indent > top.indent;
+      const inAnyClass = top !== undefined && l.indent > top.indent;
+      if (inAnyClass && top) {
+        // what the class's methods read through self./cls., and (for methods that aren't tests) their strings and names
+        const all = [defaults, ...(inline ? [inline] : []), ...body].filter((x) => !x.commentOnly);
+        // setup and helper methods (not the tests: what one test reads counts for that test only)
+        if (!/^test/.test(name) || !top.isTest) {
+          for (const x of all) for (const n of namesIn(x.bare)) if (n.startsWith('self.')) top.selfRefs.add(n.slice(5).split('.')[0] as string);
+          const s = emptyStrings();
+          collect(all, s);
+          top.code.strings.push(...s.strong, ...s.weak);
+          top.code.refs.push(...s.strongRefs, ...s.weakRefs);
+        }
+      }
       if (/^test/.test(name) && !isFixture && (atTop || inTestClass)) {
         const s = emptyStrings();
         for (const x of decorators) {
@@ -460,6 +521,7 @@ function parseFile(file: string, source: string): FileModel {
           id: inTestClass ? `${file}::${classes.map((k) => k.name).join('::')}::${name}` : `${file}::${name}`,
           file,
           cls: inTestClass && top ? top.name : null,
+          topClass: inTestClass ? (classes[0]?.name ?? null) : null,
           name,
           params,
           ...s,
@@ -657,6 +719,33 @@ export function scanPytestFiles(files: ReadonlyArray<{ path: string; text: strin
   const out: ScannedTest[] = [];
   for (const m of models) {
     const markStrong = [...m.moduleMarks, ...m.moduleMarkRefs.flatMap((r) => resolve(m, r, 0, new Set()))];
+    // the classes a test class extends, along with it: [(file it is in, class)], the test's own class first
+    const chainOf = (owner: FileModel, name: string, depth = 0, seen = new Set<string>()): Array<{ owner: FileModel; cls: ClassScope }> => {
+      const key = `${owner.path}\0${name}`;
+      if (depth > 6 || seen.has(key)) return [];
+      seen.add(key);
+      let target: { owner: FileModel; cls: ClassScope } | null = null;
+      const local = owner.classes.get(name);
+      if (local) target = { owner, cls: local };
+      else {
+        const [head, ...rest] = name.split('.');
+        const imp = owner.imports.get(head as string);
+        if (imp) {
+          if (imp.name !== null && rest.length === 0) {
+            const f = moduleFile(owner, imp.module, imp.level);
+            const k = f?.classes.get(imp.name);
+            if (f && k) target = { owner: f, cls: k };
+          } else if (rest.length === 1) {
+            const f = moduleFile(owner, imp.name === null ? imp.module : `${imp.module}.${imp.name}`, imp.level);
+            const k = f?.classes.get(rest[0] as string);
+            if (f && k) target = { owner: f, cls: k };
+          }
+        }
+      }
+      if (!target) return [];
+      return [target, ...target.cls.bases.flatMap((b) => chainOf(target!.owner, b, depth + 1, seen))];
+    };
+
     // two tests with one name: pytest collects only the last (the first is shadowed)
     const last = new Map(m.tests.map((t) => [t.id, t] as const));
     for (const t of m.tests) {
@@ -664,6 +753,23 @@ export function scanPytestFiles(files: ReadonlyArray<{ path: string; text: strin
       const fx = fixtureStrings(m, t.params, 0, new Set());
       const strong = [...t.strong, ...t.strongRefs.flatMap((r) => resolve(m, r, 0, new Set())), ...markStrong, ...fx.strong];
       const weak = [...t.weak, ...t.weakRefs.flatMap((r) => resolve(m, r, 0, new Set())), ...fx.weak];
+      // the code its class runs around it: attributes read through self./cls. anywhere in its class hierarchy
+      // (ROUTE_ID set on a helper class and read by the shared base class's setup), and the setup and helper
+      // methods of the classes in its own file. Generic base classes from other files only say which attributes
+      // are read; their own strings don't count.
+      if (t.topClass) {
+        const chain = chainOf(m, t.topClass);
+        const used = new Set(chain.flatMap((x) => [...x.cls.selfRefs]));
+        for (const attr of used) {
+          const holder = chain.find((x) => x.cls.consts.has(attr));
+          const v = holder?.cls.consts.get(attr);
+          if (holder && v) weak.push(...v.strings, ...v.refs.flatMap((r) => resolve(holder.owner, r, 0, new Set())));
+        }
+        for (const x of chain) {
+          if (x.owner !== m) continue;
+          weak.push(...x.cls.code.strings, ...x.cls.code.refs.filter((r) => !r.startsWith('self.')).flatMap((r) => resolve(m, r, 0, new Set())));
+        }
+      }
       const labels = [...new Set(strong)];
       out.push({
         id: t.id,

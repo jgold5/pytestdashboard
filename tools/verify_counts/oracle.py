@@ -811,6 +811,7 @@ class PyFile:
         self.imports = {}    # local -> (module, name|None, level)
         self.fixtures = {}   # name -> (strings, refs, params)
         self.tests = {}      # id -> dict (a later def shadows an earlier one, as in pytest)
+        self.classes = {}    # top-level class name -> {'bases', 'consts', 'selfrefs', 'code'} (Test* or not)
         self.marks, self.mark_refs = [], []
         try:
             tree = ast.parse(source)
@@ -836,8 +837,33 @@ class PyFile:
                         self.imports[a.name.split('.')[0]] = (a.name.split('.')[0], None, 0)
             elif isinstance(st, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 self._def(st, [])
-            elif isinstance(st, ast.ClassDef) and st.name.startswith('Test'):
-                self._class(st, [])
+            elif isinstance(st, ast.ClassDef):
+                self._record_class(st)
+                if st.name.startswith('Test'):
+                    self._class(st, [])
+
+    def _record_class(self, cls):
+        """SEMANTICS (dashboard doc): what a test class inherits and runs around its tests. Any top-level class:
+        the classes it extends, its attributes, the attributes its setup/helper methods read through self./cls.,
+        and the strings and names in those methods (test methods of a Test* class are left out: what one test
+        reads counts for that test only)."""
+        rec = {'bases': [b for b in (_dotted(x) for x in cls.bases) if b and b != 'object'], 'consts': {}, 'selfrefs': set(),
+               'code_strings': [], 'code_refs': []}
+        for st in cls.body:
+            if isinstance(st, (ast.Assign, ast.AnnAssign)) and st.value is not None:
+                self._assign(st, rec['consts'])
+            elif isinstance(st, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if cls.name.startswith('Test') and st.name.startswith('test'):
+                    continue
+                defaults = [d for d in st.args.defaults + st.args.kw_defaults if d is not None]
+                strong, weak, srefs, wrefs = [], [], [], []
+                _collect_body([ast.Expr(d) for d in defaults] + st.body, strong, weak, srefs, wrefs)
+                rec['code_strings'] += strong + weak
+                rec['code_refs'] += srefs + wrefs
+                for n in ast.walk(st):
+                    if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id in ('self', 'cls'):
+                        rec['selfrefs'].add(n.attr)
+        self.classes[cls.name] = rec
 
     @staticmethod
     def _assign(st, into):
@@ -916,7 +942,7 @@ class PyFile:
         tid = '::'.join([self.path] + [c['name'] for c in chain] + [fn.name])
         self.tests.pop(tid, None)
         self.tests[tid] = {'id': tid, 'strong': strong, 'weak': weak, 'srefs': srefs, 'wrefs': wrefs,
-                           'params': params, 'chain': chain}
+                           'params': params, 'chain': chain, 'top_class': chain[0]['name'] if chain else None}
 
 
 def _class_const(chain, ref):
@@ -1019,6 +1045,32 @@ def scan_pytest_files(files: list[tuple[str, str]]) -> list[dict]:
             out += fixture_strings(owner, fparams, depth + 1, seen, labels)
         return out
 
+    def class_chain(owner, name, depth=0, seen=None):
+        """The class and the classes it extends (same file, or imported), the class first."""
+        seen = set() if seen is None else seen
+        if depth > 6 or (owner.path, name) in seen:
+            return []
+        seen.add((owner.path, name))
+        target = None
+        if name in owner.classes:
+            target = (owner, owner.classes[name])
+        else:
+            head, *rest = name.split('.')
+            imp = owner.imports.get(head)
+            if imp:
+                module, iname, level = imp
+                if iname is not None and not rest:
+                    f = module_file(owner, module, level)
+                    if f and iname in f.classes:
+                        target = (f, f.classes[iname])
+                elif len(rest) == 1:
+                    f = module_file(owner, module if iname is None else f'{module}.{iname}', level)
+                    if f and rest[0] in f.classes:
+                        target = (f, f.classes[rest[0]])
+        if not target:
+            return []
+        return [target] + [x for b in target[1]['bases'] for x in class_chain(target[0], b, depth + 1, seen)]
+
     out = []
     for m in models:
         if not m.ok:
@@ -1035,6 +1087,20 @@ def scan_pytest_files(files: list[tuple[str, str]]) -> list[dict]:
                         into += resolve(m, r)
             strong += mark
             weak += fixture_strings(m, t['params'], 0, set(), strong)
+            # SEMANTICS (dashboard doc): the code its class runs around it. Attributes read through self./cls. by
+            # setup/helper methods anywhere in its class hierarchy (the first class defining one wins, the test's
+            # own class first), and the setup/helper code of the classes in its own file.
+            if t['top_class']:
+                chain = class_chain(m, t['top_class'])
+                used = set().union(*(rec['selfrefs'] for _, rec in chain)) if chain else set()
+                for attr in used:
+                    holder = next(((o, rec) for o, rec in chain if attr in rec['consts']), None)
+                    if holder:
+                        strs, refs = holder[1]['consts'][attr]
+                        weak += strs + [x for r in refs for x in resolve(holder[0], r)]
+                for owner, rec in chain:
+                    if owner is m:
+                        weak += rec['code_strings'] + [x for r in rec['code_refs'] if not r.startswith(('self.', 'cls.')) for x in resolve(m, r)]
             labels = list(dict.fromkeys(x.strip() for x in strong if x.strip()))
             strings = list(dict.fromkeys(labels + [x.strip() for x in weak if x.strip()]))
             out.append({'id': t['id'], 'labels': labels, 'strings': strings})

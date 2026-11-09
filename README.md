@@ -378,9 +378,14 @@ curl --fail-with-body -sS -X POST "$DASHBOARD_URL/api/triggers/scan" \
     `"start"` in a body never marks a route as tested.
   - A pattern that accepts nearly any file (`.*`, `*.csv`) links no test by file name.
   - Names compare without regard to case, `_`, `-`, `.` or camelCase.
-  - Constants count for the tests that use them, also when imported from another file;
-    fixtures count for the tests that ask for them (same file or a `conftest.py` above it).
-    Commented-out code doesn't count.
+  - Constants count for the tests that use them, also when imported from another file
+    (and when used inside an f-string); fixtures count for the tests that ask for them (same
+    file or a `conftest.py` above it). Commented-out code doesn't count.
+  - A test in a class also counts what its class runs around it: the class attributes that the
+    setup and helper methods of its class hierarchy read through `self.`/`cls.` (a helper class
+    setting `ROUTE_ID = "…"` that a shared base class's `setup_class` runs), and the setup and
+    helper code of the classes in its own file. A shared base class from another file only says
+    which attributes are read; its own strings don't count.
 
 - **Run via a tested route.** A route no test names, that a tested route hands work to
   (`<to>`, `<wireTap>`… to `direct:`, `seda:`, `jms:` or `kafka:`, also through other routes),
