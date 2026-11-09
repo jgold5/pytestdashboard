@@ -266,6 +266,7 @@ function Totals({ data, items, scope }: { data: TriggerListResponse; items: Trig
   const covered = live.filter(automated).length;
   const unmergedOnly = live.filter((r) => r.coveredBy.length > 0 && r.coveredBy.every((c) => c.branch)).length;
   const byKind = KIND_ORDER.map((k) => [k, live.filter((r) => r.kind === k).length] as const).filter(([, n]) => n > 0);
+  const runViaCount = live.filter((r) => r.coveredBy.length === 0 && r.runVia?.length).length;
   const scan = data.branch ? data.branches.find((b) => b.branch === data.branch) : null;
   const added = live.filter((r) => r.change === 'added');
   const changed = live.filter((r) => r.change === 'changed');
@@ -301,7 +302,15 @@ function Totals({ data, items, scope }: { data: TriggerListResponse; items: Trig
       <Tile
         label="No test yet"
         value={fmtNumber(live.length - covered)}
-        sub={live.length === 0 ? 'no triggers here' : live.length - covered > 0 ? 'no merged test or PR names them' : 'every trigger covered'}
+        sub={
+          live.length === 0
+            ? 'no triggers here'
+            : live.length - covered > 0
+              ? runViaCount > 0
+                ? `no test names them · ${fmtNumber(runViaCount)} run via a tested route`
+                : 'no merged test or PR names them'
+              : 'every trigger covered'
+        }
         tone={live.length === 0 ? undefined : live.length - covered > 0 ? 'bad' : 'good'}
       />
       {data.compare ? (
@@ -525,9 +534,12 @@ function RouteGroupRows({
         </td>
         <td className="max-w-[300px] px-2 py-2.5">
           {tested === 0 ? (
-            <span className="inline-flex items-center gap-1.5 text-xs text-fg-3">
-              <CircleDashed className="size-3.5" aria-hidden /> No test yet (0 of {live.length})
-            </span>
+            <>
+              <span className="inline-flex items-center gap-1.5 text-xs text-fg-3">
+                <CircleDashed className="size-3.5" aria-hidden /> No test yet (0 of {live.length})
+              </span>
+              <RunVia via={live.find((r) => r.runVia?.length)?.runVia} />
+            </>
           ) : (
             <span className={cn('inline-flex items-center gap-1.5 text-xs font-medium', tested === live.length ? 'text-st-passed' : 'text-fg')}>
               {tested === live.length ? <CircleCheck className="size-3.5" aria-hidden /> : <CircleDashed className="size-3.5" aria-hidden />}
@@ -628,12 +640,27 @@ function TriggerSpec({ r }: { r: TriggerRow }) {
   );
 }
 
+/** "run via invoice-load → parse-invoice": a tested route hands this one work, though no test names it. */
+function RunVia({ via }: { via: string[] | null | undefined }) {
+  if (!via?.length) return null;
+  return (
+    <Tooltip content="No test names this route, but a tested route sends it work, so it runs when that test runs. It still counts as not tested.">
+      <div className="mt-0.5 truncate text-[11px] text-fg-2">
+        run via <span className="font-mono">{via.join(' → ')}</span>
+      </div>
+    </Tooltip>
+  );
+}
+
 function Coverage({ r }: { r: TriggerRow }) {
   if (r.coveredBy.length === 0) {
     return (
-      <span className="inline-flex items-center gap-1.5 text-xs text-fg-3">
-        <CircleDashed className="size-3.5" aria-hidden /> No test yet
-      </span>
+      <div className="min-w-0">
+        <span className="inline-flex items-center gap-1.5 text-xs text-fg-3">
+          <CircleDashed className="size-3.5" aria-hidden /> No test yet
+        </span>
+        <RunVia via={r.runVia} />
+      </div>
     );
   }
   const onlyUnmerged = r.coveredBy.every((c) => c.branch);

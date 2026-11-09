@@ -1370,3 +1370,51 @@ describe('which scans count', () => {
     expect(await overview()).toMatchObject({ outdated: { routes: 'main', tests: 'main', prs: 0 } });
   });
 });
+
+describe('run via a tested route', () => {
+  it('marks untested routes that a tested route hands work to, following chains and choice branches', async () => {
+    const t = await createTestApp();
+    try {
+      const xml = `<routes>
+        <route id="invoice-load"><from uri="file:/in"/>
+          <to uri="seda:audit?size=10"/>
+          <choice>
+            <when><simple>\${file:name} starts with 'INV_'</simple><to uri="direct:invoiceJob"/></when>
+            <when><simple>\${file:name} starts with 'CRN_'</simple><to uri="direct:creditJob"/></when>
+            <otherwise><to uri="direct:unknownJob"/></otherwise>
+          </choice>
+        </route>
+        <route id="invoice-job"><from uri="direct:invoiceJob"/><to uri="direct-vm:storeInvoice"/></route>
+        <route id="store-invoice"><from uri="direct:storeInvoice"/><to uri="log:x"/></route>
+        <route id="credit-job"><from uri="direct:creditJob"/><to uri="log:x"/></route>
+        <route id="unknown-job"><from uri="direct:unknownJob"/><to uri="log:x"/></route>
+        <route id="audit-worker"><from uri="seda:audit"/><to uri="log:x"/></route>
+        <route id="orphan"><from uri="direct:orphan"/><to uri="log:x"/></route>
+        <route id="nightly"><from uri="timer:nightly?period=1h"/><wireTap uri="jms:ORDERS"/></route>
+        <route id="orders-in"><from uri="jms:queue:ORDERS"/><to uri="log:x"/></route>
+      </routes>`;
+      const tests = '@allure.label("file", "INV_20260101.csv")\ndef test_inv():\n    pass\n\n@pytest.mark.route("nightly")\ndef test_nightly():\n    pass\n';
+      const mp = multipart({ branch: 'main' }, [
+        { field: 'file:src/main/resources/common/routes', filename: 'r.xml', content: xml },
+        { field: 'file:tests', filename: 'test_r.py', content: tests },
+      ]);
+      expect((await t.app.inject({ method: 'POST', url: '/api/triggers/scan', payload: mp.payload, headers: mp.headers })).statusCode).toBe(201);
+      const items = (await t.app.inject({ url: '/api/triggers?branch=main' })).json<TriggerListResponse>().items;
+      const via = Object.fromEntries(items.map((r) => [`${r.routeId}${r.filePattern ? ` ${r.filePattern}` : ''}`, [r.coveredBy.length > 0, r.runVia ?? null]]));
+      expect(via).toEqual({
+        'audit-worker': [false, ['invoice-load']], // sent to outside the choice: any tested branch runs it
+        'credit-job': [false, null], // only the CRN_ branch, which no test drops a file for
+        'invoice-job': [false, ['invoice-load']],
+        'invoice-load CRN_*': [false, null],
+        'invoice-load INV_*': [true, null],
+        nightly: [true, null],
+        orphan: [false, null],
+        'orders-in': [false, ['nightly']], // jms:ORDERS and jms:queue:ORDERS are one queue
+        'store-invoice': [false, ['invoice-load', 'invoice-job']],
+        'unknown-job': [false, null], // the <otherwise> branch isn't the INV_ branch
+      });
+    } finally {
+      await t.close();
+    }
+  });
+});

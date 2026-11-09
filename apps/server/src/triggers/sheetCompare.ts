@@ -129,6 +129,7 @@ function routesOf(items: readonly TriggerRow[], prNumber: (branch: string) => nu
         testFiles: [],
         prBranches: [],
         prNumbers: [],
+        runVia: null,
         kindSet: new Set(),
         schemeSet: new Set(),
         files: new Set(),
@@ -137,6 +138,7 @@ function routesOf(items: readonly TriggerRow[], prNumber: (branch: string) => nu
       by.set(key, r);
     }
     r.triggers++;
+    if (!r.runVia && t.runVia?.length) r.runVia = t.runVia;
     r.kindSet.add(t.kind);
     r.schemeSet.add(t.scheme);
     if (t.coveredBy.length > 0) {
@@ -150,6 +152,7 @@ function routesOf(items: readonly TriggerRow[], prNumber: (branch: string) => nu
   }
   return [...by.values()].map(({ kindSet, schemeSet, files, branches, ...r }) => ({
     ...r,
+    runVia: r.tested === 0 ? r.runVia : null,
     kinds: [...kindSet],
     schemes: [...schemeSet],
     testFiles: [...files].sort(),
@@ -282,7 +285,7 @@ export function compareSheet(db: Db, sheet: ParsedSheet, req: SheetCompareReques
     const auto = parseAutomated(cell('automated'));
     const describe = () =>
       dash.tested === 0
-        ? 'no test names it'
+        ? `no test names it${dash.runVia ? ` (it runs via ${dash.runVia.join(' → ')}, which is tested)` : ''}`
         : `${dash.tested} of ${dash.triggers} trigger${dash.triggers === 1 ? '' : 's'} tested${dash.testedInPrOnly ? ` (${dash.testedInPrOnly} only in a PR)` : ''}`;
     if (auto === true && dash.tested === 0) add('automated', cell('automated'), describe());
     else if (auto === false && dash.tested > 0) add('automated', cell('automated'), describe());

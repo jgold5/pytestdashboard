@@ -273,6 +273,8 @@ export interface RawCondition {
   expr: string;
   target: string | null;
   line: number;
+  /** Endpoints sent to inside this branch only. */
+  calls?: string[];
 }
 
 export interface RawRoute {
@@ -282,6 +284,8 @@ export interface RawRoute {
   /** `<from>`s in order (usually one). */
   inputs: RawInput[];
   conditions: RawCondition[];
+  /** Endpoints the route sends to outside any <when>/<filter>/<otherwise> (<to>, <toD>, <wireTap>, <enrich>…), as written. */
+  calls?: string[];
   /**
    * Marker files the route itself handles (load routes delete one when they finish:
    * `${file:parent}/LOADTRIGGER`, or a deleteFileName / doneFile header): the route's trigger
@@ -350,13 +354,19 @@ export function scanCamelXml(file: string, xml: string): { routes: RawRoute[]; e
   const endpoints = new Map<string, string>();
   const stack: RawRoute[] = [];
   const starts: number[] = [];
-  const branches: RawCondition[] = [];
+  /** Open <when>/<filter>/<otherwise>: what a call inside one belongs to. */
+  const branches: Array<Omit<RawCondition, 'kind'> & { kind: RawCondition['kind'] | 'otherwise' }> = [];
   let lineAt = 0;
   let line = 1;
   let template = 0;
   const lineOf = (offset: number): number => {
     for (; lineAt < offset; lineAt++) if (text.charCodeAt(lineAt) === 10) line++;
     return line;
+  };
+  /** A call inside a branch only happens when the branch does: it belongs to that branch, else to the whole route. */
+  const addCall = (route: RawRoute, uri: string) => {
+    const list = branches.length ? (branches[branches.length - 1]!.calls ??= []) : (route.calls ??= []);
+    if (list.length < 200) list.push(uri);
   };
   for (const m of text.matchAll(TAG)) {
     const closing = m[1] === '/';
@@ -376,7 +386,7 @@ export function scanCamelXml(file: string, xml: string): { routes: RawRoute[]; e
         if (done && start !== undefined) done.markers = routeMarkers(original.slice(start, m.index ?? start).replace(/<!--[\s\S]*?-->/g, ''));
       } else if (!selfClosing) {
         const a = attrs(m[3] ?? '');
-        const r: RawRoute = { routeId: a.id ?? a.routeId ?? null, file, line: lineOf(m.index ?? 0), inputs: [], conditions: [], markers: [] };
+        const r: RawRoute = { routeId: a.id ?? a.routeId ?? null, file, line: lineOf(m.index ?? 0), inputs: [], conditions: [], markers: [], calls: [] };
         if (template > 0) r.template = true;
         routes.push(r);
         stack.push(r);
@@ -384,12 +394,12 @@ export function scanCamelXml(file: string, xml: string): { routes: RawRoute[]; e
       }
       continue;
     }
-    if (name === 'when' || name === 'filter') {
+    if (name === 'when' || name === 'filter' || name === 'otherwise') {
       if (!route) continue;
       if (closing) {
         const b = branches.pop();
-        if (b?.expr) route.conditions.push(b);
-      } else if (!selfClosing) branches.push({ kind: name, expr: '', target: null, line: lineOf(m.index ?? 0) });
+        if (b?.expr && b.kind !== 'otherwise') route.conditions.push(b as RawCondition);
+      } else if (!selfClosing) branches.push({ kind: name, expr: '', target: null, line: lineOf(m.index ?? 0), calls: [] });
       continue;
     }
     if (closing) continue;
@@ -416,6 +426,11 @@ export function scanCamelXml(file: string, xml: string): { routes: RawRoute[]; e
       const branch = branches[branches.length - 1];
       const a = attrs(m[3] ?? '');
       if (branch && !branch.target && a.uri) branch.target = a.uri;
+      if (a.uri) addCall(route, a.uri);
+    } else if (name === 'wireTap' || name === 'enrich' || name === 'pollEnrich' || name === 'inOnly' || name === 'inOut') {
+      const a = attrs(m[3] ?? '');
+      const uri = a.uri ?? a.url;
+      if (uri) addCall(route, uri);
     }
   }
   return { routes, endpoints };
@@ -747,7 +762,24 @@ export interface TestLabels {
 /** A trigger as stored: the API fields plus its patterns with properties filled in, for matching later. */
 export type StoredTrigger = Trigger & {
   match?: { pattern: string | null; condition: string | null; doneFile: string | null };
+  /** Endpoints the trigger's route sends to (endpointKey form): direct:, seda:, jms:, kafka:… (absent in older scans). */
+  calls?: string[];
 };
+
+/**
+ * One name for an endpoint whoever writes it, so a route sending to it and the route consuming
+ * it line up: `seda:orders?size=5` → seda:orders, `direct-vm:x` → direct:x, `jms:queue:ORDERS` → jms:ORDERS.
+ * Null for endpoints that don't start a route here (log:, bean:, file:…).
+ */
+export function endpointKey(uri: string): string | null {
+  const ep = parseEndpoint(unwrapMaster(uri));
+  if (!ep) return null;
+  const kind = kindOfScheme(ep.scheme);
+  if (kind !== 'direct' && kind !== 'queue' && kind !== 'kafka') return null;
+  const scheme = ep.scheme === 'direct-vm' ? 'direct' : ep.scheme;
+  const path = ep.path.replace(/^\/\//, '').replace(/^(queue|topic):/i, '').trim();
+  return path && !PROPERTY_ONLY.test(path) ? `${scheme}:${path}` : null;
+}
 
 const escapeRe = (s: string): string => s.replace(/[.*+?^$()|[\]{}\\]/g, '\\$&');
 /** fileName / doneFileName may use the file language (INV_${date:now:yyyyMMdd}.csv, ${file:name}.done): any value there. */
@@ -1029,6 +1061,8 @@ export function scanRepository(input: ScanInput): ScanOutput {
       .map((x) => ({ ...x, parsed: parseFileCondition(x.resolved.firstVariant) }))
       .filter((x): x is { c: RawCondition; resolved: Resolved; parsed: FileCondition } => x.parsed !== null);
     let routeHasTrigger = false;
+    // the routes this one hands work to (direct:, seda:, jms:, kafka:), for "run via a tested route"
+    const calls = [...new Set((r.calls ?? []).map((u) => endpointKey(resolvePlaceholders(u, props, r.file).firstVariant)).filter((k): k is string => k !== null))];
     // the marker file a load route deletes when it is done: its trigger file when the <from> names none
     const marker = r.markers[0] ? resolvePlaceholders(r.markers[0], props, r.file) : null;
     r.inputs.forEach((inp, idx) => {
@@ -1065,6 +1099,7 @@ export function scanRepository(input: ScanInput): ScanOutput {
       const id = r.routeId ?? `${r.file}#${uri}`;
       const baseKey = `${module && r.routeId ? `${module}/` : ''}${id}${r.inputs.length > 1 ? `#${idx + 1}` : ''}`;
       const base: StoredTrigger = {
+        ...(calls.length ? { calls } : {}),
         key: baseKey,
         routeId: r.routeId,
         module,
@@ -1101,6 +1136,10 @@ export function scanRepository(input: ScanInput): ScanOutput {
             condition: c.expr,
             target: c.target,
             line: c.line,
+            ...(() => {
+              const own = [...new Set([...calls, ...(c.calls ?? []).map((u) => endpointKey(resolvePlaceholders(u, props, r.file).firstVariant)).filter((k): k is string => k !== null)])];
+              return own.length ? { calls: own } : {};
+            })(),
             unresolved: [...base.unresolved, ...rc.unresolved.filter((u) => !base.unresolved.some((b) => b.key === u.key))],
             match: { ...base.match!, condition: rc.firstVariant },
           });

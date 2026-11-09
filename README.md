@@ -382,6 +382,11 @@ curl --fail-with-body -sS -X POST "$DASHBOARD_URL/api/triggers/scan" \
     fixtures count for the tests that ask for them (same file or a `conftest.py` above it).
     Commented-out code doesn't count.
 
+- **Run via a tested route.** A route no test names, that a tested route hands work to
+  (`<to>`, `<wireTap>`… to `direct:`, `seda:`, `jms:` or `kafka:`, also through other routes),
+  shows **No test yet · run via invoice-load**. It still counts as not tested. A call inside a
+  `<when>` only counts when that branch is tested.
+
   The page shows which string made each match, and **See the N that don't** lists the
   tests that link to nothing with what was read in each.
 - **Which tests count for a branch.** The test repo branch of the same name (or the one you
