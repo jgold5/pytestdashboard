@@ -21,3 +21,6 @@ verify-counts-share.zip
 verify-counts-share.map.json
 __pycache__/
 *.pyc
+route-test-examples/
+route-test-examples.zip
+route-test-examples.map.json

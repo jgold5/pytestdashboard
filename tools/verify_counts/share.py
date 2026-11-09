@@ -674,6 +674,240 @@ def selftest(seeds: str, probes: bool, work: str) -> int:
     return 1 if bad else 0
 
 
+def build_examples(routes_repo: str, tests_repo: str, pairs: List[tuple], out_dir: str) -> Dict:
+    """
+    Package a few routes with the test files that are meant to test them, renamed like --share, so
+    someone can see how those tests exercise a route. `pairs`: (route id, [test file paths or names]).
+    """
+    import tempfile
+    case = tempfile.mkdtemp(prefix='ptd-examples-')
+    os.makedirs(os.path.join(case, 'repo'))
+    os.symlink(os.path.abspath(routes_repo), os.path.join(case, 'repo', '__routes__'))
+    os.symlink(os.path.abspath(tests_repo), os.path.join(case, 'repo', '__tests__'))
+    repo = Repo(case)
+    namer = Namer()
+    all_py = repo.py_files('repo')
+    plans = []
+    problems = []
+    for route_id, files in pairs:
+        xml = next((p for p in repo.xml_files() if re.search(r'\bid\s*=\s*["\']' + re.escape(route_id) + '["\']', repo.text('repo', p))), None)
+        if not xml:
+            problems.append((route_id, 'no route with this id in the routes repo'))
+            continue
+        tests = []
+        for f in files:
+            f = f.strip().lstrip('./')
+            found = [p for p in all_py if p == f'__tests__/{f}' or p.endswith('/' + f) or p.split('/')[-1] == f.split('/')[-1]]
+            if not found:
+                problems.append((route_id, f'no test file named {f.split("/")[-1]} in the test repo'))
+            tests += found[:1]
+        ids = [f'{t}::x' for t in tests]
+        rf = route_files(repo, xml)
+        items = [('repo', p, repo.text('repo', p), 'xml', None) for p in rf['xml']]
+        items += [('repo', p, repo.text('repo', p), 'properties', set(rf['keys'])) for p in rf['properties']]
+        items += [('repo', p, repo.text('repo', p), 'python', None) for p in test_files(repo, 'repo', ids)]
+        plans.append((route_id, xml, tests, items))
+
+    def anonymize(kind: str, text: str, keys: Optional[Set[str]]) -> str:
+        if kind == 'xml':
+            return anonymize_xml(text, namer)
+        if kind == 'properties':
+            return anonymize_properties(text, namer, keys)
+        return anonymize_python(text, namer)
+
+    namer.collect()
+    for route_id, _, _, items in plans:
+        namer.text(route_id)
+        for side, p, text, kind, keys in items:
+            namer.path(p)
+            anonymize(kind, text, keys)
+            if kind == 'xml':
+                register_patterns(text, namer)
+    namer.finalize()
+
+    shutil.rmtree(out_dir, ignore_errors=True)
+    os.makedirs(os.path.join(out_dir, 'examples'))
+    work = out_dir + '.work'
+    shutil.rmtree(work, ignore_errors=True)
+    written = []
+    for n, (route_id, xml, tests, items) in enumerate(plans, 1):
+        files = {'xml': [], 'properties': [], 'tests': []}
+        cdir = os.path.join(work, f'e{n}')
+        for side, p, text, kind, keys in items:
+            entry = {'path': namer.path(p), 'text': anonymize(kind, text, keys)}
+            files['tests' if kind == 'python' else kind].append(entry)
+            dst = os.path.join(cdir, 'repo', entry['path'])
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            with open(dst, 'w') as f:
+                f.write(entry['text'])
+        written.append({'n': n, 'route': namer.text(route_id), 'route_file': namer.path(xml), 'test_files': [namer.path(t) for t in tests], 'files': files, 'dir': cdir})
+
+    # what the dashboard makes of each example (on the renamed copy)
+    import compare  # noqa: E402
+    if written:
+        scans = compare.run_scanner([w['dir'] for w in written])
+        for w in written:
+            sc = scans[w['dir']]
+            mine = [t for t in sc['triggers'] if t['routeId'] == w['route']]
+            w['dashboard'] = [{'kind': t['kind'], 'pattern': t['filePattern'], 'tested_by': t['via']} for t in mine]
+            w['tests_read'] = len(sc['tests'])
+
+    for w in written:
+        with open(os.path.join(out_dir, 'examples', f"{w['n']:02d}-{w['route']}.json"), 'w') as f:
+            json.dump({k: w[k] for k in ('route', 'route_file', 'test_files', 'dashboard', 'tests_read', 'files')}, f, indent=1)
+    with open(os.path.join(out_dir, 'summary.md'), 'w') as f:
+        f.write('# Routes and the tests meant to test them (anonymized)\n\n')
+        for w in written:
+            linked = any(t['tested_by'] for t in w['dashboard'])
+            f.write(f"- {w['route']} ({w['route_file']}): {len(w['test_files'])} test file(s), {w['tests_read']} tests read; "
+                    f"the dashboard {'links' if linked else 'does not link'} them\n")
+        for rid, msg in problems:
+            f.write(f'- route {namer.text(rid)}: {msg if "named" not in msg else "a test file named in the command was not found"}\n')
+    with open(out_dir + '.map.json', 'w') as f:
+        json.dump({'words': namer.words, 'numbers': namer.numbers}, f, indent=1, sort_keys=True)
+    zip_path = out_dir + '.zip'
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as z:
+        for dp, _, fns in os.walk(out_dir):
+            for fn in fns:
+                full = os.path.join(dp, fn)
+                z.write(full, os.path.relpath(full, os.path.dirname(out_dir)))
+    shutil.rmtree(work, ignore_errors=True)
+    shutil.rmtree(case, ignore_errors=True)
+    return {'examples': len(written), 'problems': problems, 'zip': zip_path, 'map': out_dir + '.map.json'}
+
+
+# ---------------------------------------------------------------------------
+# Picking the examples from the sheet: routes it says are automated that the dashboard doesn't link
+# ---------------------------------------------------------------------------
+
+def read_sheet(path: str) -> List[List[str]]:
+    """Rows of a .csv/.tsv, or of the first sheet of an .xlsx with a route id column (stdlib only)."""
+    import csv
+    if not path.lower().endswith(('.xlsx', '.xlsm')):
+        with open(path, newline='', encoding='utf-8-sig', errors='replace') as f:
+            sample = f.read(4096)
+            f.seek(0)
+            dialect = csv.Sniffer().sniff(sample, delimiters=',;\t') if sample else csv.excel
+            return [row for row in csv.reader(f, dialect)]
+    import xml.etree.ElementTree as ET
+    ns = {'m': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main',
+          'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'}
+    with zipfile.ZipFile(path) as z:
+        names = set(z.namelist())
+        shared: List[str] = []
+        if 'xl/sharedStrings.xml' in names:
+            for si in ET.fromstring(z.read('xl/sharedStrings.xml')).findall('m:si', ns):
+                shared.append(''.join(t.text or '' for t in si.iter('{%s}t' % ns['m'])))
+        wb = ET.fromstring(z.read('xl/workbook.xml'))
+        rels = ET.fromstring(z.read('xl/_rels/workbook.xml.rels'))
+        target = {r.get('Id'): r.get('Target') for r in rels}
+        sheets = []
+        for sh in wb.find('m:sheets', ns):
+            t = target.get(sh.get('{%s}id' % ns['r']), '')
+            sheets.append('xl/' + t.lstrip('/').replace('xl/', '', 1) if not t.startswith('xl/') else t)
+
+        def rows_of(sheet_path: str) -> List[List[str]]:
+            out: List[List[str]] = []
+            for row in ET.fromstring(z.read(sheet_path)).iter('{%s}row' % ns['m']):
+                cells: Dict[int, str] = {}
+                for c in row.findall('m:c', ns):
+                    ref = re.match(r'([A-Z]+)', c.get('r', 'A'))
+                    col = 0
+                    for ch in ref.group(1) if ref else 'A':
+                        col = col * 26 + ord(ch) - 64
+                    v = c.find('m:v', ns)
+                    t = c.get('t')
+                    if t == 's' and v is not None:
+                        text = shared[int(v.text)]
+                    elif t == 'inlineStr':
+                        text = ''.join(x.text or '' for x in c.iter('{%s}t' % ns['m']))
+                    else:
+                        text = v.text if v is not None and v.text else ''
+                    cells[col - 1] = text
+                if cells:
+                    out.append([cells.get(i, '') for i in range(max(cells) + 1)])
+            return out
+
+        for sp in sheets:
+            if sp in names:
+                rows = rows_of(sp)
+                if rows and any(re.sub(r'[^a-z]', '', h.lower()) in ('routeid', 'route') for h in rows[0]):
+                    return rows
+        return rows_of(sheets[0]) if sheets and sheets[0] in names else []
+
+
+def pairs_from_sheet(sheet: str, routes_repo: str, tests_repo: str, limit: int) -> tuple:
+    """Routes the sheet calls automated, with the test files it lists, that the dashboard's scanner links to no test."""
+    rows = read_sheet(sheet)
+    if not rows:
+        raise SystemExit(f'{sheet}: no rows')
+    canon = [re.sub(r'[^a-z]', '', h.lower()) for h in rows[0]]
+    def col(*names):
+        for n in names:
+            if n in canon:
+                return canon.index(n)
+        return -1
+    c_id, c_files, c_auto = col('routeid', 'route', 'id'), col('testfiles', 'tests', 'testfile'), col('automated', 'tested', 'covered')
+    if c_id < 0 or c_files < 0:
+        raise SystemExit(f'{sheet}: needs a route id column and a test files column (found: {", ".join(rows[0])})')
+    # what the dashboard makes of the real repos: which route ids a test names
+    import tempfile
+    import compare  # noqa: E402
+    case = tempfile.mkdtemp(prefix='ptd-sheet-')
+    os.makedirs(os.path.join(case, 'repo'))
+    os.symlink(os.path.abspath(routes_repo), os.path.join(case, 'repo', '__routes__'))
+    os.symlink(os.path.abspath(tests_repo), os.path.join(case, 'repo', '__tests__'))
+    scan = compare.run_scanner([case])[case]
+    shutil.rmtree(case, ignore_errors=True)
+    tested = {t['routeId'] for t in scan['triggers'] if t['routeId'] and t['coveredBy']}
+    known = {t['routeId'] for t in scan['triggers'] if t['routeId']}
+    yes = re.compile(r'^(y|yes|true|1|x|✓|✔|done|automated|tested|covered)$', re.I)
+    pairs, stats = [], collections.Counter()
+    for r in rows[1:]:
+        cell = lambda i: (r[i] if 0 <= i < len(r) else '').strip()  # noqa: E731
+        rid, files = cell(c_id), [f for f in re.split(r'[;,\s]+', cell(c_files)) if f]
+        if not rid:
+            continue
+        auto = cell(c_auto)
+        if c_auto >= 0 and not (yes.match(auto) or re.match(r'^[1-9]\d*', auto)):
+            continue
+        if rid not in known:
+            stats['not a counted route'] += 1
+        elif rid in tested:
+            stats['already linked'] += 1
+        elif not files:
+            stats['no test file listed'] += 1
+        else:
+            pairs.append((rid, files))
+    stats['to package'] = len(pairs)
+    return pairs[:limit], stats
+
+
+if __name__ == '__main__' and len(sys.argv) > 1 and sys.argv[1] == '--examples':
+    import argparse
+    ap = argparse.ArgumentParser(prog='share.py --examples', description='Package routes with the tests meant to test them, renamed, to send.')
+    ap.add_argument('--examples', action='store_true')
+    ap.add_argument('--repo', required=True, help='the Camel routes repo')
+    ap.add_argument('--tests', required=True, help='the test repo')
+    ap.add_argument('--route', action='append', default=[], metavar='ROUTE_ID=test_a.py,test_b.py',
+                    help='a route id and its test files (paths in the test repo, or file names); repeat for each route')
+    ap.add_argument('--sheet', help='your spreadsheet (.xlsx/.csv): every route it marks automated that the dashboard links to no test, with the test files it lists')
+    ap.add_argument('--max', type=int, default=25, help='with --sheet: at most this many routes (default 25)')
+    a = ap.parse_args()
+    pairs = [(r.split('=', 1)[0], [f for f in (r.split('=', 1)[1] if '=' in r else '').split(',') if f]) for r in a.route]
+    if a.sheet:
+        found, stats = pairs_from_sheet(a.sheet, a.repo, a.tests, a.max)
+        print('from the sheet:', ', '.join(f'{k} {v}' for k, v in stats.items()))
+        pairs += found
+    if not pairs:
+        raise SystemExit('nothing to package: give --sheet or --route')
+    res = build_examples(a.repo, a.tests, pairs, os.path.join(os.getcwd(), 'route-test-examples'))
+    for rid, msg in res['problems']:
+        print(f'warning: route "{rid}": {msg}')
+    print(f"{res['examples']} examples → {res['zip']}  (send this)")
+    print(f"keep {res['map']} to yourself: it maps the made-up words back to your names")
+    sys.exit(0)
+
 if __name__ == '__main__' and len(sys.argv) > 1 and sys.argv[1] == '--selftest':
     sys.exit(selftest(sys.argv[2] if len(sys.argv) > 2 else '0:20', '--probes' in sys.argv, os.path.join(HERE, 'cases-selftest')))
 
