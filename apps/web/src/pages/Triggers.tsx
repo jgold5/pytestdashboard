@@ -2,7 +2,7 @@ import { useId, useMemo, useState, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { toast } from 'sonner';
 import { Braces, ChevronRight, CircleCheck, CircleDashed, Clock, Copy, CornerDownRight, FileInput, GitBranch, GitCompareArrows, Globe, Inbox, Radio, Search, Terminal, Trash2, TriangleAlert, Zap } from 'lucide-react';
-import { TRIGGER_KIND_LABEL, type TriggerChange, type TriggerKind, type TriggerListResponse, type TriggerRow } from '@ptd/shared';
+import { folderLabel, splitFolders, TRIGGER_KIND_LABEL, type TriggerChange, type TriggerKind, type TriggerListResponse, type TriggerRow } from '@ptd/shared';
 import { useDeleteTriggerBranch, useScanGithubBranch, useTriggerBranches, useTriggerGithub, useTriggerOverview, useTriggers } from '../api/hooks';
 import { cleanKinds, useScopeBranch, useScopeFolder, useScopeKinds, useScopeTests } from '../lib/scopeBranch';
 import { errorMessage } from '../api/client';
@@ -87,15 +87,18 @@ export default function TriggersPage() {
   const data = res.data;
   const modules = useMemo(() => [...new Set((data?.items ?? []).map((r) => r.module).filter((m): m is string => !!m))].sort(), [data]);
   const moduleParam = params.get('module') || null;
-  const module = moduleParam ?? (scopeFolder && modules.includes(scopeFolder) ? scopeFolder : null);
+  // the folders picked (several joined with commas): a link's own, else the stored pick, keeping those on this branch
+  const module = moduleParam ?? (splitFolders(scopeFolder).filter((f) => modules.includes(f)).join(',') || null);
+  const moduleSet = useMemo(() => new Set(splitFolders(module)), [module]);
+  const missingModules = [...moduleSet].filter((f) => !modules.includes(f));
   /** The triggers the folder, type and search pick: what the tiles count (the status tabs only narrow the list). */
   const scoped = useMemo(() => {
     const q = search.trim().toLowerCase();
     return (data?.items ?? [])
       .filter((r) => !kindSet || kindSet.has(r.kind))
-      .filter((r) => !module || r.module === module)
+      .filter((r) => moduleSet.size === 0 || (!!r.module && moduleSet.has(r.module)))
       .filter((r) => !q || [r.routeId, r.resolvedUri, r.sourceFile, r.filePattern, r.schedule, r.target, r.doneFile].some((v) => v?.toLowerCase().includes(q)));
-  }, [data, kindSet, module, search]);
+  }, [data, kindSet, moduleSet, search]);
   const rows = useMemo(() => {
     return scoped
       .filter((r) =>
@@ -173,10 +176,11 @@ export default function TriggersPage() {
         <NoScans onScanned={(b) => set({ branch: b })} />
       ) : data ? (
         <>
-          {module && !modules.includes(module) ? (
+          {missingModules.length > 0 ? (
             <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-[color-mix(in_oklab,var(--warn)_40%,transparent)] bg-[color-mix(in_oklab,var(--warn)_8%,var(--surface))] px-3 py-2 text-[13px]">
               <span>
-                There is no <span className="font-mono">{module}/</span> folder on <span className="font-mono">{branch}</span>
+                There is no <span className="font-mono">{missingModules.map((m) => `${m}/`).join(', ')}</span>{' '}
+                {missingModules.length === 1 ? 'folder' : 'folders'} on <span className="font-mono">{branch}</span>
                 {modules.length ? (
                   <>
                     {' '}
@@ -198,7 +202,7 @@ export default function TriggersPage() {
               </Button>
             </div>
           ) : null}
-          <Totals data={data} items={scoped} scope={[module ? `in ${module}/` : null, kinds ? `(${kindsLabel(kinds)})` : null, search.trim() ? `matching “${search.trim()}”` : null].filter(Boolean).join(' · ')} />
+          <Totals data={data} items={scoped} scope={[module ? `in ${folderLabel(module)}` : null, kinds ? `(${kindsLabel(kinds)})` : null, search.trim() ? `matching “${search.trim()}”` : null].filter(Boolean).join(' · ')} />
           <div className="mt-4 mb-3 flex flex-wrap items-center gap-2">
             <div role="tablist" aria-label="Filter triggers" className="flex flex-wrap gap-1.5">
               {STATUS_FILTERS.filter((f) => !('compareOnly' in f) || compare).map((f) => (

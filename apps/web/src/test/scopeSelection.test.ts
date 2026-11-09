@@ -28,3 +28,15 @@ describe('the scope picker shows a pick at once', () => {
     expect(scopeSelection({ branch: null, tests: 'feature/x' }, { ...d, testRepo: { branch: 'feature/x' } }).tests).toBe('feature/x');
   });
 });
+
+describe('folder picks', () => {
+  it('splits and labels several folders', async () => {
+    const { splitFolders, folderLabel } = await import('@ptd/shared');
+    expect(splitFolders('common, billing,common,')).toEqual(['common', 'billing']);
+    expect(splitFolders(null)).toEqual([]);
+    expect(folderLabel('common')).toBe('common/');
+    expect(folderLabel('common,billing')).toBe('common/ + billing/');
+    expect(folderLabel('a,b,c')).toBe('3 folders');
+    expect(folderLabel('')).toBeNull();
+  });
+});

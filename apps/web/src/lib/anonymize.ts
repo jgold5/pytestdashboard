@@ -171,7 +171,7 @@ export function anonymizeDeep<T>(value: T, a: Anonymizer, skipKeys: ReadonlySet<
 /** The folder names a comparison mentions: a sheet value equal to one (its "where" column) is renamed like the folder. */
 export function foldersOf(result: { folder?: string | null; rows: Array<{ dashboard?: { module?: string | null } | null }> }): Set<string> {
   const out = new Set<string>();
-  if (result.folder) out.add(result.folder.toLowerCase());
+  for (const f of (result.folder ?? '').split(',')) if (f.trim()) out.add(f.trim().toLowerCase());
   for (const r of result.rows) if (r.dashboard?.module) out.add(r.dashboard.module.toLowerCase());
   return out;
 }

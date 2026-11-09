@@ -12,7 +12,7 @@ import {
   Upload,
   Zap,
 } from 'lucide-react';
-import type { RouteStatus, ScopeSource, Summary, TriageCategory } from '@ptd/shared';
+import { folderLabel, type RouteStatus, type ScopeSource, type Summary, type TriageCategory } from '@ptd/shared';
 import { useBugStats, useIntegrations, usePullRequests, useSummary, useTriggerOverview } from '../api/hooks';
 import { Card, CardBody, CardHeader } from '../components/ui/card';
 import { Skeleton } from '../components/ui/skeleton';
@@ -199,7 +199,7 @@ function KpiRow({ s }: { s: Summary }) {
         <Kpi
           label="Unique triggers"
           value={fmtNumber(c.total)}
-          sub={`${c.folder ? `in ${c.folder}/ on ${c.branch ?? 'main'}` : `in the trigger repo on ${c.branch ?? 'main'}`}${c.kinds?.length ? ` · ${kindsLabel(c.kinds.join(','))} only` : ''}`}
+          sub={`${c.folder ? `in ${folderLabel(c.folder)} on ${c.branch ?? 'main'}` : `in the trigger repo on ${c.branch ?? 'main'}`}${c.kinds?.length ? ` · ${kindsLabel(c.kinds.join(','))} only` : ''}`}
           to={triggersHref(c)}
         />
       ) : (
@@ -708,7 +708,7 @@ function RoutesCard({ branch, folder, tests, kinds }: { branch: string | null; f
   if (d.kinds) allParams.set('kinds', d.kinds.join(','));
   if (shown !== 'branch') allParams.set('status', shown === 'tested' ? 'automated' : 'missing');
   const allHref = `/triggers?${allParams.toString()}`;
-  const where = `${d.kinds ? ` (${kindsLabel(d.kinds.join(','))})` : ''}${d.folder ? ` in ${d.folder}/` : ''}`;
+  const where = `${d.kinds ? ` (${kindsLabel(d.kinds.join(','))})` : ''}${d.folder ? ` in ${folderLabel(d.folder)}` : ''}`;
   return (
     <Card>
       <div className="grid gap-px border-b border-border bg-border sm:grid-cols-2">
@@ -737,7 +737,7 @@ function RoutesCard({ branch, folder, tests, kinds }: { branch: string | null; f
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2 px-4 pt-3 pb-2">
         <h2 className="text-[13px] font-semibold text-fg">
-          Triggers{d.folder ? <> in <span className="font-mono">{d.folder}/</span></> : null} on <span className="font-mono">{d.branch}</span>
+          Triggers{d.folder ? <> in <span className="font-mono">{folderLabel(d.folder)}</span></> : null} on <span className="font-mono">{d.branch}</span>
         </h2>
         <div role="group" aria-label="Route status" className="inline-flex rounded-md border border-border bg-surface-2 p-0.5">
           {(['none', 'branch', 'tested'] as const).map((k) => (

@@ -1,5 +1,5 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
-import type { CoverageTotals, TriggerKind } from '@ptd/shared';
+import { splitFolders, type CoverageTotals, type TriggerKind } from '@ptd/shared';
 import type { Db } from '../db/client.js';
 import { coverageSnapshots, pullRequests, testCasePullRequests, testCases } from '../db/schema.js';
 import { routeCoverage, scopeCounts } from '../triggers/routeCoverage.js';
@@ -11,7 +11,7 @@ export function automationRate(total: number, automated: number, notAutomatable:
 }
 
 /**
- * `branch`: the trigger repo branch to count, `folder`: only the triggers in that folder,
+ * `branch`: the trigger repo branch to count, `folder`: only the triggers in those folders (several joined with commas),
  * `kinds`: only those kinds of trigger (none = every kind).
  * Snapshots (the trend) always use the whole default branch.
  */
@@ -33,7 +33,7 @@ export function computeCoverage(db: Db, branch?: string, folder?: string, tests?
       automationRate: automationRate(n.total, tested, 0),
       unmerged: n.branch,
       branch: routes.branch,
-      ...(folder ? { folder } : {}),
+      ...(splitFolders(folder).length ? { folder: splitFolders(folder).join(',') } : {}),
       ...(kinds?.length ? { kinds: [...kinds] } : {}),
     };
   }

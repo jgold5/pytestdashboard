@@ -7,7 +7,7 @@
  * Reads trigger_scans directly so the coverage module needn't depend on the trigger store.
  */
 import { desc, inArray, sql } from 'drizzle-orm';
-import { TriggerKind, type RouteStatus, type ScopeSource, type TriggerOverviewQuery, type TriggerOverviewResponse, type TriggerOverviewRow } from '@ptd/shared';
+import { splitFolders, TriggerKind, type RouteStatus, type ScopeSource, type TriggerOverviewQuery, type TriggerOverviewResponse, type TriggerOverviewRow } from '@ptd/shared';
 import type { Db } from '../db/client.js';
 import { triggerScans } from '../db/schema.js';
 import { changedTests, indexScans, isOutdated, testScope } from './testScope.js';
@@ -150,16 +150,23 @@ export function routeCoverage(db: Db, branch?: string, testsBranch?: string): Ro
   return value;
 }
 
-/** Which triggers count: one folder (none = the whole branch) and some kinds (none or empty = every kind). */
+/** Which triggers count: some folders (none = the whole branch; several joined with commas) and some kinds (none or empty = every kind). */
 export interface ScopeFilter {
   folder?: string | null;
   kinds?: readonly TriggerKind[] | null;
 }
 
-export const inScope = (r: TriggerOverviewRow, f: ScopeFilter): boolean =>
-  (!f.folder || r.module === f.folder) && (!f.kinds?.length || f.kinds.includes(r.kind));
+/** Whether a route's folder is in a folder pick (`common,ingest`; none = every folder). */
+export function inFolders(module: string | null | undefined, folder: string | null | undefined): boolean {
+  if (!folder) return true;
+  const list = splitFolders(folder);
+  return list.length === 0 || (!!module && list.includes(module));
+}
 
-/** Counts of a branch's triggers, optionally only those in one folder and of some kinds. */
+export const inScope = (r: TriggerOverviewRow, f: ScopeFilter): boolean =>
+  inFolders(r.module, f.folder) && (!f.kinds?.length || f.kinds.includes(r.kind));
+
+/** Counts of a branch's triggers, optionally only those in some folders and of some kinds. */
 export function scopeCounts(cov: RouteCoverage, filter: ScopeFilter = {}): { total: number; tested: number; branch: number; none: number } {
   const rows = cov.rows.filter((r) => inScope(r, filter));
   let tested = 0;
@@ -185,7 +192,7 @@ function folderCounts(cov: RouteCoverage, kinds: ScopeFilter['kinds']): TriggerO
   return [...by].map(([folder, c]) => ({ folder, ...c })).sort((a, b) => a.folder.localeCompare(b.folder));
 }
 
-/** The kinds of trigger in the folder picked (every kind, whichever are picked), in TriggerKind order. */
+/** The kinds of trigger in the folders picked (every kind, whichever are picked), in TriggerKind order. */
 function kindCounts(cov: RouteCoverage, folder: ScopeFilter['folder']): TriggerOverviewResponse['kindCounts'] {
   const by = new Map<TriggerKind, { triggers: number; tested: number }>();
   for (const r of cov.rows) {
@@ -212,7 +219,7 @@ export function routeOverview(db: Db, q: TriggerOverviewQuery): TriggerOverviewR
     unmergedFrom: cov?.unmergedFrom ?? [],
     looseTestBranches: cov?.looseTestBranches ?? [],
     folders: cov ? folderCounts(cov, q.kinds) : [],
-    folder: q.folder ?? null,
+    folder: splitFolders(q.folder).join(',') || null,
     kindCounts: cov ? kindCounts(cov, q.folder) : [],
     kinds: q.kinds?.length ? q.kinds : null,
     outdated: cov?.outdated ?? { routes: null, tests: null, prs: 0 },

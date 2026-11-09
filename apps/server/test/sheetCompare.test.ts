@@ -90,5 +90,17 @@ describe('compare with my sheet', () => {
     const only = q.json<SheetCompareResponse>();
     expect(only.counts).toMatchObject({ routes: 1, match: 1, dashboardOnly: 0 });
     expect(only.rows.find((r) => r.routeId === 'invoice-load')!.note).toContain('outside the folder/types picked');
+
+    // several folders: the routes in any of them
+    const cmpFolders = async (folder: string) =>
+      (
+        await t.app.inject({
+          method: 'POST',
+          url: '/api/triggers/compare-sheet',
+          payload: { uploadId: preview.uploadId, sheet: preview.sheets[0]!.name, columns: preview.sheets[0]!.columns, folder },
+        })
+      ).json<SheetCompareResponse>();
+    expect(await cmpFolders('common,other')).toMatchObject({ folder: 'common,other', counts: { routes: 4 } });
+    expect((await cmpFolders('other')).counts.routes).toBe(0);
   });
 });

@@ -719,6 +719,20 @@ describe('routes in the source code are the scope', () => {
       });
       // a folder the branch doesn't have counts nothing
       expect((await t.app.inject({ url: '/api/summary?branch=core&folder=common' })).json<{ coverage: { total: number } }>().coverage.total).toBe(0);
+
+      // several folders, joined with commas: their triggers together
+      const devBoth = (await t.app.inject({ url: '/api/summary?branch=dev&folder=common,billing' })).json<{ coverage: Record<string, unknown> }>().coverage;
+      expect(devBoth).toMatchObject({ branch: 'dev', folder: 'common,billing', total: 3, automated: 2, unmerged: 1, notAutomated: 1 });
+      expect(await overview('?branch=dev&folder=billing,common&status=branch')).toMatchObject({
+        folder: 'billing,common',
+        triggerRepo: { branch: 'dev', triggers: 3, routes: 3 },
+        counts: { tested: 1, branch: 1, none: 1 },
+        items: [{ routeId: 'credit-load' }],
+      });
+      // one folder the branch has and one it doesn't: only the one it has counts
+      expect((await t.app.inject({ url: '/api/summary?branch=dev&folder=billing,nope' })).json<{ coverage: { total: number } }>().coverage.total).toBe(1);
+      const report2 = (await t.app.inject({ url: '/api/report?branch=dev&folder=common,billing' })).json<{ coverage: { total: number; folder: string } }>();
+      expect(report2.coverage).toMatchObject({ total: 3, folder: 'common,billing' });
     } finally {
       await t.close();
     }

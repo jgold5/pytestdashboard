@@ -36,7 +36,7 @@ import {
   TriangleAlert,
   type LucideIcon,
 } from 'lucide-react';
-import { BugSeverity, LIMITS, Settings, type Report } from '@ptd/shared';
+import { BugSeverity, folderLabel, LIMITS, Settings, type Report } from '@ptd/shared';
 import { useReport, useSession, useSettings, useUpdateSettings } from '../api/hooks';
 import { useCssVars } from '../lib/theme';
 import { cn, fmtDate, fmtNumber, fmtPct, pluralize } from '../lib/utils';
@@ -312,7 +312,7 @@ function Headline({ r, isEditor, onSetGoal }: { r: Report; isEditor: boolean; on
           <b className="font-semibold text-fg">{fmtNumber(c.automated)}</b> of{' '}
           {c.unit === 'routes' ? (
             <>
-              {fmtNumber(c.total)} unique triggers{c.kinds?.length ? ` (${kindsLabel(c.kinds.join(','))})` : ''}{c.folder ? <> in <span className="font-mono">{c.folder}/</span></> : null}{' '}
+              {fmtNumber(c.total)} unique triggers{c.kinds?.length ? ` (${kindsLabel(c.kinds.join(','))})` : ''}{c.folder ? <> in <span className="font-mono">{folderLabel(c.folder)}</span></> : null}{' '}
               on <span className="font-mono">{c.branch}</span> have one or more tests
               {(c.unmerged ?? 0) > 0 ? <>, {fmtNumber(c.unmerged ?? 0)} of them in branches not merged yet</> : null} (route
               triggers in the source code)
