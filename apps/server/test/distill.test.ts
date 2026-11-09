@@ -157,7 +157,7 @@ describe.skipIf(!hasPython)('distill_camel_repo.py', () => {
       })),
     });
     expect(shape(b)).toEqual(shape(a));
-    // the fixture really exercises every shape: 3 plain triggers, a direct route, 2 file-name branches, 2 patterns + a schedule in one route
+    // the fixture really exercises every shape: 3 plain triggers, a direct route, 2 file-name branches + their <otherwise>, 2 patterns + a schedule in one route
     expect(a.triggers.map((t) => [t.patternKind, t.coveredBy.length])).toEqual([
       ['regex', 1],
       [null, 2], // a marker and a parametrize list both name acme-purge
@@ -165,6 +165,7 @@ describe.skipIf(!hasPython)('distill_camel_repo.py', () => {
       [null, 0], // acme-internal: direct:acmeOrders, called by acme-orders
       ['condition', 1],
       ['condition', 1],
+      [null, 0], // the <otherwise> that sends the other files to direct:acmeUnknown
       ['regex', 0],
       ['regex', 1],
       [null, 0],

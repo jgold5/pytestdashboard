@@ -136,7 +136,13 @@ class Gen:
             if '.' in name:
                 self.file_refs.append((mod, name))
         elif kind == 'choice':
-            froms.append(self.file_uri(mod) + '?delete=true')
+            # sometimes the <from> has its own patterns too: they count when the branches only filter files out
+            own = ''
+            if self.chance(0.3):
+                Q = self.pick(PREFIXES)
+                own = self.pick([f'&amp;include=({Q}_.*|{Q}-.*)', f'&amp;include={Q}_.*\\.csv', f'&amp;fileName={Q}.TXT', f'&amp;antInclude={Q}_*.csv'])
+                self.file_refs.append((mod, f'{Q}_{self.date()}.csv'))
+            froms.append(self.file_uri(mod) + '?delete=true' + own)
             whens = []
             for _ in range(r.randint(1, 4)):
                 P = self.pick(PREFIXES)
@@ -158,6 +164,10 @@ class Gen:
                     (f"${{file:name}} starts with '{P}_' || ${{file:name}} starts with '{P}-'", f'{P}-{d}.csv'),
                     (f"${{header.type}} == '{P}'", None),  # not a file-name condition
                     (f"${{file:name}} contains 'x'", 'x.csv'),  # not specific enough to link by file name
+                    # only "not": filters files out (the <from>'s patterns stay the triggers when every job is like this)
+                    (f"${{file:name}} not ends with '.tmp'", None),
+                    (f"${{file:name}} != '{P}.SKIP'", None),
+                    (f"${{file:name}} not starts with 'DOWNLOAD' &amp;&amp; ${{file:name}} not ends with '.part'", None),
                 ]
                 if self.probes:
                     forms += [
@@ -172,10 +182,12 @@ class Gen:
                 if self.chance(0.15) and '&amp;' not in expr:
                     expr = f'<![CDATA[{expr}]]>'
                 tag = 'when' if self.chance(0.85) else 'filter'
+                # sometimes a branch sends the file nowhere (only logs): not a job
+                send = '' if self.chance(0.12) else f'\n          <to uri="direct:{job}"/>'
                 if tag == 'filter':
-                    whens.append(f'      <filter>\n        <simple>{expr}</simple>\n        <to uri="direct:{job}"/>\n      </filter>\n')
+                    whens.append(f'      <filter>\n        <simple>{expr}</simple>{send or chr(10) + "        <log message=" + chr(34) + "skipped" + chr(34) + "/>"}\n      </filter>\n')
                 else:
-                    whens.append(f'        <when>\n          <simple>{expr}</simple>\n          <log message="branch"/>\n          <to uri="direct:{job}"/>\n        </when>\n')
+                    whens.append(f'        <when>\n          <simple>{expr}</simple>\n          <log message="branch"/>{send}\n        </when>\n')
                 if sample:
                     self.file_refs.append((mod, sample))
                 self.ref(mod, job)
@@ -183,7 +195,9 @@ class Gen:
             filters = [w for w in whens if not w.startswith('        <when>')]
             body = ''.join(filters)
             if choice_whens:
-                body += '      <choice>\n' + ''.join(choice_whens) + '        <otherwise><to uri="direct:unknownFile"/></otherwise>\n      </choice>\n'
+                # the <otherwise> sends the rest on, logs only, or isn't there
+                other = self.pick(['        <otherwise><to uri="direct:unknownFile"/></otherwise>\n', '        <otherwise><log message="unknown"/></otherwise>\n', ''])
+                body += '      <choice>\n' + ''.join(choice_whens) + other + '      </choice>\n'
         elif kind == 'schedule':
             name = self.pick([f'{mod}{self.pick(WORDS).title()}Job', self.pick(GENERIC), f'{mod}-nightly'])
             u = self.pick([

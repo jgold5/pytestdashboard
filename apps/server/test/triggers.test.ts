@@ -372,10 +372,34 @@ describe('several triggers in one route', () => {
       ['INV_*.csv', 'condition', 'direct:invoiceJob', ['test_invoice']],
       ['/CRN_\\d{8}\\.csv/', 'condition', 'direct:creditJob', ['test_credit']],
       ['PAY_DAILY | PAY_WEEKLY', 'condition', 'direct:paymentJob', ['test_pay']],
+      // the files no <when> takes go to their own job: a trigger too
+      [null, null, 'direct:unknownFile', []],
       ['*.xml', 'condition', 'direct:xmlJob', []],
     ]);
     expect(out.triggers[0]!.key).toBe('inbox::INV_*.csv');
     expect(out.triggers[1]!.line).toBe(6);
+  });
+
+  it('a branch that only filters files out ("not …"), or sends them nowhere, keeps the <from>\'s patterns', () => {
+    const triggers = (route: string) => scan(`<routes>${route}</routes>`).triggers.map((t) => [t.filePattern, t.patternKind, t.condition, t.target]);
+    // a filter that drops temp files: still one trigger per include pattern, with the filter as condition
+    expect(triggers(`<route id="a"><from uri="file:/in?include=(INV_.*|CRN_.*)"/><filter><simple>\${file:name} not ends with '.tmp'</simple><to uri="direct:load"/></filter></route>`)).toEqual([
+      ['INV_.*', 'regex', "${file:name} not ends with '.tmp'", 'direct:load'],
+      ['CRN_.*', 'regex', "${file:name} not ends with '.tmp'", 'direct:load'],
+    ]);
+    // the only job takes every file but DOWNLOAD*: one trigger, any file but those
+    expect(triggers(`<route id="c"><from uri="file:/in"/><choice><when><simple>\${file:name} not starts with 'DOWNLOAD'</simple><to uri="direct:load"/></when></choice></route>`)).toEqual([
+      [null, null, "${file:name} not starts with 'DOWNLOAD'", 'direct:load'],
+    ]);
+    // a branch that only logs: the file name stays the trigger
+    expect(triggers(`<route id="d"><from uri="file:/in?fileName=X.TXT"/><choice><when><simple>\${file:name} not contains 'X'</simple><log message="odd"/></when></choice><to uri="direct:x"/></route>`)).toEqual([
+      ['X.TXT', 'name', null, null],
+    ]);
+    // a <choice> picking PAY_US files, the rest to another job: two triggers
+    expect(triggers(`<route id="b"><from uri="file:/in?include=PAY_.*"/><choice><when><simple>\${file:name} starts with 'PAY_US'</simple><to uri="direct:us"/></when><otherwise><to uri="direct:rest"/></otherwise></choice></route>`)).toEqual([
+      ['PAY_US*', 'condition', "${file:name} starts with 'PAY_US'", 'direct:us'],
+      ['PAY_.*', 'regex', null, 'direct:rest'],
+    ]);
   });
 });
 
@@ -1419,6 +1443,7 @@ describe('run via a tested route', () => {
         'audit-worker': [false, ['invoice-load']], // sent to outside the choice: any tested branch runs it
         'credit-job': [false, null], // only the CRN_ branch, which no test drops a file for
         'invoice-job': [false, ['invoice-load']],
+        'invoice-load': [false, null], // the <otherwise> branch: the files neither INV_ nor CRN_ (to unknownJob)
         'invoice-load CRN_*': [false, null],
         'invoice-load INV_*': [true, null],
         nightly: [true, null],

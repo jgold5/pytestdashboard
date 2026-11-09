@@ -372,7 +372,13 @@ curl --fail-with-body -sS -X POST "$DASHBOARD_URL/api/triggers/scan" \
   - each `<from>`, when a route has more than one;
   - each pattern, when `include=(INV|CRN)_.*` or `antInclude=INV_*.csv,CRN_*.csv` lists several;
   - each `<when>`/`<filter>` that tests the file name (`${file:name} starts with 'INV_'`,
-    `${header.CamelFileName} regex '…'`), shown with the job it sends the file to.
+    `${header.CamelFileName} regex '…'`) and sends the file on (a `<to>`), shown with the job
+    it sends the file to; plus the `<otherwise>` of their `<choice>` when it sends the other
+    files on (shown with the `<from>`'s own pattern and its job). A branch that only logs or
+    sets a header isn't a job.
+  - when every such branch only says "not …" (`not ends with '.tmp'`, `!= 'SKIP.TXT'`), it
+    only filters files out: the `<from>`'s own patterns stay the triggers, shown with
+    "only when …".
 - **Kinds of trigger.** A route counts when it starts from a file (`file:`, `sftp:`, `ftp:`,
   `smb:`), a schedule (`quartz:`, `cron:`, `timer:`, `scheduler:`), another route (`direct:`),
   a queue (`seda:`, `jms:`, `activemq:`, your `jmsComponent…:` endpoints), Kafka, or HTTP
