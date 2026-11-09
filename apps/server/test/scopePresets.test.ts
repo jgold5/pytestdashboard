@@ -58,6 +58,10 @@ describe('leaving routes out, and saved filters', () => {
     expect(all - left).toBe(3);
     const ov = await overview('exclude=download');
     expect(ov.excluded).toBe(3);
+    // one kind of name: file:, endpoint:, route:
+    expect(all - (await total('exclude=file:download')).total).toBe(2);
+    expect(all - (await total('exclude=endpoint:download')).total).toBe(1);
+    expect(all - (await total('exclude=route:download')).total).toBe(0);
   });
 
   it('a saved filter keeps the routes it held when saved, so routes added later can be told apart', async () => {

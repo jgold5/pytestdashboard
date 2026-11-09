@@ -16,6 +16,7 @@
  */
 import { desc, eq, isNotNull } from 'drizzle-orm';
 import {
+  describeExcludePattern,
   excludedBy,
   splitExclude,
   splitFolders,
@@ -232,7 +233,7 @@ export function compareSheet(db: Db, sheet: ParsedSheet, req: SheetCompareReques
     const n = norm(routeId);
     const elsewhere = anyById.get(n);
     const left = elsewhere?.length ? list.items.filter((t) => t.routeId && norm(t.routeId) === n).map((t) => excludedBy(t, req.exclude)).find(Boolean) : null;
-    if (left) return `Counted on ${branch}, but left out by the exclusion picked (${left.includes('*') ? left : `names starting with ${left}`})`;
+    if (left) return `Counted on ${branch}, but left out by the exclusion picked (${describeExcludePattern(left)})`;
     if (elsewhere?.length)
       return `Counted on ${branch}, but outside the folder/types picked: ${elsewhere.map((r) => `${r.module ? `${r.module}/` : ''} ${r.kinds.map((k) => TRIGGER_KIND_LABEL[k]).join(', ')}`.trim()).join('; ')}`;
     const skip = skippedById.get(n);

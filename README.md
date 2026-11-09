@@ -256,8 +256,9 @@ spreadsheet or Jira rows:
 - **Leave out**: triggers to drop, comma-separated, by name: the route id, the load file's name
   or pattern, or the endpoint's name (`direct:downloadJob`, a queue or Kafka topic, a REST path).
   A word is a start (`download` drops `DOWNLOAD_*.csv` and route `download-invoices`, any case);
-  `*` stands for anything (`*-download`, `*download*`). The folder a file trigger watches isn't
-  its name.
+  `*` stands for anything (`*-download`, `*download*`). Put `route:`, `file:` or `endpoint:`
+  before a pattern to match only that name (`file:download` drops `DOWNLOAD_*.csv` but keeps a
+  route called `download-invoices`). The folder a file trigger watches isn't its name.
 
 **Saved filters**: once folders, types and Leave out are set, **Save these as…** names the
 combination; it then shows at the top of the panel for everyone, one click to pick (the

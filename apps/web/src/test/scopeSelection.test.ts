@@ -79,3 +79,19 @@ describe('leave out by trigger name', () => {
     expect(excludedBy({ routeId: 'x', firesOn: '0 0 2 * * ?' }, 'download')).toBeNull();
   });
 });
+
+describe('leave out by one kind of name', () => {
+  it('route:, file: and endpoint: look only at that name; no prefix looks at all three', async () => {
+    const { excludedBy, describeExcludePattern } = await import('@ptd/shared');
+    const byFile = { routeId: 'invoice-load', filePattern: 'DOWNLOAD_INV.*', resolvedUri: 'file:/in' };
+    const byRoute = { routeId: 'download-invoices', filePattern: 'INV.TXT', resolvedUri: 'file:/in' };
+    const byEndpoint = { routeId: 'job-a', filePattern: null, resolvedUri: 'direct:downloadJob' };
+    expect([byFile, byRoute, byEndpoint].map((t) => excludedBy(t, 'download'))).toEqual(['download', 'download', 'download']);
+    expect([byFile, byRoute, byEndpoint].map((t) => excludedBy(t, 'file:download'))).toEqual(['file:download', null, null]);
+    expect([byFile, byRoute, byEndpoint].map((t) => excludedBy(t, 'route:download'))).toEqual([null, 'route:download', null]);
+    expect([byFile, byRoute, byEndpoint].map((t) => excludedBy(t, 'Endpoint: download'))).toEqual([null, null, 'endpoint: download']);
+    expect(excludedBy('download-x', 'file:download')).toBeNull(); // a bare route id is only a route id
+    expect(describeExcludePattern('file:download')).toBe('file names starting with download');
+    expect(describeExcludePattern('*download*')).toBe('names matching *download*');
+  });
+});
