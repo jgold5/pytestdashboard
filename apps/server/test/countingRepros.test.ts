@@ -138,4 +138,25 @@ describe('counting rules checked against an independent implementation', () => {
     });
     expect(covered(out).map(([, , c]) => c)).toEqual([['test_b']]);
   });
+
+  it('copies of a route are judged by what their inputs resolve to, against every earlier copy, whatever the file order', () => {
+    const route = (id: string, from: string) => `<route id="${id}"><from ${from}/></route>`;
+    const files = [
+      // the same text, but each file's <endpoint id="inbox"> is different
+      xml(`<beans><endpoint id="inbox" uri="file:/a"/><camelContext>${route('poll', 'uri="ref:inbox"')}</camelContext></beans>`, 'src/main/resources/m/a.xml'),
+      xml(`<beans><endpoint id="inbox" uri="bean:x"/><camelContext>${route('poll', 'uri="ref:inbox"')}</camelContext></beans>`, 'src/main/resources/m/b.xml'),
+      // a third definition of one id; two of the three are the same route
+      xml(`<routes>${route('sync', 'uri="timer:t"')}</routes>`, 'src/main/resources/m/c.xml'),
+      xml(`<routes>${route('sync', 'uri="direct:x"')}</routes>`, 'src/main/resources/m/d.xml'),
+      xml(`<routes>${route('sync', 'uri="direct:x"')}</routes>`, 'src/main/resources/m/e.xml'),
+    ];
+    const count = (order: typeof files) => {
+      const out = run({ xml: order });
+      return { triggers: out.triggers.map((t) => `${t.routeId}:${t.kind}`).sort(), other: out.otherRoutes };
+    };
+    const expected = { triggers: ['poll:file', 'sync:direct', 'sync:schedule'], other: 1 };
+    expect(count(files)).toEqual(expected);
+    expect(count([...files].reverse())).toEqual(expected);
+    expect(count([files[3]!, files[1]!, files[4]!, files[0]!, files[2]!])).toEqual(expected);
+  });
 });

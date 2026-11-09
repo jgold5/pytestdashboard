@@ -70,7 +70,7 @@ in out inbound outbound incoming outgoing input output data dir path load loader
 trigger triggers test tests feature story epic label labels tag tags owner severity critical normal
 minor blocker trivial smoke regression sanity api ui e2e suite title link issue testcase description
 allure pytest mark marks dynamic parametrize fixture usefixtures skip skipif xfail filterwarnings
-self cls true false none null yes no
+self cls true false none null yes no redacted
 mon tue wed thu fri sat sun jan feb mar apr may jun jul aug sep oct nov dec
 src main resources java kotlin groovy python spring blueprint config conf etc meta inf
 dev test qa uat sit prod production stage staging preprod local default common application

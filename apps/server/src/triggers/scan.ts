@@ -1015,7 +1015,7 @@ export function scanRepository(input: ScanInput): ScanOutput {
     return (defs.find((d) => d.file === file) ?? (defs.filter((d) => d.module === module).length === 1 ? defs.find((d) => d.module === module) : undefined) ?? (defs.length === 1 ? defs[0] : undefined))?.uri;
   };
   /** Route id → its inputs as written, to tell a copy of a route (counted once) from a different route reusing the id. */
-  const firstInputs = new Map<string, string>();
+  const seenInputs = new Map<string, Set<string>>();
 
   const triggers: StoredTrigger[] = [];
   const usedKeys = new Set<string>();
@@ -1038,10 +1038,16 @@ export function scanRepository(input: ScanInput): ScanOutput {
     if (r.routeId) {
       const id = `${module ?? ''}\0${r.routeId}`;
       const first = routeIds.get(id);
-      const inputs = JSON.stringify(r.inputs.map((x) => x.uri ?? `ref:${x.ref}`));
+      // what the inputs really are: a ref resolves per file, so two copies reading the same ref can differ
+      const inputs = JSON.stringify(
+        r.inputs.map((x) => {
+          const ref = x.ref ?? /^\s*ref:(?:\/\/)?([^?\s]+)\s*$/.exec(x.uri ?? '')?.[1];
+          return (ref ? endpointFor(ref, r.file) : undefined) ?? x.uri ?? `ref:${x.ref}`;
+        }),
+      );
       if (first) {
         // Camel won't start two routes with one id in a context: an identical copy is counted once
-        const copy = firstInputs.get(id) === inputs;
+        const copy = seenInputs.get(id)?.has(inputs) ?? false;
         warnings.push(`route id "${r.routeId}" is defined more than once${module ? ` in ${module}` : ''} (${r.file}:${r.line}, first at ${first})${copy ? ': the same route, counted once' : ''}`);
         if (copy) {
           skip(`an identical copy of the route at ${first}: counted once`);
@@ -1049,8 +1055,8 @@ export function scanRepository(input: ScanInput): ScanOutput {
         }
       } else {
         routeIds.set(id, `${r.file}:${r.line}`);
-        firstInputs.set(id, inputs);
       }
+      seenInputs.set(id, (seenInputs.get(id) ?? new Set()).add(inputs));
     }
     if (r.inputs.length === 0) {
       skip('has no <from>');

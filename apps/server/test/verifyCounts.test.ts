@@ -31,4 +31,12 @@ describe.skipIf(!hasPython)('counts agree with an independent implementation', (
       }
     }, 150_000);
   }
+
+  it('renaming for sharing (verify-counts --share) never changes a count', () => {
+    const share = path.resolve(here, '../../../tools/verify_counts/share.py');
+    for (const args of [['0:20'], ['1000:1020', '--probes']]) {
+      const out = execFileSync('python3', [share, '--selftest', ...args], { encoding: 'utf8', timeout: 120_000 });
+      expect(out).toMatch(/, 0 changed by renaming/);
+    }
+  }, 260_000);
 });
