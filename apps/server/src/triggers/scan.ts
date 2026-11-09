@@ -284,6 +284,11 @@ export interface RawRoute {
   /** `<from>`s in order (usually one). */
   inputs: RawInput[];
   conditions: RawCondition[];
+  /**
+   * `<otherwise>` branches that send the file on: the files none of their `<choice>`'s `<when>`s
+   * take. `whens`: the expressions of those `<when>`s.
+   */
+  otherwise?: Array<{ target: string; line: number; calls?: string[]; whens: string[] }>;
   /** Endpoints the route sends to outside any <when>/<filter>/<otherwise> (<to>, <toD>, <wireTap>, <enrich>…), as written. */
   calls?: string[];
   /**
@@ -356,6 +361,8 @@ export function scanCamelXml(file: string, xml: string): { routes: RawRoute[]; e
   const starts: number[] = [];
   /** Open <when>/<filter>/<otherwise>: what a call inside one belongs to. */
   const branches: Array<Omit<RawCondition, 'kind'> & { kind: RawCondition['kind'] | 'otherwise' }> = [];
+  /** Open <choice>s: the <when> expressions seen in each, for its <otherwise>. */
+  const choices: Array<{ whens: string[] }> = [];
   let lineAt = 0;
   let line = 1;
   let template = 0;
@@ -394,11 +401,19 @@ export function scanCamelXml(file: string, xml: string): { routes: RawRoute[]; e
       }
       continue;
     }
+    if (name === 'choice') {
+      if (!route || selfClosing) continue;
+      if (closing) choices.pop();
+      else choices.push({ whens: [] });
+      continue;
+    }
     if (name === 'when' || name === 'filter' || name === 'otherwise') {
       if (!route) continue;
       if (closing) {
         const b = branches.pop();
         if (b?.expr && b.kind !== 'otherwise') route.conditions.push(b as RawCondition);
+        if (b?.expr && b.kind === 'when') choices[choices.length - 1]?.whens.push(b.expr);
+        if (b?.kind === 'otherwise' && b.target) (route.otherwise ??= []).push({ target: b.target, line: b.line, calls: b.calls, whens: [...(choices[choices.length - 1]?.whens ?? [])] });
       } else if (!selfClosing) branches.push({ kind: name, expr: '', target: null, line: lineOf(m.index ?? 0), calls: [] });
       continue;
     }
@@ -1131,9 +1146,19 @@ export function scanRepository(input: ScanInput): ScanOutput {
         triggers.push({ ...base, key: uniqueKey(baseKey) });
         return;
       }
-      // one file route that hands each file name to its own job: one trigger per branch
-      if (conditions.length > 0) {
-        for (const { c, resolved: rc, parsed } of conditions) {
+      // a branch on the file name that sends it on (a <to>) is a job; one that only logs or sets a header isn't.
+      // When some job picks files by name (starts with 'INV_'), each job is a trigger, plus the
+      // <otherwise> of their <choice> when it sends the remaining files on. When every job only says
+      // "not …" (not ends with '.tmp'), they just filter files out: the <from>'s own patterns stay the
+      // triggers, with that test as their condition.
+      const jobs = conditions.filter((x) => x.c.target);
+      const onlyNot = (f: FileCondition) => f.groups.every((g) => g.every((a) => a.negate));
+      const picks = jobs.some((x) => !onlyNot(x.parsed)) ? jobs : [];
+      const guards = picks.length ? [] : jobs;
+      const which = p.include !== undefined ? 'include' : p.antInclude !== undefined ? 'antInclude' : p.fileName !== undefined ? 'fileName' : null;
+      const patternKind = which === 'include' ? 'regex' : which === 'antInclude' ? 'glob' : which === 'fileName' ? 'name' : null;
+      if (picks.length > 0) {
+        for (const { c, resolved: rc, parsed } of picks) {
           triggers.push({
             ...base,
             key: uniqueKey(`${baseKey}::${parsed.display}`),
@@ -1150,18 +1175,38 @@ export function scanRepository(input: ScanInput): ScanOutput {
             match: { ...base.match!, condition: rc.firstVariant },
           });
         }
+        const pickExprs = new Set(picks.map((x) => x.c.expr));
+        (r.otherwise ?? [])
+          .filter((o) => o.whens.some((e) => pickExprs.has(e)))
+          .forEach((o, i) => {
+            const own = [...new Set([...calls, ...(o.calls ?? []).map((u) => endpointKey(resolvePlaceholders(u, props, r.file).firstVariant)).filter((k): k is string => k !== null)])];
+            triggers.push({
+              ...base,
+              key: uniqueKey(`${baseKey}::otherwise${i ? i + 1 : ''}`),
+              // the files no <when> takes: the <from>'s own pattern (any file without one)
+              filePattern: which ? (p[which] as string) : null,
+              patternKind,
+              target: o.target,
+              line: o.line,
+              ...(own.length ? { calls: own } : {}),
+              match: { ...base.match!, pattern: which ? (ep.params[which] ?? (p[which] as string)) : null },
+            });
+          });
         return;
       }
-      const which = p.include !== undefined ? 'include' : p.antInclude !== undefined ? 'antInclude' : p.fileName !== undefined ? 'fileName' : null;
-      if (which === null) {
-        triggers.push({ ...base, key: uniqueKey(baseKey) });
+      // a "not …" job: the files it lets through, from the <from>'s patterns
+      const guard = guards.length
+        ? { condition: guards.map((x) => x.c.expr).join(' && '), target: guards.length === 1 ? guards[0]!.c.target : null }
+        : { condition: null, target: null };
+      if (which === null || patternKind === null) {
+        triggers.push({ ...base, ...guard, key: uniqueKey(baseKey) });
         return;
       }
-      const patternKind = which === 'include' ? 'regex' : which === 'antInclude' ? 'glob' : 'name';
       const parts = splitFilePatterns(p[which] as string, patternKind);
       for (const part of parts) {
         triggers.push({
           ...base,
+          ...guard,
           key: uniqueKey(parts.length > 1 ? `${baseKey}::${part}` : baseKey),
           filePattern: part,
           patternKind,

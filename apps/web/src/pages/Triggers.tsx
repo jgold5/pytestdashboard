@@ -624,6 +624,11 @@ function TriggerSpec({ r }: { r: TriggerRow }) {
                 trigger file <span className="font-mono text-fg">{r.doneFile}</span>
               </div>
             ) : null}
+            {r.condition && r.patternKind !== 'condition' ? (
+              <div className="truncate text-[11px] text-fg-2" title={`The route lets through only the files for which ${r.condition}`}>
+                only when <span className="font-mono">{r.condition}</span>
+              </div>
+            ) : null}
             {r.target ? (
               <div className="truncate text-[11px] text-fg-2" title={r.condition ? `when ${r.condition}` : undefined}>
                 → <span className="font-mono">{r.target}</span>

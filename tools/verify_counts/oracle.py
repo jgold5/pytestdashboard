@@ -1258,6 +1258,27 @@ def scan_repository(xml_files, prop_files, test_files) -> dict:
                     groups = parse_condition(r.first)
                     if groups:
                         conds.append({'expr': expr, 'line': w.line, 'groups': groups, 'target': target, 'resolved': r.first})
+            # SEMANTICS (dashboard doc): a file-name branch is a job only when it sends the file on (a <to>).
+            # When some job picks files by name, every job is a trigger, plus the <otherwise> of their
+            # <choice> that sends the rest on; when every job only says "not …", they filter files out and
+            # the <from>'s own patterns stay the triggers (named by that job's target when there is one).
+            jobs = [c for c in conds if c['target']]
+            only_not = lambda c: all(all(a.negate for a in g) for g in c['groups'])
+            picks = jobs if any(not only_not(c) for c in jobs) else []
+            guards = [] if picks else jobs
+            pick_exprs = {c['expr'] for c in picks}
+            otherwise = []
+            for w in route.iter():
+                if w.tag == 'otherwise' and _nearest_route(w) is route and w.parent is not None and w.parent.tag == 'choice':
+                    _, target = _first_simple_and_target(w)
+                    whens = []
+                    for c in w.parent.children:
+                        if c.tag == 'when':
+                            sm = next((x for x in c.children if x.tag == 'simple'), None)
+                            if sm is not None and sm.text.strip():
+                                whens.append(sm.text.strip())
+                    if target and any(e in pick_exprs for e in whens):
+                        otherwise.append({'target': target, 'line': w.line})
             marker = _route_marker(route)
             has_trigger = False
             for idx, inp in enumerate(inputs, 1):
@@ -1337,43 +1358,60 @@ def scan_repository(xml_files, prop_files, test_files) -> dict:
                     t['testers'] = [x for x in testers if _selective(x, probes)]
                     triggers.append(t)
 
-                if conds:
-                    for c in conds:
+                def add_target(t, target):
+                    tp = parse_uri(target)
+                    if tp:
+                        n = _endpoint_name(tp.path.split('?')[0])
+                        if n:
+                            t['names'].add((n, 'name'))
+                    t['names'].add((target.split('?')[0].strip(), 'uri'))
+
+                which = next((w for w in ('include', 'antInclude', 'fileName') if w in shown.params), None)
+                pk = {'include': 'regex', 'antInclude': 'glob', 'fileName': 'name'}.get(which) if which else None
+
+                def pattern_tester(pat):
+                    if pk == 'regex':
+                        # SEMANTICS: Camel's include= is matched case-insensitively
+                        rx = _java_regex(pat, True)
+                        return (lambda f, rx=rx: rx.fullmatch(f) is not None) if rx else None
+                    if pk == 'glob':
+                        rx = _ant_regex(pat)
+                        return lambda f, rx=rx: rx.fullmatch(f) is not None
+                    rx = _file_language_regex(pat)
+                    return (lambda f, rx=rx: rx.fullmatch(f) is not None) if rx else None
+
+                if picks:
+                    for o in otherwise:
+                        t = dict(base, names=set(names), line=o['line'], patternKind=pk,
+                                 filePattern=shown.params[which] if which else None)
+                        add_target(t, o['target'])
+                        if which:
+                            pat = ep.params.get(which, shown.params[which])
+                            t['names'].update({(shown.params[which], 'file'), (pat, 'file')})
+                            finish(t, pattern_tester(pat), [shown.params[which], pat])
+                        else:
+                            finish(t, None, [])
+                    for c in picks:
                         t = dict(base, names=set(names), sub=('cond', re.sub(r'\s+', ' ', c['expr']), c['line']),
                                  patternKind='condition', line=c['line'])
                         if c['target']:
-                            tp = parse_uri(c['target'])
-                            if tp:
-                                n = _endpoint_name(tp.path.split('?')[0])
-                                if n:
-                                    t['names'].add((n, 'name'))
-                            t['names'].add((c['target'].split('?')[0].strip(), 'uri'))
+                            add_target(t, c['target'])
                         groups = c['groups']
                         specific = all(any(not a.negate and len(a.value) >= 3 for a in g) for g in groups)
                         finish(t, (lambda f, g=groups: condition_matches(g, f)) if specific else None, [c['resolved']])
                     continue
-                which = next((w for w in ('include', 'antInclude', 'fileName') if w in shown.params), None)
+                if len(guards) == 1:
+                    add_target(base, guards[0]['target'])
                 if which is None:
                     finish(base, None, [])
                     continue
-                pk = {'include': 'regex', 'antInclude': 'glob', 'fileName': 'name'}[which]
                 parts = split_patterns(shown.params[which], pk)
                 for part in parts:
                     pat = part if len(parts) > 1 else ep.params.get(which, part)
                     t = dict(base, names=set(names), patternKind=pk, filePattern=part,
                              sub=('part', part) if len(parts) > 1 else None)
                     t['names'].update({(part, 'file'), (pat, 'file')})
-                    if pk == 'regex':
-                        # SEMANTICS: Camel's include= is matched case-insensitively
-                        rx = _java_regex(pat, True)
-                        tester = (lambda f, rx=rx: rx.fullmatch(f) is not None) if rx else None
-                    elif pk == 'glob':
-                        rx = _ant_regex(pat)
-                        tester = lambda f, rx=rx: rx.fullmatch(f) is not None
-                    else:
-                        rx = _file_language_regex(pat)
-                        tester = (lambda f, rx=rx: rx.fullmatch(f) is not None) if rx else None
-                    finish(t, tester, [part, pat])
+                    finish(t, pattern_tester(pat), [part, pat])
             if not has_trigger:
                 other_routes += 1
 
