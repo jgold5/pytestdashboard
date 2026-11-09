@@ -1,0 +1,10 @@
+{
+ "xml": [
+  {
+   "path": "src/main/resources/m/routes/r.xml",
+   "text": "<routes><route id=\"a\"><from uri=\"{{env:IN_URI:file:/data/in}}\"/></route><route id=\"b\"><from uri=\"{{sys:queue.uri:jms:queue:Q}}\"/></route><route id=\"c\"><from uri=\"{{env:IN_URI}}?delay=5000\"/></route></routes>"
+  }
+ ],
+ "properties": [],
+ "tests": []
+}

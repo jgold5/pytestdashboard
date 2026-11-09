@@ -8,7 +8,8 @@
  *   a few downloads at a time, until all are done. Each scan is labelled
  *   `<repo> PR #<n> → <base>` and keeps the commit it was taken at.
  * - A PR whose head commit and target are unchanged since its last scan is skipped (up to
- *   date), so running it again only downloads what moved.
+ *   date), so running it again only downloads what moved — unless that scan was made before
+ *   the current counting rules (SCANNER_VERSION), which rescans it.
  * - The scans it made are removed once no open PR uses their branch (merged or closed).
  *   Scans made by hand are left alone, and a Camel repo branch of the same name keeps its
  *   route scans.
@@ -29,6 +30,7 @@ import { paginate } from '../integrations/github.js';
 import { HttpClient } from '../integrations/http.js';
 import { parsePrLabel, prLabel } from './prLabel.js';
 import { scanRepository } from './scan.js';
+import { isOutdated } from './testScope.js';
 import { saveScan } from './store.js';
 import { REPO_ARCHIVE_LIMITS, applyOnly, readRepoZip } from './upload.js';
 
@@ -122,7 +124,7 @@ export async function scanPrBranches(
       row.status = 'skipped';
       row.error = pr.repo !== repo ? 'from a fork' : 'a default branch';
       stats.skipped++;
-    } else if (last?.commit && pr.sha && pr.sha.startsWith(last.commit) && last.label === label) {
+    } else if (last?.commit && pr.sha && pr.sha.startsWith(last.commit) && last.label === label && !isOutdated({ ...last, triggerCount: 0, otherRoutes: 0, testsFound: 1 })) {
       row.status = 'up_to_date';
       row.commit = last.commit;
       row.scannedAt = last.scannedAt;
@@ -142,7 +144,7 @@ export async function scanPrBranches(
     try {
       const zip = path.join(tmp, 'branch.zip');
       await downloadBranchZip(cfg, repo, pr.ref, zip, { signal: ctx.signal });
-      const { repo: snapshot, topDir } = await readRepoZip(zip, REPO_ARCHIVE_LIMITS, { stripTopDir: true });
+      const { repo: snapshot, topDir } = await readRepoZip(zip, REPO_ARCHIVE_LIMITS, { stripTopDir: true, only: 'tests' });
       applyOnly(snapshot, 'tests');
       if (snapshot.files.tests === 0) {
         row.status = 'skipped';

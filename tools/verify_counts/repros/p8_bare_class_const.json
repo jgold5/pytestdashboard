@@ -1,0 +1,15 @@
+{
+ "xml": [
+  {
+   "path": "src/main/resources/m/routes/r.xml",
+   "text": "<routes><route id=\"invoice-load\"><from uri=\"file:/in\"/></route></routes>"
+  }
+ ],
+ "properties": [],
+ "tests": [
+  {
+   "path": "tests/test_a.py",
+   "text": "class TestA:\n    ROUTE = \"invoice-load\"\n\n    def test_a(self):\n        start_route(ROUTE)\n"
+  }
+ ]
+}

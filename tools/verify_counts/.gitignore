@@ -1,0 +1,4 @@
+cases/
+cases-probes/
+report*.json
+__pycache__/

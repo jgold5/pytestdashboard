@@ -1,0 +1,15 @@
+{
+ "xml": [
+  {
+   "path": "src/main/resources/m/routes/r.xml",
+   "text": "<routes><route id=\"a\"><from uri=\"rest:get:/api/orders:/{id}\"/></route><route id=\"b\"><from uri=\"rest:get:api:orders\"/></route><route id=\"c\"><from uri=\"https://0.0.0.0:8443/api/pay\"/></route></routes>"
+  }
+ ],
+ "properties": [],
+ "tests": [
+  {
+   "path": "tests/test_a.py",
+   "text": "@allure.label(\"endpoint\", \"/api/orders/{id}\")\ndef test_a():\n    pass\n\n@allure.label(\"endpoint\", \"/api/orders\")\ndef test_b():\n    pass\n\n@allure.label(\"endpoint\", \"/api/pay\")\ndef test_c():\n    pass\n"
+  }
+ ]
+}

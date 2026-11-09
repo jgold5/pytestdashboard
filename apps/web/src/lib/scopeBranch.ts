@@ -1,4 +1,5 @@
 import { useCallback, useSyncExternalStore } from 'react';
+import { TriggerKind } from '@ptd/shared';
 import { readStorage, writeStorage } from './storage';
 
 /**
@@ -29,3 +30,16 @@ export const useScopeBranch = () => useStored('ptd-scope-branch');
 export const useScopeFolder = () => useStored('ptd-scope-folder');
 /** The test repo branch whose merged tests count (plus the PRs into it); null = the same name as the routes branch. */
 export const useScopeTests = () => useStored('ptd-scope-tests');
+/**
+ * The kinds of trigger counted, comma-separated (`file,schedule`); null = every kind. Unknown
+ * kinds (from an older version) are dropped so the server never rejects the query.
+ */
+export function useScopeKinds(): [string | null, (v: string | null) => void] {
+  const [raw, set] = useStored('ptd-scope-kinds');
+  return [cleanKinds(raw), set];
+}
+
+export function cleanKinds(raw: string | null | undefined): string | null {
+  const known = (raw ?? '').split(',').filter((k): k is TriggerKind => (TriggerKind.options as string[]).includes(k));
+  return known.length ? [...new Set(known)].join(',') : null;
+}

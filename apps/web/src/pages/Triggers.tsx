@@ -1,17 +1,18 @@
 import { useId, useMemo, useState, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { toast } from 'sonner';
-import { ChevronRight, CircleCheck, CircleDashed, Clock, Copy, FileInput, GitBranch, GitCompareArrows, Search, Terminal, Trash2, TriangleAlert, Zap } from 'lucide-react';
-import type { TriggerChange, TriggerListResponse, TriggerRow } from '@ptd/shared';
+import { Braces, ChevronRight, CircleCheck, CircleDashed, Clock, Copy, CornerDownRight, FileInput, GitBranch, GitCompareArrows, Globe, Inbox, Radio, Search, Terminal, Trash2, TriangleAlert, Zap } from 'lucide-react';
+import { TRIGGER_KIND_LABEL, type TriggerChange, type TriggerKind, type TriggerListResponse, type TriggerRow } from '@ptd/shared';
 import { useDeleteTriggerBranch, useScanGithubBranch, useTriggerBranches, useTriggerGithub, useTriggerOverview, useTriggers } from '../api/hooks';
-import { useScopeBranch, useScopeFolder, useScopeTests } from '../lib/scopeBranch';
+import { cleanKinds, useScopeBranch, useScopeFolder, useScopeKinds, useScopeTests } from '../lib/scopeBranch';
 import { errorMessage } from '../api/client';
 import { cn, fmtNumber, fmtPct, fmtRelative, pluralize } from '../lib/utils';
 import { Button } from '../components/ui/button';
 import { Card, CardBody, CardHeader } from '../components/ui/card';
 import { ConfirmDialog } from '../components/ui/confirm';
 import { PrScanButton } from '../components/PrScan';
-import { ScopeButton, type Scope } from '../components/ScopeButton';
+import { SheetCompareButton } from '../components/SheetCompare';
+import { kindsLabel, ScopeButton, type Scope } from '../components/ScopeButton';
 import { EmptyState, ErrorState } from '../components/ui/empty-state';
 import { Dialog } from '../components/ui/dialog';
 import { Field, Input } from '../components/ui/input';
@@ -50,6 +51,7 @@ export default function TriggersPage() {
   const [scopeBranch, setScopeBranch] = useScopeBranch();
   const [scopeFolder, setScopeFolder] = useScopeFolder();
   const [scopeTests, setScopeTests] = useScopeTests();
+  const [scopeKinds, setScopeKinds] = useScopeKinds();
   const routeInfo = useTriggerOverview(undefined, 1);
   const routeBranches = routeInfo.data?.routeBranches ?? [];
   const defaultBranch = routeInfo.data?.defaultBranch ?? null;
@@ -58,7 +60,10 @@ export default function TriggersPage() {
   const branch = (branchParam ?? (scopeBranch && routeBranches.includes(scopeBranch) ? scopeBranch : defaultBranch)) ?? undefined;
   const resolving = !branchParam && routeInfo.isPending;
   const compare = (branch && params.get('compare')) || undefined;
-  const kind = params.get('kind') || null;
+  // the kinds of trigger counted: a link's ?kinds= (or the old ?kind=), else the pick shared with the Overview
+  const kindsParam = params.has('kinds') || params.has('kind') ? cleanKinds(params.get('kinds') ?? params.get('kind')) : null;
+  const kinds = kindsParam ?? scopeKinds;
+  const kindSet = useMemo(() => (kinds ? new Set(kinds.split(',')) : null), [kinds]);
   const [limit, setLimit] = useState(PAGE);
   const status = (STATUS_FILTERS.find((f) => f.key === params.get('status'))?.key ?? 'all') as StatusKey;
   const [search, setSearch] = useState(params.get('q') ?? '');
@@ -87,10 +92,10 @@ export default function TriggersPage() {
   const scoped = useMemo(() => {
     const q = search.trim().toLowerCase();
     return (data?.items ?? [])
-      .filter((r) => !kind || r.kind === kind)
+      .filter((r) => !kindSet || kindSet.has(r.kind))
       .filter((r) => !module || r.module === module)
       .filter((r) => !q || [r.routeId, r.resolvedUri, r.sourceFile, r.filePattern, r.schedule, r.target, r.doneFile].some((v) => v?.toLowerCase().includes(q)));
-  }, [data, kind, module, search]);
+  }, [data, kindSet, module, search]);
   const rows = useMemo(() => {
     return scoped
       .filter((r) =>
@@ -114,20 +119,22 @@ export default function TriggersPage() {
     if ('branch' in p) setScopeBranch(p.branch ?? null);
     if ('folder' in p) setScopeFolder(p.folder ?? null);
     if ('tests' in p) setScopeTests(p.tests ?? null);
+    if ('kinds' in p) setScopeKinds(p.kinds ?? null);
     const nextBranch = 'branch' in p ? (p.branch ?? defaultBranch) : branch;
-    set({ branch: null, module: null, tests: null, compare: compare && compare !== nextBranch ? compare : null });
+    set({ branch: null, module: null, tests: null, kind: null, kinds: null, compare: compare && compare !== nextBranch ? compare : null });
   };
 
   return (
     <>
       <PageHeader
         title="Triggers"
-        description="Camel routes started by a load file or a schedule, scanned from the repo — the scope to automate, and which of it has tests."
+        description="Camel routes started by a load file, a schedule, another route, a queue, Kafka or HTTP, scanned from the repo — the scope to automate, and which of it has tests."
         actions={
           data && data.branches.length > 0 ? (
             <>
               <ScanBranchButton onScanned={(b) => set({ branch: b, compare: b === 'main' ? null : compare ?? (b !== 'main' && branchOptions.some((o) => o.value === 'main') ? 'main' : null) })} />
               <PrScanButton />
+              <SheetCompareButton scope={{ branch: branch ?? null, tests: tests ?? null, folder: module, kinds }} />
               {branch && !DEFAULT_BRANCHES.includes(branch) ? (
                 <RemoveBranchButton
                   branch={branch}
@@ -137,7 +144,7 @@ export default function TriggersPage() {
                   }}
                 />
               ) : null}
-              <ScopeButton scope={{ branch: branchParam ?? scopeBranch, folder: module, tests: tests ?? null }} onChange={changeScope} />
+              <ScopeButton scope={{ branch: branchParam ?? scopeBranch, folder: module, tests: tests ?? null, kinds }} onChange={changeScope} />
               <Select
                 size="sm"
                 ariaLabel="Compare with branch"
@@ -191,7 +198,7 @@ export default function TriggersPage() {
               </Button>
             </div>
           ) : null}
-          <Totals data={data} items={scoped} scope={[module ? `in ${module}/` : null, kind ? (kind === 'file' ? 'load file' : 'schedule') : null, search.trim() ? `matching “${search.trim()}”` : null].filter(Boolean).join(' · ')} />
+          <Totals data={data} items={scoped} scope={[module ? `in ${module}/` : null, kinds ? `(${kindsLabel(kinds)})` : null, search.trim() ? `matching “${search.trim()}”` : null].filter(Boolean).join(' · ')} />
           <div className="mt-4 mb-3 flex flex-wrap items-center gap-2">
             <div role="tablist" aria-label="Filter triggers" className="flex flex-wrap gap-1.5">
               {STATUS_FILTERS.filter((f) => !('compareOnly' in f) || compare).map((f) => (
@@ -211,19 +218,6 @@ export default function TriggersPage() {
               ))}
             </div>
             <div className="ml-auto flex flex-wrap gap-1.5">
-              <Select
-                size="sm"
-                ariaLabel="Trigger type"
-                value={kind}
-                onValueChange={(v) => set({ kind: v })}
-                options={[
-                  { value: 'file', label: 'Load file' },
-                  { value: 'schedule', label: 'Schedule' },
-                ]}
-                allowNone
-                noneLabel="All types"
-                className="w-32"
-              />
               <div className="relative">
                 <Search className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-fg-3" aria-hidden />
                 <Input
@@ -257,7 +251,7 @@ export default function TriggersPage() {
           </Card>
           {data.divergence ? <Divergence d={data.divergence} branch={data.branch ?? ''} compare={data.compare ?? ''} /> : null}
           <p className="mt-2 text-xs text-fg-3">
-            {pluralize(rows.length, 'trigger')} in {pluralize(groups.length, 'route')} shown. A route with several inputs, several file patterns, or a choice on the file name counts each one as its own trigger. A test covers a trigger when one of its Allure labels or pytest markers names the route id, the schedule, the job a file is sent to, or a load file the trigger picks up.
+            {pluralize(rows.length, 'trigger')} in {pluralize(groups.length, 'route')} shown. A route with several inputs, several file patterns, or a choice on the file name counts each one as its own trigger. A test covers a trigger when one of its Allure labels or pytest markers names the route id, the schedule, the job a file is sent to, a load file the trigger picks up, the direct/seda/queue or Kafka topic name, or the REST path.
           </p>
         </>
       ) : null}
@@ -271,7 +265,7 @@ function Totals({ data, items, scope }: { data: TriggerListResponse; items: Trig
   const routes = groupByRoute(live).length;
   const covered = live.filter(automated).length;
   const unmergedOnly = live.filter((r) => r.coveredBy.length > 0 && r.coveredBy.every((c) => c.branch)).length;
-  const files = live.filter((r) => r.kind === 'file').length;
+  const byKind = KIND_ORDER.map((k) => [k, live.filter((r) => r.kind === k).length] as const).filter(([, n]) => n > 0);
   const scan = data.branch ? data.branches.find((b) => b.branch === data.branch) : null;
   const added = live.filter((r) => r.change === 'added');
   const changed = live.filter((r) => r.change === 'changed');
@@ -288,7 +282,7 @@ function Totals({ data, items, scope }: { data: TriggerListResponse; items: Trig
             {routes !== live.length ? <span className="ml-1.5 text-sm font-medium text-fg-3">in {pluralize(routes, 'route')}</span> : null}
           </>
         }
-        sub={`${fmtNumber(files)} load file · ${fmtNumber(live.length - files)} schedule`}
+        sub={byKind.map(([k, n]) => `${fmtNumber(n)} ${KIND_SHORT_SUB[k]}`).join(' · ') || 'none'}
       />
       <Tile
         label="Tested"
@@ -564,12 +558,17 @@ function RouteGroupRows({
   );
 }
 
+const KIND_ORDER: TriggerKind[] = ['file', 'schedule', 'direct', 'queue', 'kafka', 'rest', 'property'];
+const KIND_SHORT_SUB: Record<TriggerKind, string> = { file: 'load file', schedule: 'schedule', direct: 'direct', queue: 'queue', kafka: 'kafka', rest: 'REST', property: 'property-only' };
+const KIND_ICON: Record<TriggerKind, typeof Clock> = { file: FileInput, schedule: Clock, direct: CornerDownRight, queue: Inbox, kafka: Radio, rest: Globe, property: Braces };
+
 function TriggerSpec({ r }: { r: TriggerRow }) {
-  const Icon = r.kind === 'file' ? FileInput : Clock;
+  const Icon = KIND_ICON[r.kind] ?? Zap;
+  const kindLabel = TRIGGER_KIND_LABEL[r.kind] ?? r.kind;
   return (
     <div className="flex min-w-0 gap-2">
-      <Tooltip content={r.kind === 'file' ? `Load file (${r.scheme})` : `Schedule (${r.scheme})`}>
-        <Icon className="mt-0.5 size-3.5 shrink-0 text-fg-3" aria-label={r.kind === 'file' ? 'Load file' : 'Schedule'} />
+      <Tooltip content={`${kindLabel} (${r.scheme})`}>
+        <Icon className="mt-0.5 size-3.5 shrink-0 text-fg-3" aria-label={kindLabel} />
       </Tooltip>
       <div className="min-w-0">
         {r.kind === 'file' ? (
@@ -594,10 +593,16 @@ function TriggerSpec({ r }: { r: TriggerRow }) {
           </>
         ) : (
           <>
-            <div className="truncate font-mono text-xs text-fg">{r.schedule ?? <span className="text-fg-3">no schedule found</span>}</div>
-            <div className="truncate font-mono text-[11px] text-fg-3" title={r.resolvedUri}>
-              {r.resolvedUri.split('?')[0]}
+            <div className="truncate font-mono text-xs text-fg" title={r.kind === 'schedule' ? undefined : r.resolvedUri}>
+              {r.kind === 'schedule' ? (r.schedule ?? <span className="text-fg-3">no schedule found</span>) : r.resolvedUri.split('?')[0]}
             </div>
+            {r.kind === 'schedule' ? (
+              <div className="truncate font-mono text-[11px] text-fg-3" title={r.resolvedUri}>
+                {r.resolvedUri.split('?')[0]}
+              </div>
+            ) : (
+              <div className="truncate text-[11px] text-fg-3">{r.kind === 'property' ? 'the URI comes only from a property' : TRIGGER_KIND_LABEL[r.kind]}</div>
+            )}
           </>
         )}
         {r.unresolved.length > 0 ? (
@@ -662,18 +667,21 @@ function Coverage({ r }: { r: TriggerRow }) {
 
 function NoScans({ onScanned }: { onScanned: (branch: string) => void }) {
   const origin = typeof window !== 'undefined' ? window.location.origin : 'https://dashboard.example.com';
-  const snippet = `# Run on main and on every PR branch, in each repo. Use the upload-only INGEST token.
-# Camel repo: route XML and properties
+  const snippet = `# Use the upload-only INGEST token.
+# Camel repo, on its long-lived branches (main, core, dev…): route XML and properties
 git ls-files '*.xml' '*.properties' | zip -q -@ scan.zip
 curl -fsS -X POST "${origin}/api/triggers/scan" -H "Authorization: Bearer $PTD_INGEST_TOKEN" \\
   --form-string "branch=$GIT_BRANCH" --form-string "commit=$GIT_COMMIT" --form-string "only=routes" \\
   -F "file=@scan.zip;type=application/zip"
 
-# Test repo: pytest files
-git ls-files '*test_*.py' '*_test.py' | zip -q -@ scan.zip
+# Test repo, on its long-lived branches and on every PR: all Python files (constants,
+# conftest.py and helpers count too). On a PR, the label says which branch it merges into;
+# without it a PR branch's tests don't count anywhere.
+git ls-files '*.py' | zip -q -@ scan.zip
+LABEL=\${PR_NUMBER:+"$REPO PR #$PR_NUMBER → $PR_BASE_BRANCH"}
 curl -fsS -X POST "${origin}/api/triggers/scan" -H "Authorization: Bearer $PTD_INGEST_TOKEN" \\
   --form-string "branch=$GIT_BRANCH" --form-string "commit=$GIT_COMMIT" --form-string "only=tests" \\
-  -F "file=@scan.zip;type=application/zip"`;
+  \${LABEL:+--form-string "label=$LABEL"} -F "file=@scan.zip;type=application/zip"`;
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(snippet);

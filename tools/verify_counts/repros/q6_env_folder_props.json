@@ -1,0 +1,23 @@
+{
+ "xml": [
+  {
+   "path": "src/main/resources/billing/routes/r.xml",
+   "text": "<routes><route id=\"a\"><from uri=\"{{in.uri}}\"/></route></routes>"
+  }
+ ],
+ "properties": [
+  {
+   "path": "config/dev/application.properties",
+   "text": "in.uri=file:/dev/in\n"
+  },
+  {
+   "path": "config/prod/application.properties",
+   "text": "in.uri=jms:queue:IN\n"
+  },
+  {
+   "path": "src/main/resources/accounts/config/a.properties",
+   "text": "in.uri=kafka:x\n"
+  }
+ ],
+ "tests": []
+}

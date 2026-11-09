@@ -6,7 +6,7 @@
 import { sql } from 'drizzle-orm';
 import { index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 import type { TriggerScanSummary } from '@ptd/shared';
-import type { StoredTrigger, TestLabels } from '../triggers/scan.js';
+import type { SkippedRoute, StoredTrigger, TestLabels } from '../triggers/scan.js';
 import type { AutomatedVia, AutomationStatus, BugSeverity, BugStatus, Priority, ResultChange, ResultStatus, TriageCategory } from '@ptd/shared';
 
 export type CaseSource = 'manual' | 'spreadsheet' | 'allure' | 'jira';
@@ -312,6 +312,8 @@ export const triggerScans = sqliteTable(
     tests: text('tests', { mode: 'json' }).$type<TestLabels[]>().notNull().default(sql`'[]'`),
     testsFound: integer('tests_found').notNull().default(0),
     otherRoutes: integer('other_routes').notNull().default(0),
+    /** Routes read but not counted (bean:/imaps: start, a <routeTemplate>, an identical copy…), with the reason. */
+    skippedRoutes: text('skipped_routes', { mode: 'json' }).$type<SkippedRoute[]>().notNull().default(sql`'[]'`),
     files: text('files', { mode: 'json' }).$type<TriggerScanSummary['files']>().notNull().default(sql`'{}'`),
   },
   (t) => [index('trigger_scans_branch_idx').on(t.branch, t.scannedAt)],

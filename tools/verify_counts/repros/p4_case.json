@@ -1,0 +1,15 @@
+{
+ "xml": [
+  {
+   "path": "src/main/resources/m/routes/r.xml",
+   "text": "<routes><route id=\"a\"><from uri=\"file:/in\"/><choice><when><simple>${file:name} starts with 'INV_'</simple><to uri=\"direct:invoiceJob\"/></when><when><simple>${header.CamelFileName} in 'PAY.csv,PAY.txt'</simple><to uri=\"direct:payJob\"/></when></choice></route></routes>"
+  }
+ ],
+ "properties": [],
+ "tests": [
+  {
+   "path": "tests/test_a.py",
+   "text": "def test_a():\n    drop_file(\"inv_20260101.csv\")\n\ndef test_b():\n    drop_file(\"pay.csv\")\n"
+  }
+ ]
+}

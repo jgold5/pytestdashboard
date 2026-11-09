@@ -1,0 +1,10 @@
+{
+ "xml": [
+  {
+   "path": "src/main/resources/m/ctx.xml",
+   "text": "<beans><camelContext><endpoint id=\"inbox\" uri=\"file:/data/in\"/><route id=\"a\"><from uri=\"ref:inbox\"/></route></camelContext></beans>"
+  }
+ ],
+ "properties": [],
+ "tests": []
+}

@@ -1,12 +1,15 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { TriggerGithubScanRequest, TriggerOverviewQuery, TriggerQuery, type TriggerGithubInfo } from '@ptd/shared';
+import { SheetCompareRequest, TriggerGithubScanRequest, TriggerOverviewQuery, TriggerQuery, type SheetComparePreviewResponse, type TriggerGithubInfo } from '@ptd/shared';
 import type { Deps } from '../deps.js';
 import { recordCoverageSnapshot } from '../domain/coverage.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { AppError, parseWith } from '../errors.js';
+import { AppError, badRequest, parseWith } from '../errors.js';
+import { findSheet } from '../import/spreadsheet/commit.js';
+import { SHEET_LIMITS, parseSpreadsheet } from '../import/spreadsheet/parse.js';
+import { compareSheet, detectColumns } from '../triggers/sheetCompare.js';
 import { commitFromTopDir, downloadBranchZip, listBranches } from '../integrations/githubArchive.js';
 import type { ZipLimits } from '../import/zip.js';
 import { prScanStatus, startPrScan, stopPrScan } from '../triggers/prBranchSync.js';
@@ -19,7 +22,7 @@ const BranchParam = z.object({ branch: z.string().trim().min(1).max(200) });
 
 const RepoQuery = z.object({ repo: z.string().trim().regex(/^[\w.-]+\/[\w.-]+$/) });
 
-export function triggerRoutes(app: FastifyInstance, { db, config }: Deps, zipLimits?: ZipLimits): void {
+export function triggerRoutes(app: FastifyInstance, { db, config, uploads }: Deps, zipLimits?: ZipLimits): void {
   // 'ingest': CI scans every branch / PR with the upload-only token
   app.post('/api/triggers/scan', { config: { access: 'ingest', rateLimit: { max: 20, timeWindow: '1 minute' } } }, async (req, reply) => {
     const { repo, fields } = await collectRepoUpload(req, zipLimits);
@@ -42,6 +45,23 @@ export function triggerRoutes(app: FastifyInstance, { db, config }: Deps, zipLim
   app.get('/api/triggers/overview', async (req) => routeOverview(db, parseWith(TriggerOverviewQuery, req.query)));
   app.get('/api/triggers/unlinked-tests', async (req) => unlinkedTests(db, parseWith(TriggerQuery, req.query)));
 
+  // Compare with my sheet: upload a spreadsheet of routes, then compare it with what the dashboard counts
+  app.post('/api/triggers/compare-sheet/preview', { config: { access: 'viewer', rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req): Promise<SheetComparePreviewResponse> => {
+    const file = await req.file({ limits: { fileSize: SHEET_LIMITS.maxFileBytes, files: 1, fields: 5 } });
+    if (!file) throw badRequest('Upload one .xlsx, .csv or .tsv file');
+    const fileName = (file.filename || 'upload').replace(/[\\/]/g, '_').slice(0, 200);
+    const sheets = await parseSpreadsheet(await file.toBuffer(), fileName);
+    if (sheets.every((s) => s.headers.length === 0)) throw new AppError(400, 'empty_spreadsheet', 'The file contains no data');
+    const uploadId = uploads.put(fileName, sheets);
+    return { uploadId, fileName, sheets: sheets.map((s) => ({ name: s.name, headers: s.headers, rowCount: s.rows.length, columns: detectColumns(s.headers) })) };
+  });
+  app.post('/api/triggers/compare-sheet', { config: { access: 'viewer', rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (req) => {
+    const body = parseWith(SheetCompareRequest, req.body);
+    const upload = uploads.get(body.uploadId);
+    if (!upload) throw new AppError(404, 'upload_expired', 'Upload not found or expired — please upload the file again');
+    return compareSheet(db, findSheet(upload.sheets, body.sheet), body);
+  });
+
   // Scan any branch of a configured repo straight from GitHub (editor only: it uses the GitHub token)
   app.get('/api/triggers/github', async (): Promise<TriggerGithubInfo> => ({
     configured: Boolean(config.github.token) && config.github.repos.length > 0,
@@ -59,7 +79,7 @@ export function triggerRoutes(app: FastifyInstance, { db, config }: Deps, zipLim
     try {
       const zip = path.join(tmp, 'branch.zip');
       await downloadBranchZip(config.github, body.repo, body.branch, zip);
-      const { repo, topDir } = await readRepoZip(zip, REPO_ARCHIVE_LIMITS, { stripTopDir: true });
+      const { repo, topDir } = await readRepoZip(zip, REPO_ARCHIVE_LIMITS, { stripTopDir: true, only: body.only });
       applyOnly(repo, body.only);
       if (repo.files.xml === 0 && repo.files.tests === 0) {
         throw new AppError(400, 'nothing_to_scan', `${body.repo}@${body.branch} has no ${body.only === 'routes' ? 'Camel route XML' : 'Python test files'}`);

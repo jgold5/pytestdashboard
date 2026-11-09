@@ -52,13 +52,13 @@ export function systemRoutes(app: FastifyInstance, { config, db }: Deps): void {
 
   app.get('/api/summary', async (req) => {
     const q = parseWith(ScopeBranchQuery, req.query);
-    return getSummary(db, q.branch, q.folder, q.tests);
+    return getSummary(db, q.branch, q.folder, q.tests, q.kinds);
   });
   app.get('/api/meta', async () => getMeta(db));
 
   app.get('/api/report', { config: { access: 'viewer' } }, async (req) => {
     const q = parseWith(ReportQuery, req.query);
-    return getReport(db, q.periodDays, new Date(), q.branch, q.folder, q.tests);
+    return getReport(db, q.periodDays, new Date(), q.branch, q.folder, q.tests, q.kinds);
   });
   app.get('/api/settings', { config: { access: 'viewer' } }, async () => getSettings(db));
   app.put('/api/settings', async (req) => putSettings(db, parseWith(Settings, req.body)));

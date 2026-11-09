@@ -103,6 +103,8 @@ export async function readZip(
   accept: (entryName: string) => boolean,
   onEntry: (entryName: string, data: Buffer) => void | Promise<void>,
   limits: ZipLimits = DEFAULT_ZIP_LIMITS,
+  /** When given, an accepted entry over maxEntryBytes is passed here and skipped instead of failing the whole archive. */
+  onOversize?: (entryName: string, bytes: number) => void,
 ): Promise<ZipReadResult> {
   const archiveBytes = 'buffer' in source ? source.buffer.length : (await stat(source.path)).size;
   // whole-archive budget for the bytes we will actually inflate
@@ -147,7 +149,11 @@ export async function readZip(
           return;
         }
         if (entry.uncompressedSize > limits.maxEntryBytes) {
-          throw new ZipSafetyError('Zip entry exceeds size limit', 413);
+          if (!onOversize) throw new ZipSafetyError('Zip entry exceeds size limit', 413);
+          onOversize(name, entry.uncompressedSize);
+          result.skipped++;
+          zip.readEntry();
+          return;
         }
         readDeclared += entry.uncompressedSize;
         if (readDeclared > readBudget) {

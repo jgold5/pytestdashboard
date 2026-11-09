@@ -225,4 +225,7 @@ CREATE TABLE "trigger_scans" (
 );
 CREATE INDEX "trigger_scans_branch_idx" ON "trigger_scans" ("branch","scanned_at");
 `,
+  /* v5 — routes a trigger scan read but didn't count, with why (for "why isn't X counted") */ `
+ALTER TABLE "trigger_scans" ADD COLUMN "skipped_routes" text DEFAULT '[]' NOT NULL;
+`,
 ];

@@ -3,7 +3,7 @@
  * author names (viewers can read this).
  */
 import { and, asc, desc, eq, gte, inArray, isNotNull, lt, lte, sql } from 'drizzle-orm';
-import type { CoverageTotals, Report, Settings } from '@ptd/shared';
+import type { CoverageTotals, Report, Settings, TriggerKind } from '@ptd/shared';
 import type { Db } from '../db/client.js';
 import { coverageSnapshots, notes, pullRequests, runs, testCasePullRequests, testCases, type RunRow } from '../db/schema.js';
 import { addDays, isoDate } from '../util/time.js';
@@ -80,13 +80,13 @@ function pooledPassRate(rs: RunRow[]): number | null {
   return executed > 0 ? passed / executed : null;
 }
 
-export function getReport(db: Db, periodDays: number, today: Date = new Date(), branch?: string, folder?: string, tests?: string): Report {
+export function getReport(db: Db, periodDays: number, today: Date = new Date(), branch?: string, folder?: string, tests?: string, kinds?: readonly TriggerKind[]): Report {
   const settings = getSettings(db);
   const startDate = addDays(today, -periodDays);
   const startIso = startDate.toISOString();
   const startDay = isoDate(startDate);
   const prevStartIso = addDays(today, -2 * periodDays).toISOString();
-  const coverage = computeCoverage(db, branch, folder, tests);
+  const coverage = computeCoverage(db, branch, folder, tests, kinds);
 
   // coverage at period start: latest snapshot on/before start, else earliest one after it
   const startSnap =

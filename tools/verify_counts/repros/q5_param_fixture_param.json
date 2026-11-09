@@ -1,0 +1,19 @@
+{
+ "xml": [
+  {
+   "path": "src/main/resources/m/routes/r.xml",
+   "text": "<routes><route id=\"invoice-load\"><from uri=\"file:/in\"/></route><route id=\"credit-load\"><from uri=\"file:/in2\"/></route></routes>"
+  }
+ ],
+ "properties": [],
+ "tests": [
+  {
+   "path": "tests/conftest.py",
+   "text": "import pytest\n\n@pytest.fixture(params=[pytest.param(\"invoice-load\", id=\"inv\"), \"credit-load\"])\ndef route_id(request):\n    return request.param\n"
+  },
+  {
+   "path": "tests/test_a.py",
+   "text": "def test_a(route_id):\n    start_route(route_id)\n"
+  }
+ ]
+}

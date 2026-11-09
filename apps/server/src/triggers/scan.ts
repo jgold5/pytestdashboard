@@ -3,8 +3,10 @@
  * cover them. Pure functions, no I/O: the upload code hands in file contents.
  *
  * - Routes come from Camel XML (`<route id="…"><from uri="…"/>`, any namespace
- *   prefix, `<from ref>` → `<endpoint id uri>`). Only routes started by a file
- *   (file/ftp/ftps/sftp/smb) or a schedule (quartz/cron/timer/scheduler) are triggers.
+ *   prefix, `<from ref>` → `<endpoint id uri>`). Routes started by a file
+ *   (file/ftp/ftps/sftp/smb), a schedule (quartz/cron/timer/scheduler), another route
+ *   (direct), a queue (seda/jms…), Kafka or HTTP (netty-http/rest…) are triggers, and so are
+ *   routes whose whole `from` URI is a property no properties file fills in.
  * - `{{key}}` / `${key}` placeholders (with `:default`) are filled in from every
  *   `.properties` file; a key with different values in different files (one file
  *   per environment) is reported with each value instead of guessing.
@@ -12,7 +14,7 @@
  *   markers) or an `allure.dynamic.*` call in its body names the route id, the
  *   schedule's name, or a file the trigger would pick up.
  */
-import type { Trigger, TriggerCoverage } from '@ptd/shared';
+import type { Trigger, TriggerCoverage, TriggerKind } from '@ptd/shared';
 
 export type PropertyIndex = Map<string, Array<{ file: string; value: string }>>;
 
@@ -71,7 +73,8 @@ export function buildPropertyIndex(files: ReadonlyArray<{ path: string; text: st
 }
 
 /** Camel simple/file language functions that also use `${…}`. */
-const CAMEL_LANGUAGE = /^(date|file|header|headers|exchangeProperty|body|bodyAs|in|out|bean|sys|sysenv|env|exchangeId|id|messageTimestamp|camelId|routeId|random|uuid|type|ref|properties|exception)\b/;
+const CAMEL_LANGUAGE =
+  /^(?:(?:date|file|bean|ref|properties|type|random|env|sysenv|sys|bodyAs|mandatoryBodyAs|headerAs|exchangePropertyAs|header|headers|exchangeProperty|variable)\s*[:(]|(?:header|headers|exchangeProperty|body|sys|sysenv|env|exception|variable|variables)\s*(?:[.[(]|$)|(?:in|out)\.(?:header|headers|body)\b|(?:exchangeId|id|messageTimestamp|camelId|routeId|uuid|body|in\.body|exception|exchange|threadName|hostName|stepId)\s*$)/;
 
 const PLACEHOLDER = /\{\{([^{}]+)\}\}|\$\{([^{}]+)\}/g;
 
@@ -92,6 +95,20 @@ export interface Resolved {
 function nearest(values: Array<{ file: string; value: string }> | undefined, near: string | undefined) {
   if (!values || !near || values.length < 2) return values;
   const dir = near.split('/').slice(0, -1);
+  // a properties file applies to a route when it sits in a folder above it, or in the route's own module
+  // (resources/<module>/config/…); another module's file never does. Environment folders elsewhere (config/prod) all apply.
+  const root = moduleRoot(near);
+  const applies = values.filter((v) => {
+    const d = v.file.split('/').slice(0, -1);
+    return (d.length <= dir.length && d.every((s, k) => dir[k] === s)) || (root !== null && v.file.startsWith(`${root}/`));
+  });
+  const sameTree = (v: { file: string }) => {
+    const r = moduleRoot(v.file);
+    return r !== null && r !== root;
+  };
+  if (applies.length > 0) values = applies;
+  else if (root !== null) values = values.filter((v) => !sameTree(v)).length ? values.filter((v) => !sameTree(v)) : values;
+  if (values.length < 2) return values;
   let best = -1;
   const scored = values.map((v) => {
     const d = v.file.split('/').slice(0, -1);
@@ -103,6 +120,16 @@ function nearest(values: Array<{ file: string; value: string }> | undefined, nea
   return scored.filter((x) => x.n === best).map((x) => x.v);
 }
 
+/** `src/main/resources/<module>` for a file in a module, else null. */
+function moduleRoot(file: string): string | null {
+  const segs = file.split('/');
+  const r = segs.lastIndexOf('resources');
+  return r >= 0 && r + 2 < segs.length ? segs.slice(0, r + 2).join('/') : null;
+}
+
+/** Camel property functions: `{{env:NAME}}`, `{{sys:NAME:default}}`, `{{service:NAME}}` — not keys of a properties file. */
+const PROPERTY_FUNCTION = /^(env|sys|sysenv|service|service\.host|service\.port)$/i;
+
 /** Fill in placeholders (values may reference other keys; ≤ 5 rounds). `near` = the file being resolved, for module-scoped properties. */
 export function resolvePlaceholders(input: string, props: PropertyIndex, near?: string): Resolved {
   const unresolved = new Map<string, Trigger['unresolved'][number]>();
@@ -113,7 +140,18 @@ export function resolvePlaceholders(input: string, props: PropertyIndex, near?: 
       out = out.replace(PLACEHOLDER, (whole, a: string | undefined, b: string | undefined) => {
         const body = (a ?? b ?? '').trim();
         const colon = body.indexOf(':');
-        // `{{env:NAME}}`-style functions and `${date:now:yyyyMMdd}` (Camel file language) are not property keys
+        // `{{env:NAME[:default]}}`: an environment variable, unknown here; its default when it has one
+        if (a !== undefined && colon > 0 && PROPERTY_FUNCTION.test(body.slice(0, colon))) {
+          const rest = body.slice(colon + 1);
+          const c2 = rest.indexOf(':');
+          if (c2 >= 0) {
+            changed = true;
+            return rest.slice(c2 + 1);
+          }
+          if (!unresolved.has(body)) unresolved.set(body, { key: body, values: [] });
+          return whole;
+        }
+        // `${date:now:yyyyMMdd}` (Camel file language) is not a property key
         const key = colon >= 0 ? body.slice(0, colon) : body;
         const fallback = colon >= 0 ? body.slice(colon + 1) : null;
         const values = nearest(props.get(key), near);
@@ -123,12 +161,14 @@ export function resolvePlaceholders(input: string, props: PropertyIndex, near?: 
           return distinct[0] as string;
         }
         if (distinct.length === 0) {
-          if (fallback !== null && a !== undefined) {
+          // ${…} can also be Camel's file/simple language (e.g. ${date:now:yyyyMMdd}): not a property
+          const camel = a === undefined && CAMEL_LANGUAGE.test(body);
+          // {{key:default}} (Camel) and ${key:default} (Spring): the default when no file sets the key
+          if (fallback !== null && !camel) {
             changed = true;
             return fallback;
           }
-          // ${…} can also be Camel's file/simple language (e.g. ${date:now:yyyyMMdd}): not a missing property
-          if ((a !== undefined || !CAMEL_LANGUAGE.test(key)) && !unresolved.has(key)) unresolved.set(key, { key, values: [] });
+          if (!camel && !unresolved.has(key)) unresolved.set(key, { key, values: [] });
           return whole;
         }
         if (!unresolved.has(key)) unresolved.set(key, { key, values: values ?? [] });
@@ -152,6 +192,35 @@ export function resolvePlaceholders(input: string, props: PropertyIndex, near?: 
 
 const FILE_SCHEMES = new Set(['file', 'ftp', 'ftps', 'sftp', 'smb']);
 const SCHEDULE_SCHEMES = new Set(['quartz', 'quartz2', 'cron', 'timer', 'scheduler']);
+const DIRECT_SCHEMES = new Set(['direct', 'direct-vm']);
+const QUEUE_SCHEMES = new Set(['seda', 'vm', 'jms', 'activemq', 'amqp', 'sjms', 'sjms2', 'ibmmq', 'sqs', 'aws-sqs', 'aws2-sqs', 'rabbitmq', 'spring-rabbitmq', 'paho', 'paho-mqtt5', 'nats']);
+const REST_SCHEMES = new Set(['rest', 'rest-api', 'restlet', 'netty-http', 'netty4-http', 'jetty', 'servlet', 'platform-http', 'undertow', 'http', 'https', 'cxfrs', 'spark-rest', 'vertx-http', 'coap']);
+
+/** What kind of trigger a `from` endpoint is, or null for one that isn't (bean:, imaps:…). */
+export function kindOfScheme(scheme: string): TriggerKind | null {
+  if (FILE_SCHEMES.has(scheme)) return 'file';
+  if (SCHEDULE_SCHEMES.has(scheme)) return 'schedule';
+  if (DIRECT_SCHEMES.has(scheme)) return 'direct';
+  // custom JMS components are named after their connection: jmsComponentOrders:queue:X
+  if (QUEUE_SCHEMES.has(scheme) || scheme.startsWith('jms')) return 'queue';
+  if (scheme === 'kafka') return 'kafka';
+  if (REST_SCHEMES.has(scheme)) return 'rest';
+  return null;
+}
+
+/** A `from` URI that is nothing but a placeholder (`{{invoice.sftp.url}}`, `${in.uri}`), maybe with options after it. */
+const PROPERTY_ONLY = /^\s*(?:\{\{([^{}]+)\}\}|\$\{([^{}]+)\})/;
+/** The scheme a placeholder's key suggests (`{{sftp.invoice.url}}`, `{{invoiceSftpUri}}` → sftp), for a file poll the properties don't fill in. */
+export function guessFileScheme(key: string): string | null {
+  const words = key
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/);
+  return ['sftp', 'ftps', 'ftp', 'smb'].find((w) => words.includes(w)) ?? null;
+}
+
+/** `master:lockName:file:/in` (only one node consumes): the endpoint inside. */
+export const unwrapMaster = (uri: string): string => /^\s*master:[^:]*:(.+)$/s.exec(uri)?.[1] ?? uri;
 
 function decode(v: string): string {
   const raw = /^RAW\((.*)\)$/s.exec(v) ?? /^RAW\{(.*)\}$/s.exec(v);
@@ -219,6 +288,8 @@ export interface RawRoute {
    * file when its `<from>` has no doneFileName.
    */
   markers: string[];
+  /** Inside a <routeTemplate>: a blueprint, not a route until instantiated. */
+  template?: boolean;
 }
 
 /** `${file:parent}/NAME`: a file next to the one being processed. */
@@ -282,6 +353,7 @@ export function scanCamelXml(file: string, xml: string): { routes: RawRoute[]; e
   const branches: RawCondition[] = [];
   let lineAt = 0;
   let line = 1;
+  let template = 0;
   const lineOf = (offset: number): number => {
     for (; lineAt < offset; lineAt++) if (text.charCodeAt(lineAt) === 10) line++;
     return line;
@@ -291,6 +363,12 @@ export function scanCamelXml(file: string, xml: string): { routes: RawRoute[]; e
     const name = m[2] as string;
     const selfClosing = m[4] === '/';
     const route = stack[stack.length - 1];
+    // a <routeTemplate> is a blueprint, not a route: its <route> runs only when instantiated (with parameters)
+    if (name === 'routeTemplate') {
+      if (closing) template = Math.max(0, template - 1);
+      else if (!selfClosing) template++;
+      continue;
+    }
     if (name === 'route') {
       if (closing) {
         const done = stack.pop();
@@ -299,6 +377,7 @@ export function scanCamelXml(file: string, xml: string): { routes: RawRoute[]; e
       } else if (!selfClosing) {
         const a = attrs(m[3] ?? '');
         const r: RawRoute = { routeId: a.id ?? a.routeId ?? null, file, line: lineOf(m.index ?? 0), inputs: [], conditions: [], markers: [] };
+        if (template > 0) r.template = true;
         routes.push(r);
         stack.push(r);
         starts.push((m.index ?? 0) + m[0].length);
@@ -343,238 +422,39 @@ export function scanCamelXml(file: string, xml: string): { routes: RawRoute[]; e
 }
 
 // ---------------------------------------------------------------------------
-// pytest files
+// pytest files: see pytest.ts
 // ---------------------------------------------------------------------------
 
-export interface ScannedTest {
-  /** pytest node id: `path::Class::test_name`. */
-  id: string;
-  file: string;
-  cls: string | null;
-  name: string;
-  /**
-   * Candidate strings: decorator string arguments and marker names (also from
-   * `pytestmark`), and the string literals in the test body (allure.dynamic.* labels,
-   * a trigger file the test drops, a route id it starts).
-   */
-  strings: string[];
-  /**
-   * Jira/Xray keys (ABC-123) the test names anywhere: its docstring and comments (also the
-   * comment lines just above it), decorators, strings, and the class / module docstring and
-   * comments around it. A test on the default branch naming a case's key marks it automated.
-   */
-  keys: string[];
-}
-
-const JIRA_KEY_G = /\b[A-Z][A-Z0-9_]{1,50}-\d{1,12}\b/g;
-const jiraKeys = (text: string): string[] => [...text.matchAll(JIRA_KEY_G)].map((m) => m[0]);
-
-const STRING_LIT = /[rRbBuUfF]{0,2}("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')/g;
-/** Decorators whose string arguments are not about what is tested. (parametrize counts: a list of route ids is.) */
-const IGNORED_DECORATORS = /^@pytest\.mark\.(usefixtures|skip|skipif|xfail|filterwarnings|timeout|flaky|order|dependency)\b|^@pytest\.fixture\b|^@(staticmethod|classmethod|property)\b/;
-
-function strings(code: string): string[] {
-  const out: string[] = [];
-  for (const m of code.matchAll(STRING_LIT)) {
-    const lit = m[1] as string;
-    const q = lit.startsWith('"""') || lit.startsWith("'''") ? 3 : 1;
-    const v = lit
-      .slice(q, -q)
-      .replace(/\\(.)/g, (_, c: string) => (c === 'n' ? '\n' : c === 't' ? '\t' : c))
-      .trim();
-    if (v && v.length <= 300) out.push(v);
-  }
-  return out;
-}
-
-function decoratorStrings(text: string): string[] {
-  if (IGNORED_DECORATORS.test(text)) return [];
-  const out = strings(text);
-  // a bare marker (`@pytest.mark.invoice_load`) names something by itself
-  const marker = /^@pytest\.mark\.(\w+)/.exec(text);
-  if (marker && marker[1] !== 'parametrize') out.push(marker[1] as string);
-  return out;
-}
-
-/** `pytestmark = pytest.mark.x` / `[pytest.mark.x, pytest.mark.y("z")]`: marker names and their string arguments. */
-function pytestmarkStrings(text: string): string[] {
-  const out: string[] = [];
-  for (const m of text.matchAll(/pytest\.mark\.(\w+)\s*(\((?:[^()]|\([^()]*\))*\))?/g)) {
-    if (IGNORED_DECORATORS.test(`@pytest.mark.${m[1]}`)) continue;
-    out.push(m[1] as string, ...strings(m[2] ?? ''));
-  }
-  return out;
-}
-
-/** Body string literals worth matching: short, single-line values (not docstrings or SQL). */
-const bodyStrings = (body: string): string[] => strings(body).filter((v) => v.length <= 120 && !v.includes('\n'));
-
-const indentOf = (s: string): number => s.length - s.trimStart().length;
-const parenDepth = (s: string): number => {
-  let d = 0;
-  for (const c of s.replace(STRING_LIT, '""')) {
-    if (c === '(' || c === '[' || c === '{') d++;
-    else if (c === ')' || c === ']' || c === '}') d--;
-  }
-  return d;
-};
-
-/**
- * Any Python file can hold tests: pytest's default names are test_*.py and *_test.py, but
- * python_files can change them and a file passed on the command line is collected whatever
- * its name. Only `def test…` functions are read from them.
- */
-export const isPytestFile = (path: string): boolean => /\.py$/.test(path);
-
-/** Test functions and the strings that could label them (indentation-based; no Python parser needed). */
-export function scanPytestFile(file: string, source: string): ScannedTest[] {
-  const lines = source.replace(/\r\n?/g, '\n').split('\n');
-  const tests: ScannedTest[] = [];
-  let pending: string[] = [];
-  /** Keys in the comments and decorators directly above the next def/class. */
-  let pendingKeys: string[] = [];
-  let cls: { name: string; indent: number; strings: string[]; keys: string[] } | null = null;
-  const moduleMarks: string[] = [];
-  /** Strings in module-level assignments (ROUTE_ID = "invoice-load"), shared by the file's tests. */
-  const moduleConsts: string[] = [];
-  /** Keys in the module docstring, module-level comments and constants: shared by the file's tests. */
-  const moduleKeys: string[] = [];
-  /** A comment block or statement that isn't directly above a def belongs to the class or module around it. */
-  const flushPendingKeys = (indent: number) => {
-    if (pendingKeys.length) (cls && indent > cls.indent ? cls.keys : moduleKeys).push(...pendingKeys);
-    pendingKeys = [];
-  };
-  let skipIndent = -1;
-  for (let i = 0; i < lines.length; i++) {
-    const raw = lines[i] as string;
-    const trimmed = raw.trim();
-    if (!trimmed) continue;
-    const indent = indentOf(raw);
-    if (skipIndent >= 0) {
-      if (indent > skipIndent) continue; // body of a helper function
-      skipIndent = -1;
-    }
-    if (trimmed.startsWith('#')) {
-      pendingKeys.push(...jiraKeys(trimmed));
-      continue;
-    }
-    if (cls && indent <= cls.indent && !trimmed.startsWith('@')) cls = null;
-    if (/^pytestmark\s*=/.test(trimmed)) {
-      let text = trimmed;
-      while (parenDepth(text) > 0 && i + 1 < lines.length) text += ` ${(lines[++i] as string).trim()}`;
-      const marks = pytestmarkStrings(text);
-      if (cls && indent > cls.indent) {
-        cls.strings.push(...marks);
-        cls.keys.push(...jiraKeys(text));
-      } else if (indent === 0) {
-        moduleMarks.push(...marks);
-        moduleKeys.push(...jiraKeys(text));
-      }
-      flushPendingKeys(indent);
-      pending = [];
-      continue;
-    }
-    if (trimmed.startsWith('@')) {
-      let text = trimmed;
-      while (parenDepth(text) > 0 && i + 1 < lines.length) text += ` ${(lines[++i] as string).trim()}`;
-      pending.push(...decoratorStrings(text));
-      pendingKeys.push(...jiraKeys(text));
-      continue;
-    }
-    const c = /^class\s+(\w+)/.exec(trimmed);
-    if (c) {
-      cls = /^Test/.test(c[1] as string) ? { name: c[1] as string, indent, strings: pending, keys: [...pendingKeys] } : null;
-      if (!cls) flushPendingKeys(indent);
-      pending = [];
-      pendingKeys = [];
-      continue;
-    }
-    const d = /^(?:async\s+)?def\s+(test\w*)\s*\(/.exec(trimmed);
-    if (!d && /^(?:async\s+)?def\s+\w+\s*\(/.test(trimmed)) {
-      skipIndent = indent;
-      pending = [];
-      pendingKeys = [];
-      continue;
-    }
-    if (/^[A-Za-z_][\w.]*(?:\s*,\s*[A-Za-z_][\w.]*)*\s*(?::[^=]+)?=(?!=)/.test(trimmed) && (indent === 0 || (cls && indent > cls.indent))) {
-      let text = trimmed;
-      while (parenDepth(text) > 0 && i + 1 < lines.length) text += ` ${(lines[++i] as string).trim()}`;
-      const found = bodyStrings(text.slice(text.indexOf('=') + 1));
-      if (indent === 0) {
-        moduleConsts.push(...found);
-        moduleKeys.push(...jiraKeys(text));
-      } else if (cls) {
-        cls.strings.push(...found);
-        cls.keys.push(...jiraKeys(text));
-      }
-      flushPendingKeys(indent);
-      pending = [];
-      continue;
-    }
-    if (d) {
-      const inClass = cls !== null && indent > cls.indent;
-      const body: string[] = [];
-      let j = i + 1;
-      for (; j < lines.length; j++) {
-        const l = lines[j] as string;
-        if (l.trim() && indentOf(l) <= indent) break;
-        body.push(l);
-      }
-      const name = d[1] as string;
-      const bodyText = body.join('\n');
-      tests.push({
-        id: inClass && cls ? `${file}::${cls.name}::${name}` : `${file}::${name}`,
-        file,
-        cls: inClass && cls ? cls.name : null,
-        name,
-        strings: [...new Set([...pending, ...(inClass && cls ? cls.strings : []), ...bodyStrings(bodyText)])],
-        // the body's raw text includes its docstring and comments
-        keys: [...new Set([...pendingKeys, ...(inClass && cls ? cls.keys : []), ...jiraKeys(trimmed), ...jiraKeys(bodyText)])],
-      });
-      pending = [];
-      pendingKeys = [];
-      i = j - 1;
-      continue;
-    }
-    // anything else (module/class docstring lines, statements): its keys belong to the module or class
-    (cls && indent > cls.indent ? cls.keys : moduleKeys).push(...jiraKeys(trimmed));
-    flushPendingKeys(indent);
-    pending = [];
-  }
-  flushPendingKeys(0);
-  // module-level pytestmark and constants apply to every test in the file, wherever they are written
-  const shared = [...moduleMarks, ...moduleConsts];
-  if (shared.length) for (const t of tests) t.strings = [...new Set([...t.strings, ...shared])];
-  if (moduleKeys.length) for (const t of tests) t.keys = [...new Set([...t.keys, ...moduleKeys])];
-  return tests;
-}
-
-/** allure-pytest's fullName for a scanned test: `tests.routes.test_invoice.TestLoad#test_x`. */
-export function allureFullName(t: ScannedTest): string {
-  const mod = t.file.replace(/\.py$/, '').split('/').filter(Boolean).join('.');
-  return `${mod}${t.cls ? `.${t.cls}` : ''}#${t.name}`;
-}
+import { scanPytestFiles } from './pytest.js';
+export { allureFullName, isPytestFile, scanPytestFile, scanPytestFiles, type ScannedTest } from './pytest.js';
 
 // ---------------------------------------------------------------------------
 // Triggers and coverage
 // ---------------------------------------------------------------------------
 
-const norm = (s: string): string => s.trim().toLowerCase().replace(/[\s_.-]+/g, '-');
+/** Names compare case-, separator- and camelCase-insensitively: invoiceLoad = invoice_load = Invoice-Load. */
+export const norm = (s: string): string =>
+  s
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+    .toLowerCase()
+    .replace(/[\s_.-]+/g, '-');
 
 /**
  * Camel `include` is a Java regex. Only simple patterns are tried (no nested
  * quantifiers, bounded length) so an uploaded pattern can't hang the server.
  */
-function safeRegex(pattern: string): RegExp | null {
+function safeRegex(pattern: string, flags = 'i'): RegExp | null {
   if (pattern.length > 300 || /\([^)]*[+*}][^)]*\)\s*[+*{]/.test(pattern) || /\\[1-9]|\(\?[<!=]/.test(pattern)) return null;
   try {
-    return new RegExp(`^(?:${pattern})$`, 'i');
+    return new RegExp(`^(?:${pattern})$`, flags);
   } catch {
     return null;
   }
 }
 
-function antRegex(glob: string): RegExp {
+/** Camel's antInclude is case-sensitive unless the endpoint sets antFilterCaseSensitive=false. */
+function antRegex(glob: string, caseSensitive = true): RegExp {
   const re = glob
     .split(',')
     .map((g) =>
@@ -586,19 +466,22 @@ function antRegex(glob: string): RegExp {
         .join('.*'),
     )
     .join('|');
-  return new RegExp(`^(?:${re})$`, 'i');
+  return new RegExp(`^(?:${re})$`, caseSensitive ? '' : 'i');
 }
 
 // ---------------------------------------------------------------------------
 // Conditions on the file name (<choice><when><simple>${file:name} starts with 'INV_'</simple>…)
 // ---------------------------------------------------------------------------
 
-type NamePart = 'name' | 'onlyname' | 'noext' | 'ext';
+/** ext/noext: after/before the first dot (Camel's file:ext, file:name.noext); ext1/noext1: the last one (.single). */
+type NamePart = 'name' | 'onlyname' | 'noext' | 'noext1' | 'ext' | 'ext1';
 interface Atom {
   part: NamePart;
-  op: 'starts' | 'ends' | 'contains' | 'regex' | 'eq' | 'eqi' | 'in';
+  op: 'starts' | 'ends' | 'contains' | 'regex' | 'eq' | 'in';
   value: string;
   negate: boolean;
+  /** Ignoring case: =~, ~~, or a name passed through toUpperCase()/toLowerCase(). Camel's other operators are case-sensitive. */
+  ci: boolean;
 }
 export interface FileCondition {
   /** OR of AND-groups. */
@@ -607,20 +490,19 @@ export interface FileCondition {
 }
 
 const FILE_REF =
-  /\$\{\s*(?:file:(name|onlyname)(\.noext)?|file:(ext|name\.ext)|(?:in\.)?headers?(?:\.|\[\s*['"]?)CamelFileName(Only)?(?:['"]?\s*\])?)\s*\}/i;
-const ATOM = new RegExp(
-  `${FILE_REF.source}\\s*(not\\s+starts\\s+with|starts\\s+with|startsWith|not\\s+ends\\s+with|ends\\s+with|endsWith|not\\s+contains|contains|not\\s+regex|regex|=~|==|!=|not\\s+in|in)\\s*(?:'([^']*)'|"([^"]*)")`,
-  'gi',
-);
+  /\$\{\s*(?:file:(name|onlyname)(\.noext(?:\.single)?)?|file:(ext(?:\.single)?|name\.ext(?:\.single)?)|(?:in\.)?headers?(?:\.|:|\[\s*['"]?)CamelFileName(Only)?(?:['"]?\s*\])?)\s*\}/i;
+/** Simple-language operators, longest first; `~starts with`… are this parser's own, for a name passed through toUpperCase(). */
+const OPERATORS = String.raw`!~~|~~|!=~|=~|!=|==|~starts\s+with|~ends\s+with|~regex|~in|!startsWith|!starts\s+with|!endsWith|!ends\s+with|!contains|!regex|!in|not\s+starts\s+with|starts\s+with|startsWith|not\s+ends\s+with|ends\s+with|endsWith|not\s+contains|contains|not\s+regex|regex|not\s+in|in`;
+const ATOM = new RegExp(`${FILE_REF.source}\\s*(${OPERATORS})\\s*(?:'([^']*)'|"([^"]*)")`, 'gi');
 
 function atomPart(m: RegExpMatchArray): NamePart {
-  if (m[3]) return 'ext';
-  if (m[2]) return 'noext';
+  if (m[3]) return /single$/i.test(m[3]) ? 'ext1' : 'ext';
+  if (m[2]) return /single$/i.test(m[2]) ? 'noext1' : 'noext';
   if (m[1]?.toLowerCase() === 'onlyname' || m[4]) return 'onlyname';
   return 'name';
 }
 
-const NAME_BASE = String.raw`(?:in\.)?headers?(?:\.|\[\s*['"]?)CamelFileName(?:Only)?(?:['"]?\s*\])?|file:(?:name|onlyname)(?:\.noext)?`;
+const NAME_BASE = String.raw`(?:in\.)?headers?(?:\.|:|\[\s*['"]?)CamelFileName(?:Only)?(?:['"]?\s*\])?|file:(?:name|onlyname)(?:\.noext)?`;
 const METHOD_CHAIN = new RegExp(String.raw`\$\{\s*(${NAME_BASE})((?:\.\w+\((?:[^()'"]|'[^']*'|"[^"]*")*\))+)\s*\}`, 'gi');
 const BOOLEAN_METHODS: Record<string, string> = {
   startswith: 'starts with',
@@ -642,14 +524,19 @@ export function normalizeCondition(expr: string): string {
     .replace(/\$\{\s*properties:([^}:]+)(?::[^}]*)?\}/gi, "'{{$1}}'")
     .replace(METHOD_CHAIN, (_whole, base: string, chain: string) => {
       let sub = false;
+      let ci = false;
       for (const m of chain.matchAll(/\.(\w+)\(((?:[^()'"]|'[^']*'|"[^"]*")*)\)/g)) {
         const name = (m[1] as string).toLowerCase();
         if (name === 'substring' || name === 'substr') sub = true;
+        if (name === 'touppercase' || name === 'tolowercase') ci = true;
         const op = BOOLEAN_METHODS[name];
         if (op) {
           const arg = /^\s*(?:'([^']*)'|"([^"]*)")\s*$/.exec(m[2] ?? '');
           if (!arg) return `\${${base}}`;
-          return `\${${base}} ${sub && op !== 'regex' ? 'contains' : op} '${arg[1] ?? arg[2] ?? ''}'`;
+          const plain = sub && op !== 'regex' ? 'contains' : op;
+          // after toUpperCase()/toLowerCase() the comparison ignores case
+          const used = ci ? ({ contains: '~~', '==': '=~', 'starts with': '~starts with', 'ends with': '~ends with', regex: '~regex' } as Record<string, string>)[plain] ?? plain : plain;
+          return `\${${base}} ${used} '${arg[1] ?? arg[2] ?? ''}'`;
         }
       }
       return `\${${base}}${sub ? ' §substring§' : ''}`;
@@ -668,23 +555,22 @@ export function parseFileCondition(rawExpr: string): FileCondition | null {
     for (const andPart of orPart.split(/&&|\s+and\s+/i)) {
       for (const m of andPart.matchAll(ATOM)) {
         const rawOp = (m[5] as string).toLowerCase().replace(/\s+/g, ' ');
-        const negate = rawOp.startsWith('not ') || rawOp === '!=';
-        const base = rawOp.replace(/^not /, '');
+        const negate = rawOp.startsWith('not ') || rawOp.startsWith('!');
+        const ci = rawOp.includes('~');
+        const base = rawOp.replace(/^not |^!/, '').replace(/^~(?!~)/, '');
         const op: Atom['op'] =
           base === 'starts with' || base === 'startswith'
             ? 'starts'
             : base === 'ends with' || base === 'endswith'
               ? 'ends'
-              : base === 'contains'
+              : base === 'contains' || base === '~~'
                 ? 'contains'
                 : base === 'regex'
                   ? 'regex'
-                  : base === '=~'
-                    ? 'eqi'
-                    : base === 'in'
-                      ? 'in'
-                      : 'eq';
-        atoms.push({ part: atomPart(m), op, value: m[6] ?? m[7] ?? '', negate });
+                  : base === 'in'
+                    ? 'in'
+                    : 'eq';
+        atoms.push({ part: atomPart(m), op, value: m[6] ?? m[7] ?? '', negate, ci });
       }
     }
     if (atoms.length > 0) groups.push(atoms);
@@ -696,8 +582,8 @@ export function parseFileCondition(rawExpr: string): FileCondition | null {
 function displayGroup(atoms: Atom[]): string {
   const pos = atoms.filter((a) => !a.negate && (a.part === 'name' || a.part === 'onlyname'));
   const start = pos.find((a) => a.op === 'starts');
-  const end = pos.find((a) => a.op === 'ends') ?? atoms.find((a) => !a.negate && a.part === 'ext' && (a.op === 'eq' || a.op === 'eqi'));
-  const endText = end ? (end.part === 'ext' ? `.${end.value.replace(/^\./, '')}` : end.value) : '';
+  const end = pos.find((a) => a.op === 'ends') ?? atoms.find((a) => !a.negate && (a.part === 'ext' || a.part === 'ext1') && a.op === 'eq');
+  const endText = end ? (end.part === 'ext' || end.part === 'ext1' ? `.${end.value.replace(/^\./, '')}` : end.value) : '';
   const rest = atoms.filter((a) => a !== start && a !== end);
   const parts: string[] = [];
   if (start || end) parts.push(`${start?.value ?? ''}*${endText}`);
@@ -713,7 +599,7 @@ function displayGroup(atoms: Atom[]): string {
               ? `/${a.value}/`
               : a.op === 'in'
                 ? a.value.split(',').map((x) => x.trim()).join(' | ')
-                : a.part === 'ext'
+                : a.part === 'ext' || a.part === 'ext1'
                   ? `*.${a.value.replace(/^\./, '')}`
                   : a.value;
     parts.push(a.negate ? `not ${v}` : v);
@@ -723,17 +609,21 @@ function displayGroup(atoms: Atom[]): string {
 
 function namePart(file: string, part: NamePart): string {
   const only = file.slice(file.lastIndexOf('/') + 1);
-  const dot = only.lastIndexOf('.');
-  if (part === 'ext') return dot > 0 ? only.slice(dot + 1) : '';
-  if (part === 'noext') return dot > 0 ? only.slice(0, dot) : only;
+  const first = only.indexOf('.', 1);
+  const last = only.lastIndexOf('.');
+  if (part === 'ext') return first > 0 ? only.slice(first + 1) : '';
+  if (part === 'ext1') return last > 0 ? only.slice(last + 1) : '';
+  if (part === 'noext') return first > 0 ? only.slice(0, first) : only;
+  if (part === 'noext1') return last > 0 ? only.slice(0, last) : only;
   return part === 'onlyname' ? only : file;
 }
 
 export function conditionMatches(cond: FileCondition, fileName: string): boolean {
   return cond.groups.some((atoms) =>
     atoms.every((a) => {
-      const v = namePart(fileName, a.part).toLowerCase();
-      const x = a.value.toLowerCase();
+      const raw = namePart(fileName, a.part);
+      const v = a.ci ? raw.toLowerCase() : raw;
+      const x = a.ci ? a.value.toLowerCase() : a.value;
       const hit =
         a.op === 'starts'
           ? v.startsWith(x)
@@ -742,10 +632,10 @@ export function conditionMatches(cond: FileCondition, fileName: string): boolean
             : a.op === 'contains'
               ? v.includes(x)
               : a.op === 'regex'
-                ? (safeRegex(a.value)?.test(namePart(fileName, a.part)) ?? false)
+                ? (safeRegex(a.value, a.ci ? 'i' : '')?.test(raw) ?? false)
                 : a.op === 'in'
                   ? x.split(',').some((y) => y.trim() === v)
-                  : v === x.replace(a.part === 'ext' ? /^\./ : /$^/, '');
+                  : v === x.replace(a.part === 'ext' || a.part === 'ext1' ? /^\./ : /$^/, '');
       return a.negate ? !hit : hit;
     }),
   );
@@ -845,6 +735,11 @@ export function splitFilePatterns(pattern: string, kind: 'regex' | 'glob' | 'nam
 export interface TestLabels {
   id: string;
   strings: string[];
+  /**
+   * The strings it is labelled with (decorators, markers, allure.* calls): trusted for any of a
+   * trigger's names. Absent in scans stored before labels were told apart from body strings.
+   */
+  labels?: string[];
   /** Jira/Xray keys the test names (absent in scans stored before keys were collected). */
   keys?: string[];
 }
@@ -856,7 +751,8 @@ export type StoredTrigger = Trigger & {
 
 const escapeRe = (s: string): string => s.replace(/[.*+?^$()|[\]{}\\]/g, '\\$&');
 /** fileName / doneFileName may use the file language (INV_${date:now:yyyyMMdd}.csv, ${file:name}.done): any value there. */
-const fileLanguageRegex = (pattern: string): RegExp | null => safeRegex(pattern.split(/\$\{[^}]*\}/).map(escapeRe).join('.*'));
+/** Camel compares fileName / doneFileName exactly (name.equals), so case counts. */
+const fileLanguageRegex = (pattern: string): RegExp | null => safeRegex(pattern.split(/\$\{[^}]*\}/).map(escapeRe).join('.*'), '');
 
 /** Does a file name (a label like INV_20260101.csv) start this file trigger? */
 function fileTester(t: StoredTrigger): ((fileName: string) => boolean) | null {
@@ -869,7 +765,7 @@ function fileTester(t: StoredTrigger): ((fileName: string) => boolean) | null {
     if (cond && cond.groups.every((g) => g.some((x) => !x.negate && x.value.length >= 3))) testers.push((f) => conditionMatches(cond, f));
   } else if (m?.pattern ?? t.filePattern) {
     const pattern = (m?.pattern ?? t.filePattern) as string;
-    const re = t.patternKind === 'regex' ? safeRegex(pattern) : t.patternKind === 'glob' ? antRegex(pattern) : fileLanguageRegex(pattern);
+    const re = t.patternKind === 'regex' ? safeRegex(pattern) : t.patternKind === 'glob' ? antRegex(pattern, !/[?&]antFilterCaseSensitive=false\b/i.test(t.resolvedUri)) : fileLanguageRegex(pattern);
     if (re) testers.push((f) => re.test(f));
   }
   const done = m?.doneFile ?? t.doneFile;
@@ -877,47 +773,126 @@ function fileTester(t: StoredTrigger): ((fileName: string) => boolean) | null {
     const re = fileLanguageRegex(done);
     if (re) testers.push((f) => re.test(f));
   }
-  // a pattern that accepts any file (include=.*, "not X") says nothing about which test covers it
-  const selective = testers.filter((x) => BROAD_PROBES.filter((p) => x(p)).length < 2);
+  // a pattern that accepts any file (include=.*, "not X", *.csv) says nothing about which test covers it
+  const probes = broadProbes([m?.pattern, t.filePattern, m?.condition, t.condition, done]);
+  const selective = testers.filter((x) => probes.filter((p) => x(p)).length < 2);
   return selective.length ? (f) => selective.some((x) => x(f)) : null;
 }
 
 /** Made-up file names: a pattern accepting most of them is too broad to link a test by file name. */
 const BROAD_PROBES = ['zq_probe_7x3.tmp', 'QZ9PROBE.XYZ', 'probe-file.txt'];
 
-/** Names a label can use for a trigger: route id, schedule name, the job a branch sends files to, file/trigger-file name. */
-function triggerNames(t: StoredTrigger): string[] {
-  const names: string[] = [];
-  if (t.routeId) names.push(t.routeId);
-  if (t.kind === 'schedule') {
-    const name = parseEndpoint(t.resolvedUri)?.path.split('/').filter(Boolean).pop();
-    if (name) names.push(name);
+/**
+ * The probes plus the same made-up names with each extension the pattern names
+ * (`.*\.csv` → zq_probe_7x3.csv…), so an extension-only pattern counts as broad too.
+ */
+export function broadProbes(patterns: ReadonlyArray<string | null | undefined>): string[] {
+  const exts = new Set<string>();
+  for (const p of patterns) {
+    if (!p) continue;
+    const plain = p.replace(/\\/g, '');
+    for (const m of plain.matchAll(/\.([A-Za-z0-9]{1,8})(?![A-Za-z0-9])/g)) exts.add((m[1] as string).toLowerCase());
+    for (const m of plain.matchAll(/\.\(\??:?([A-Za-z0-9|]+)\)/g)) for (const e of (m[1] as string).split('|')) if (e) exts.add(e.toLowerCase());
+    // ends with 'csv' in a condition (${file:name} ends with '.csv' / ext == 'csv')
+    for (const m of plain.matchAll(/'\.?([A-Za-z0-9]{1,8})'/g)) exts.add((m[1] as string).toLowerCase());
   }
-  // a <choice> branch's job: direct:invoiceJob ↔ label "invoiceJob"
-  const job = t.target ? parseEndpoint(t.target)?.path.split(/[/?]/).filter(Boolean).pop() : null;
-  if (job) names.push(job);
-  if (t.kind === 'file') {
-    for (const v of [t.filePattern, t.match?.pattern, t.doneFile, t.match?.doneFile]) if (v) names.push(v);
+  const out = [...BROAD_PROBES];
+  for (const e of exts) out.push(`zq_probe_7x3.${e}`, `QZ9PROBE.${e.toUpperCase()}`, `probe-file.${e}`);
+  return out;
+}
+
+/**
+ * What a name is, for how much a body string must look like it before it counts:
+ *   id    the route id
+ *   name  another name for it: a schedule's, a branch's job, a queue/topic/direct endpoint's, a REST path
+ *   file  a file pattern or trigger file name
+ *   uri   the endpoint as written (seda:orders, direct:invoiceJob): specific by itself
+ */
+export type NameKind = 'id' | 'name' | 'file' | 'uri';
+
+/** Names a test can use for a trigger, normalized, with their kind. */
+export function triggerNames(t: StoredTrigger): Array<{ n: string; kind: NameKind }> {
+  const names: Array<{ n: string; kind: NameKind }> = [];
+  const add = (v: string | null | undefined, kind: NameKind) => {
+    const n = v ? norm(v) : '';
+    if (n) names.push({ n, kind });
+  };
+  add(t.routeId, 'id');
+  if (t.kind === 'schedule') add(parseEndpoint(t.resolvedUri)?.path.split('/').filter(Boolean).pop(), 'name');
+  // a <choice> branch's job: direct:invoiceJob ↔ label "invoiceJob" (or "direct:invoiceJob")
+  if (t.target) {
+    add(parseEndpoint(t.target)?.path.split(/[/?]/).filter(Boolean).pop(), 'name');
+    add(t.target.split('?')[0], 'uri');
   }
-  return [...new Set(names.map(norm).filter(Boolean))];
+  for (const v of endpointNames(t)) add(v, 'name');
+  if (t.kind !== 'file' && t.kind !== 'property' && !PROPERTY_ONLY.test(t.resolvedUri)) add(t.resolvedUri.split('?')[0]?.replace(/^([\w+.-]+):\/\//, '$1:'), 'uri');
+  if (t.kind === 'file') for (const v of [t.filePattern, t.match?.pattern, t.doneFile, t.match?.doneFile]) add(v, 'file');
+  const seen = new Set<string>();
+  return names.filter((x) => !seen.has(`${x.kind}\0${x.n}`) && !!seen.add(`${x.kind}\0${x.n}`));
+}
+
+/**
+ * Does a string in a test's body (not one it is labelled with) say enough to link it by this
+ * name? Labels (decorators, markers, allure.*) link by any name. A body is full of short
+ * words ("orders", "start", "load"), so there a name has to be distinctive: several words
+ * (invoice-load, parseInvoice, api/orders) or a number (OSCAR150) — or, for a route id or a
+ * file name, at least 8 characters. The endpoint as written (seda:orders) always counts.
+ */
+export function bodyCanName(n: string, kind: NameKind): boolean {
+  if (kind === 'uri') return true;
+  const core = n.replace(/^[/-]+|[/-]+$/g, '');
+  const several = core.length >= 5 && /[-\d/:]/.test(core);
+  if (several) return true;
+  return (kind === 'id' || kind === 'file') && core.length >= 8;
+}
+/**
+ * Names for a route started by another route, a queue, Kafka or HTTP: the endpoint's name
+ * (direct:invoiceJob → invoiceJob, jms:queue:ORDERS → ORDERS, kafka:invoices → invoices) or
+ * the HTTP path (netty-http:http://0.0.0.0:8080/api/orders → /api/orders).
+ */
+function endpointNames(t: StoredTrigger): string[] {
+  if (t.kind !== 'direct' && t.kind !== 'queue' && t.kind !== 'kafka' && t.kind !== 'rest') return [];
+  const ep = parseEndpoint(t.resolvedUri);
+  if (!ep || PROPERTY_ONLY.test(ep.path)) return [];
+  if (t.kind === 'rest') {
+    const url = /^[a-z][\w+.-]*:\/\/[^/]*(\/[^?#]*)?/i.exec(ep.path);
+    let p: string;
+    if (url) p = url[1] ?? '';
+    else if (ep.scheme === 'rest' || ep.scheme === 'rest-api') {
+      // rest:verb:path[:uriTemplate]
+      const [path = '', template = ''] = ep.path.replace(/^(get|post|put|delete|patch|head|options):/i, '').split(':');
+      p = `${path.replace(/\/$/, '')}/${template.replace(/^\//, '')}`;
+    } else if (ep.scheme === 'http' || ep.scheme === 'https' || /^[^/]*:\d+(\/|$)/.test(ep.path)) p = ep.path.replace(/^[^/]*/, ''); // host:port/path
+    else p = ep.path;
+    if (ep.params.contextPath) p = `${ep.params.contextPath.replace(/\/$/, '')}/${p.replace(/^\//, '')}`;
+    p = p.replace(/\/+$/, '');
+    if (!p || p === '/' || p.includes('{{')) return [];
+    const slash = p.startsWith('/') ? p : `/${p}`;
+    return [slash, slash.slice(1)];
+  }
+  const name = ep.path.split(/[/:]/).filter(Boolean).pop();
+  return name && !name.includes('{{') ? [name] : [];
 }
 
 const FILE_NAME_LIKE = /^[\w.-]+\.\w+$/;
 
 /**
- * Which tests cover which triggers (by trigger key). Exact names go through an
- * index; only labels that look like file names (INV_20260101.csv) are tested
- * against each file trigger's patterns.
+ * Which tests cover which triggers (by trigger key). Exact names go through an index; only
+ * strings that look like file names (INV_20260101.csv) are tried against each file trigger's
+ * patterns. A string a test is labelled with links by any of the trigger's names; a string
+ * from its body only by a distinctive one (see bodyCanName).
  */
 export function coverTriggers(triggers: readonly StoredTrigger[], tests: readonly TestLabels[]): Map<string, TriggerCoverage[]> {
-  const byName = new Map<string, Array<{ test: string; via: string }>>();
+  const byName = new Map<string, Array<{ test: string; via: string; label: boolean }>>();
   const fileLabels: Array<{ test: string; via: string }> = [];
   for (const t of tests) {
+    // scans stored before labels were told apart: every string counts as a label (as it did then)
+    const labels = t.labels ? new Set(t.labels) : null;
     for (const s of t.strings) {
       const n = norm(s);
       if (!n) continue;
       const list = byName.get(n) ?? [];
-      list.push({ test: t.id, via: s });
+      list.push({ test: t.id, via: s, label: labels ? labels.has(s) : true });
       byName.set(n, list);
       if (FILE_NAME_LIKE.test(s.trim())) fileLabels.push({ test: t.id, via: s.trim() });
     }
@@ -925,7 +900,10 @@ export function coverTriggers(triggers: readonly StoredTrigger[], tests: readonl
   const out = new Map<string, TriggerCoverage[]>();
   for (const t of triggers) {
     const hits = new Map<string, string>();
-    for (const n of triggerNames(t)) for (const h of byName.get(n) ?? []) if (!hits.has(h.test)) hits.set(h.test, h.via);
+    for (const { n, kind } of triggerNames(t)) {
+      const body = bodyCanName(n, kind);
+      for (const h of byName.get(n) ?? []) if (!hits.has(h.test) && (h.label || body)) hits.set(h.test, h.via);
+    }
     const tester = fileLabels.length ? fileTester(t) : null;
     if (tester) for (const f of fileLabels) if (!hits.has(f.test) && tester(f.via)) hits.set(f.test, f.via);
     out.set(
@@ -942,7 +920,18 @@ export interface ScanInput {
   tests: ReadonlyArray<{ path: string; text: string }>;
 }
 
+/** A route the scan read but doesn't count, and why. */
+export interface SkippedRoute {
+  routeId: string | null;
+  module: string | null;
+  file: string;
+  line: number;
+  reason: string;
+}
+
 export interface ScanOutput {
+  /** Routes read but not counted: what starts them is not a trigger, a template, a copy… */
+  skippedRoutes: SkippedRoute[];
   triggers: StoredTrigger[];
   /** Tests found in the uploaded pytest files, for matching against any branch's triggers later. */
   tests: TestLabels[];
@@ -980,13 +969,21 @@ function describeSchedule(scheme: string, p: Record<string, string>): string | n
 export function scanRepository(input: ScanInput): ScanOutput {
   const warnings: string[] = [];
   const props = buildPropertyIndex(input.properties);
-  const endpoints = new Map<string, string>();
+  /** `<endpoint id uri>` by id: ids are per Camel context, so the same file's, else the same module's, else the only one. */
+  const endpointDefs = new Map<string, Array<{ file: string; module: string | null; uri: string }>>();
   const raw: RawRoute[] = [];
   for (const f of input.xml) {
     const r = scanCamelXml(f.path, f.text);
     raw.push(...r.routes);
-    for (const [id, uri] of r.endpoints) endpoints.set(id, uri);
+    for (const [id, uri] of r.endpoints) endpointDefs.set(id, [...(endpointDefs.get(id) ?? []), { file: f.path, module: moduleOf(f.path), uri }]);
   }
+  const endpointFor = (ref: string, file: string): string | undefined => {
+    const defs = endpointDefs.get(ref) ?? [];
+    const module = moduleOf(file);
+    return (defs.find((d) => d.file === file) ?? (defs.filter((d) => d.module === module).length === 1 ? defs.find((d) => d.module === module) : undefined) ?? (defs.length === 1 ? defs[0] : undefined))?.uri;
+  };
+  /** Route id → its inputs as written, to tell a copy of a route (counted once) from a different route reusing the id. */
+  const firstInputs = new Map<string, string>();
 
   const triggers: StoredTrigger[] = [];
   const usedKeys = new Set<string>();
@@ -998,15 +995,35 @@ export function scanRepository(input: ScanInput): ScanOutput {
     return k;
   };
   let otherRoutes = 0;
+  const skippedRoutes: SkippedRoute[] = [];
   for (const r of raw) {
     const module = moduleOf(r.file);
+    const skip = (reason: string) => skippedRoutes.push({ routeId: r.routeId, module, file: r.file, line: r.line, reason });
+    if (r.template) {
+      skip('a <routeTemplate>: not a route until something instantiates it');
+      continue;
+    }
     if (r.routeId) {
       const id = `${module ?? ''}\0${r.routeId}`;
       const first = routeIds.get(id);
-      if (first) warnings.push(`route id "${r.routeId}" is defined more than once${module ? ` in ${module}` : ''} (${r.file}:${r.line}, first at ${first})`);
-      else routeIds.set(id, `${r.file}:${r.line}`);
+      const inputs = JSON.stringify(r.inputs.map((x) => x.uri ?? `ref:${x.ref}`));
+      if (first) {
+        // Camel won't start two routes with one id in a context: an identical copy is counted once
+        const copy = firstInputs.get(id) === inputs;
+        warnings.push(`route id "${r.routeId}" is defined more than once${module ? ` in ${module}` : ''} (${r.file}:${r.line}, first at ${first})${copy ? ': the same route, counted once' : ''}`);
+        if (copy) {
+          skip(`an identical copy of the route at ${first}: counted once`);
+          continue;
+        }
+      } else {
+        routeIds.set(id, `${r.file}:${r.line}`);
+        firstInputs.set(id, inputs);
+      }
     }
-    if (r.inputs.length === 0) continue;
+    if (r.inputs.length === 0) {
+      skip('has no <from>');
+      continue;
+    }
     const conditions = r.conditions
       .map((c) => ({ c, resolved: resolvePlaceholders(normalizeCondition(c.expr), props, r.file) }))
       .map((x) => ({ ...x, parsed: parseFileCondition(x.resolved.firstVariant) }))
@@ -1015,15 +1032,32 @@ export function scanRepository(input: ScanInput): ScanOutput {
     // the marker file a load route deletes when it is done: its trigger file when the <from> names none
     const marker = r.markers[0] ? resolvePlaceholders(r.markers[0], props, r.file) : null;
     r.inputs.forEach((inp, idx) => {
-      const uri = inp.uri ?? (inp.ref ? endpoints.get(inp.ref) : undefined);
+      // <from ref="x"/> and the ref: component (<from uri="ref:x"/>) both name an <endpoint id="x">
+      const refId = inp.ref ?? /^\s*ref:(?:\/\/)?([^?\s]+)\s*$/.exec(inp.uri ?? '')?.[1];
+      const uri = (refId ? endpointFor(refId, r.file) : undefined) ?? inp.uri ?? undefined;
       if (!uri) {
         warnings.push(`${r.file}:${inp.line}: <from> without a uri${inp.ref ? ` (endpoint "${inp.ref}" not found)` : ''}`);
         return;
       }
-      const resolved = resolvePlaceholders(uri, props, r.file);
-      const ep = parseEndpoint(resolved.firstVariant);
-      const kind = ep && FILE_SCHEMES.has(ep.scheme) ? 'file' : ep && SCHEDULE_SCHEMES.has(ep.scheme) ? 'schedule' : null;
-      if (!ep || !kind) return;
+      const filled = resolvePlaceholders(uri, props, r.file);
+      const resolved = { ...filled, text: unwrapMaster(filled.text), firstVariant: unwrapMaster(filled.firstVariant) };
+      let ep = parseEndpoint(resolved.firstVariant);
+      let kind = ep ? kindOfScheme(ep.scheme) : null;
+      const fromProperty = PROPERTY_ONLY.test(uri);
+      if (fromProperty && (!ep || !kind) && !PROPERTY_ONLY.test(resolved.firstVariant)) {
+        // the property is set, to something that starts no route (bean:, stub:, empty): say so rather than drop it silently
+        warnings.push(`${r.file}:${inp.line}: route ${r.routeId ? `"${r.routeId}" ` : ''}starts from ${uri.trim()} = "${resolved.firstVariant.trim().slice(0, 80)}", not a trigger`);
+        return;
+      }
+      if (!ep) {
+        // the whole URI is a property no properties file fills in: an SFTP/FTP poll when its key says so, else of unknown kind
+        const only = PROPERTY_ONLY.exec(resolved.firstVariant);
+        if (!only) return;
+        const guessed = guessFileScheme(only[1] ?? only[2] ?? '');
+        kind = guessed ? 'file' : 'property';
+        ep = { scheme: guessed ?? 'property', path: only[0].trim(), params: {} };
+      }
+      if (!kind) return;
       routeHasTrigger = true;
       // fields shown to people come from the single-valued resolution, so per-environment values stay visible as placeholders
       const shown = parseEndpoint(resolved.text) ?? ep;
@@ -1091,11 +1125,17 @@ export function scanRepository(input: ScanInput): ScanOutput {
         });
       }
     });
-    if (!routeHasTrigger) otherRoutes++;
+    if (!routeHasTrigger) {
+      otherRoutes++;
+      const first = r.inputs[0];
+      const raw = first?.uri ?? (first?.ref ? `ref ${first.ref}` : '');
+      const filled = first?.uri ? resolvePlaceholders(first.uri, props, r.file).firstVariant.trim() : raw;
+      skip(`starts from ${filled.split('?')[0]?.slice(0, 120)}${filled !== raw && raw ? ` (${raw.trim().slice(0, 80)})` : ''}, which is not a trigger type (file, schedule, direct, queue, Kafka, REST)`);
+    }
   }
 
-  const tests: TestLabels[] = input.tests.flatMap((f) => scanPytestFile(f.path, f.text)).map((t) => ({ id: t.id, strings: t.strings, keys: t.keys }));
+  const tests: TestLabels[] = scanPytestFiles(input.tests).map((t) => ({ id: t.id, strings: t.strings, labels: t.labels, keys: t.keys }));
   const coverage = coverTriggers(triggers, tests);
   for (const t of triggers) t.coveredBy = coverage.get(t.key) ?? [];
-  return { triggers, tests, testsFound: tests.length, otherRoutes, warnings };
+  return { skippedRoutes, triggers, tests, testsFound: tests.length, otherRoutes, warnings };
 }

@@ -13,6 +13,7 @@
     "start": "pnpm --filter @ptd/server start",
     "seed": "pnpm --filter @ptd/server seed",
     "reset-data": "pnpm --filter @ptd/server reset-data",
+    "verify-counts": "python3 tools/verify_counts/compare.py",
     "typecheck": "pnpm -r typecheck && tsc -p e2e",
     "lint": "eslint .",
     "format": "prettier --write .",

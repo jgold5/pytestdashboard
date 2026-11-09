@@ -24,14 +24,23 @@ const SKIP_DIR = /(^|\/)(\.git|node_modules|target|build|dist|out|\.venv|venv|si
 
 export type FileClass = 'xml' | 'properties' | 'tests';
 
+/**
+ * Java/Kotlin test source sets: their route XML is copies of routes for unit and integration
+ * tests, and their .properties override the real ones for those tests. Neither is scope.
+ */
+const TEST_SOURCES = /(^|\/)src\/(test|it|integrationTest|integration-test|intTest|testFixtures|e2e)\//;
+
 export function classify(filePath: string): FileClass | null {
   if (SKIP_DIR.test(filePath)) return null;
-  // Camel XML under src/test is test fixtures (copies of routes for unit tests), not scope
-  if (/\.xml$/i.test(filePath)) return /(^|\/)src\/test\//.test(filePath) ? null : 'xml';
-  if (/\.properties$/i.test(filePath)) return 'properties';
+  if (/\.xml$/i.test(filePath)) return TEST_SOURCES.test(filePath) ? null : 'xml';
+  if (/\.properties$/i.test(filePath)) return TEST_SOURCES.test(filePath) ? null : 'properties';
   if (isPytestFile(filePath)) return 'tests';
   return null;
 }
+
+/** Which classes of file a scan of only one side reads (the other side is never even unpacked). */
+const wanted = (only: 'routes' | 'tests' | undefined) => (cls: FileClass | null): boolean =>
+  cls !== null && (only === 'tests' ? cls === 'tests' : only === 'routes' ? cls !== 'tests' : true);
 
 async function readCapped(stream: Readable, cap: number): Promise<Buffer | null> {
   const chunks: Buffer[] = [];
@@ -89,7 +98,11 @@ export const REPO_ARCHIVE_LIMITS: ZipLimits = {
  * Read a repo snapshot from a zip on disk. GitHub archives put everything under one
  * `<owner>-<repo>-<sha>/` folder: `stripTopDir` removes it (and returns its name).
  */
-export async function readRepoZip(zipPath: string, limits: ZipLimits, opts: { stripTopDir?: boolean } = {}): Promise<{ repo: CollectedRepo; topDir: string | null }> {
+export async function readRepoZip(
+  zipPath: string,
+  limits: ZipLimits,
+  opts: { stripTopDir?: boolean; only?: 'routes' | 'tests' } = {},
+): Promise<{ repo: CollectedRepo; topDir: string | null }> {
   const repo = emptyRepo();
   const add = adder(repo);
   let topDir: string | null = null;
@@ -100,11 +113,13 @@ export async function readRepoZip(zipPath: string, limits: ZipLimits, opts: { st
     topDir ??= entry.slice(0, cut);
     return entry.slice(cut + 1);
   };
+  const want = wanted(opts.only);
   await readZip(
     { path: zipPath },
-    (entry) => classify(rel(entry)) !== null,
+    (entry) => want(classify(rel(entry))),
     (entry, data) => add(rel(entry), data),
     limits,
+    (entry, bytes) => repo.warnings.push(`${rel(entry)}: ${Math.round(bytes / 1024 / 1024)} MB, over the ${MAX_FILE_BYTES / 1024 / 1024} MB a file may be: skipped`),
   );
   return { repo, topDir };
 }
@@ -146,11 +161,13 @@ export async function collectRepoUpload(req: FastifyRequest, zipLimits: ZipLimit
     }
     if (zipPath) {
       if (loose > 0) throw badRequest('Upload either a .zip or individual files, not both');
+      const want = wanted(rawFields.only === 'routes' || rawFields.only === 'tests' ? rawFields.only : undefined);
       await readZip(
         { path: zipPath },
-        (entry) => classify(entry) !== null,
+        (entry) => want(classify(entry)),
         (entry, data) => add(entry, data),
         { ...zipLimits, maxEntryBytes: Math.min(zipLimits.maxEntryBytes, MAX_FILE_BYTES) },
+        (entry, bytes) => repo.warnings.push(`${entry}: ${Math.round(bytes / 1024 / 1024)} MB, over the ${MAX_FILE_BYTES / 1024 / 1024} MB a file may be: skipped`),
       );
     }
   } finally {

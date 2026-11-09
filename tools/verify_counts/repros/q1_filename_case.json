@@ -1,0 +1,15 @@
+{
+ "xml": [
+  {
+   "path": "src/main/resources/m/routes/r.xml",
+   "text": "<routes><route id=\"a\"><from uri=\"file:/in?fileName=CUST_${date:now:yyyyMMdd}.csv\"/></route><route id=\"b\"><from uri=\"file:/in2?doneFileName=READY.flag\"/></route></routes>"
+  }
+ ],
+ "properties": [],
+ "tests": [
+  {
+   "path": "tests/test_a.py",
+   "text": "def test_a():\n    drop_file(\"cust_20260906.csv\")\n\ndef test_b():\n    drop_file(\"ready.flag\")\n"
+  }
+ ]
+}

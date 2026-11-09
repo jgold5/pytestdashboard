@@ -6,6 +6,7 @@ import { authEnv, createTestApp, multipart, type TestApp } from './helpers/app.j
 import { importResults } from './helpers/allure.js';
 import { makeZip } from './helpers/zip.js';
 import { startMockServer, type MockServer } from './helpers/mockServer.js';
+import { eq } from 'drizzle-orm';
 import { triggerScans } from '../src/db/schema.js';
 
 const ROUTES_XML = `<?xml version="1.0" encoding="UTF-8"?>
@@ -175,10 +176,12 @@ describe('pytest labels', () => {
 describe('scanRepository', () => {
   it('lists file and schedule triggers and the tests that cover them', () => {
     const out = scanRepository(repoFiles);
-    expect(out.otherRoutes).toBe(1); // direct:parseInvoice is not a trigger
+    expect(out.otherRoutes).toBe(0);
     expect(out.testsFound).toBe(4);
     const byId: Record<string, Trigger> = Object.fromEntries(out.triggers.map((t) => [t.routeId, t]));
-    expect(Object.keys(byId)).toEqual(['invoice-load', 'nightly-purge', 'statements', 'orders-load']);
+    expect(Object.keys(byId)).toEqual(['invoice-load', 'nightly-purge', 'statements', 'orders-load', 'parse-invoice']);
+    // called by invoice-load: a trigger of its own kind
+    expect(byId['parse-invoice']).toMatchObject({ kind: 'direct', scheme: 'direct' });
     expect(byId['invoice-load']).toMatchObject({
       kind: 'file',
       scheme: 'file',
@@ -237,9 +240,10 @@ describe('repo layout seen in practice', () => {
       '',
     ].join('\n');
     const tests = scanPytestFile('tests/test_jobs.py', src);
-    expect(tests.map((t) => [t.name, t.strings])).toEqual([
-      ['test_purge', ['nightly', 'OSCAR150', 'billing', 'route', 'invoice-load']],
-      ['test_other', ['orders-load', 'ok', 'billing', 'route', 'invoice-load']],
+    // labels (markers, pytestmark) first, then body strings
+    expect(tests.map((t) => [t.name, t.strings, t.labels])).toEqual([
+      ['test_purge', ['nightly', 'billing', 'route', 'invoice-load', 'OSCAR150'], ['nightly', 'billing', 'route', 'invoice-load']],
+      ['test_other', ['billing', 'route', 'invoice-load', 'orders-load', 'ok'], ['billing', 'route', 'invoice-load']],
     ]);
   });
 
@@ -275,7 +279,7 @@ describe('repo layout seen in practice', () => {
 
 describe('matching only when a pattern names something specific', () => {
   it('rewrites Java-style calls and ${properties:…} into simple-language conditions', () => {
-    expect(normalizeCondition('${header.CamelFileName.toUpperCase().endsWith(".GZ")}')).toBe("${header.CamelFileName} ends with '.GZ'");
+    expect(normalizeCondition('${header.CamelFileName.toUpperCase().endsWith(".GZ")}')).toBe("${header.CamelFileName} ~ends with '.GZ'");
     expect(normalizeCondition("${in.header.CamelFileName.substring(9,16)} contains '0003_26'")).toBe("${in.header.CamelFileName} contains '0003_26'");
     expect(normalizeCondition("${file:name.substring(0,3)} == 'INV'")).toBe("${file:name} contains 'INV'");
     expect(normalizeCondition('${header.CamelFileName} == ${properties:invoice.name}')).toBe("${header.CamelFileName} == '{{invoice.name}}'");
@@ -401,7 +405,7 @@ describe('trigger API', () => {
   it('stores a scan per branch and compares a PR branch with main', async () => {
     const main = await scan('main', repoZip());
     expect(main.statusCode).toBe(201);
-    expect(main.json<TriggerScanResponse>()).toMatchObject({ branch: 'main', total: 4, automated: 4, files: { xml: 2, properties: 2, tests: 1 }, otherRoutes: 1 });
+    expect(main.json<TriggerScanResponse>()).toMatchObject({ branch: 'main', total: 5, automated: 4, files: { xml: 2, properties: 2, tests: 1 }, otherRoutes: 0 });
 
     const newRoute = `<route id="payments-load"><from uri="file:/data/payments?include=PAY_.*\\.csv"/><to uri="direct:pay"/></route>`;
     const newTest = `\n\n@allure.label("route", "payments-load")\ndef test_payment_file_is_loaded():\n    pass\n\n\n@allure.label("route", "statements")\ndef test_statements_run():\n    pass\n`;
@@ -419,12 +423,12 @@ describe('trigger API', () => {
 
     // all branches merged: the union of triggers
     const all = (await t.app.inject({ url: '/api/triggers' })).json<TriggerListResponse>();
-    expect(all.items.map((r) => r.routeId).sort()).toEqual(['invoice-load', 'nightly-purge', 'orders-load', 'payments-load', 'statements']);
+    expect(all.items.map((r) => r.routeId).sort()).toEqual(['invoice-load', 'nightly-purge', 'orders-load', 'parse-invoice', 'payments-load', 'statements']);
     expect(all.branches.map((b) => b.branch)).toEqual(['feature/payments', 'main']);
 
     // removing the branch's scans drops it from the scope
     expect((await t.app.inject({ method: 'DELETE', url: '/api/triggers/branches/feature%2Fpayments' })).statusCode).toBe(204);
-    expect((await t.app.inject({ url: '/api/triggers' })).json<TriggerListResponse>().items).toHaveLength(4);
+    expect((await t.app.inject({ url: '/api/triggers' })).json<TriggerListResponse>().items).toHaveLength(5);
   });
 
   it('links covering tests to dashboard test cases by Allure full name', async () => {
@@ -483,8 +487,15 @@ describe('routes and tests from different repos', () => {
     await upload({ branch: 'feature/refunds', only: 'routes' }, [
       { field: 'file:camel', filename: 'routes.xml', content: ROUTES('<route id="refund-load"><from uri="file:/in?include=RFD_.*"/></route>') },
     ]);
-    const rpr = (await t.app.inject({ url: '/api/triggers?branch=feature%2Frefunds&compare=main' })).json<TriggerListResponse>();
-    // tests come from main, plus the branch scanned by hand above, not merged yet
+    const listed = async () => (await t.app.inject({ url: '/api/triggers?branch=feature%2Frefunds&compare=main' })).json<TriggerListResponse>();
+    // the branch scanned by hand above isn't linked to a PR: which branch it merges into is unknown, so it doesn't count
+    expect(await listed()).toMatchObject({ routesFrom: 'feature/refunds', testsFrom: 'main', unmergedFrom: [] });
+    expect((await listed()).items.find((r) => r.routeId === 'purge')!.coveredBy).toEqual([]);
+    // labelled as a PR into main (as Scan open PRs or CI on a PR does), it counts as not merged yet
+    await upload({ branch: 'feature/purge-test', only: 'tests', label: 'acme/tests PR #7 → main' }, [
+      { field: 'file:tests', filename: 'test_invoice.py', content: `${INVOICE_TEST}\n@pytest.mark.route("purge")\ndef test_purge():\n    pass\n` },
+    ]);
+    const rpr = await listed();
     expect(rpr).toMatchObject({ routesFrom: 'feature/refunds', testsFrom: 'main', unmergedFrom: ['feature/purge-test'] });
     expect(rpr.items.map((r) => [r.routeId, r.change, r.coveredBy.map((c) => c.branch ?? 'merged')])).toEqual([
       ['invoice-load', 'unchanged', ['merged']],
@@ -637,10 +648,14 @@ describe('routes in the source code are the scope', () => {
       const routes = '<routes><route id="invoice-load"><from uri="file:/in?fileName=INV.TXT"/></route><route id="credit-load"><from uri="file:/in?fileName=CRN.TXT"/></route><route id="purge"><from uri="quartz://p?cron=0+0+2+*+*+?"/></route></routes>';
       await upload({ branch: 'main', only: 'routes' }, 'file:camel', 'routes.xml', routes);
       await upload({ branch: 'main', only: 'tests' }, 'file:src/route_test', 'invoice_route.py', 'def test_invoice():\n    start("invoice-load")\n');
-      // a PR branch in the test repo already covers credit-load
+      // a branch scanned without a PR link counts nowhere: the branch it would merge into is unknown
       await upload({ branch: 'feature/credit', only: 'tests' }, 'file:src/route_test', 'credit_route.py', 'def test_credit():\n    start("credit-load")\n');
+      expect(await summary()).toMatchObject({ total: 3, automated: 1, unmerged: 0 });
+      expect(await overview()).toMatchObject({ looseTestBranches: ['feature/credit'], unmergedFrom: [] });
+      // a PR into main in the test repo already covers credit-load
+      await upload({ branch: 'feature/credit', only: 'tests', label: 'acme/tests PR #9 → main' }, 'file:src/route_test', 'credit_route.py', 'def test_credit():\n    start("credit-load")\n');
 
-      // tested = a test on main or on any scanned branch (credit-load only on feature/credit, not merged)
+      // tested = a test on main or in a PR into main (credit-load only in the PR, not merged)
       expect(await summary()).toMatchObject({ unit: 'routes', total: 3, automated: 2, unmerged: 1, inProgress: 0, notAutomated: 1, notAutomatable: 0 });
       // more cases (e.g. a spreadsheet import) change nothing now
       await t.app.inject({ method: 'POST', url: '/api/test-cases', payload: { key: 'XL-4', title: 'XL-4', automationStatus: 'automated' } });
@@ -730,7 +745,7 @@ describe('a route with several patterns', () => {
         {
           field: 'file:src/route_test',
           filename: 'out_route.py',
-          content: 'def test_purge():\n    start("purge")\n\ndef test_helper_only():\n    run_out()\n    check("done")\n',
+          content: '@allure.label("route", "purge")\ndef test_purge():\n    pass\n\ndef test_helper_only():\n    run_out()\n    check("done")\n',
         },
       ]);
       expect((await t.app.inject({ method: 'POST', url: '/api/triggers/scan', payload: tp.payload, headers: tp.headers })).statusCode).toBe(201);
@@ -1002,7 +1017,356 @@ describe('trigger API auth', () => {
     const ingest = { authorization: `Bearer ${INGEST_TOKEN}` };
     const up = await t.app.inject({ method: 'POST', url: '/api/triggers/scan', payload: mp.payload, headers: { ...mp.headers, ...ingest } });
     expect(up.statusCode).toBe(201);
-    expect(up.json<TriggerScanResponse>().total).toBe(4);
+    expect(up.json<TriggerScanResponse>().total).toBe(5);
     expect((await t.app.inject({ url: '/api/triggers', headers: ingest })).statusCode).toBe(403);
+  });
+});
+
+describe('kinds of job', () => {
+  const xml = `<routes>
+    <route id="parse-invoice"><from uri="direct:parseInvoice"/><to uri="log:x"/></route>
+    <route id="order-worker"><from uri="seda:orders?concurrentConsumers=5"/><to uri="log:x"/></route>
+    <route id="ledger-in"><from uri="jmsComponentLedger:queue:LEDGER.IN"/><to uri="log:x"/></route>
+    <route id="events"><from uri="kafka:invoice-events?brokers={{kafka.brokers}}"/><to uri="log:x"/></route>
+    <route id="orders-api"><from uri="netty-http:http://0.0.0.0:{{http.port}}/api/orders"/><to uri="log:x"/></route>
+    <route id="statements-poll"><from uri="{{statements.sftp.url}}"/><to uri="log:x"/></route>
+    <route id="mystery"><from uri="{{mystery.uri}}"/><to uri="log:x"/></route>
+    <route id="resolved"><from uri="{{in.uri}}"/><to uri="log:x"/></route>
+    <route id="audit"><from uri="bean:audit"/><to uri="log:x"/></route>
+  </routes>`;
+  const properties = [{ path: 'app.properties', text: 'in.uri=seda:resolvedQueue\nhttp.port=8080\n' }];
+  const tests = [
+    {
+      path: 'tests/test_jobs.py',
+      text: [
+        '@allure.label("job", "parseInvoice")',
+        'def test_direct():\n    pass\n',
+        'def test_seda():\n    send("seda:orders")\n',
+        'def test_jms():\n    put("LEDGER.IN")\n',
+        'def test_kafka():\n    publish("invoice-events")\n',
+        'def test_rest():\n    post("/api/orders")\n',
+        'def test_poll():\n    run_route("statements-poll")\n',
+      ].join('\n'),
+    },
+  ];
+
+  it('scans direct, queue, Kafka, REST and property-only routes as triggers, and links tests by their endpoint names', () => {
+    const out = scanRepository({ xml: [{ path: 'r.xml', text: xml }], properties, tests });
+    const by = Object.fromEntries(out.triggers.map((t) => [t.routeId, t]));
+    expect(Object.fromEntries(out.triggers.map((t) => [t.routeId, [t.kind, t.scheme]]))).toEqual({
+      'parse-invoice': ['direct', 'direct'],
+      'order-worker': ['queue', 'seda'],
+      'ledger-in': ['queue', 'jmscomponentledger'],
+      events: ['kafka', 'kafka'],
+      'orders-api': ['rest', 'netty-http'],
+      'statements-poll': ['file', 'sftp'], // its key says sftp
+      mystery: ['property', 'property'],
+      resolved: ['queue', 'seda'], // the property fills it in
+    });
+    expect(out.otherRoutes).toBe(1); // bean:audit
+    const cover = (id: string) => by[id]!.coveredBy.map((c: { test: string }) => c.test.split('::').pop());
+    expect(cover('parse-invoice')).toEqual(['test_direct']);
+    expect(cover('order-worker')).toEqual(['test_seda']);
+    expect(cover('ledger-in')).toEqual(['test_jms']);
+    expect(cover('events')).toEqual(['test_kafka']);
+    expect(cover('orders-api')).toEqual(['test_rest']);
+    expect(cover('statements-poll')).toEqual(['test_poll']);
+    expect(cover('mystery')).toEqual([]);
+    expect(by['mystery']!.unresolved).toEqual([{ key: 'mystery.uri', values: [] }]);
+  });
+
+  it('counts only the kinds picked, and lists every kind with its counts', async () => {
+    const t = await createTestApp();
+    try {
+      const mp = multipart({ branch: 'main' }, [
+        { field: 'file:src/main/resources/common/routes', filename: 'r.xml', content: xml },
+        { field: 'file:src/main/resources/common', filename: 'app.properties', content: properties[0]!.text },
+        { field: 'file:tests', filename: 'test_jobs.py', content: tests[0]!.text },
+      ]);
+      expect((await t.app.inject({ method: 'POST', url: '/api/triggers/scan', payload: mp.payload, headers: mp.headers })).statusCode).toBe(201);
+      const ov = (await t.app.inject({ url: '/api/triggers/overview?kinds=queue,kafka' })).json<Record<string, unknown>>();
+      expect(ov).toMatchObject({
+        kinds: ['queue', 'kafka'],
+        kindCounts: [
+          { kind: 'file', triggers: 1, tested: 1 },
+          { kind: 'direct', triggers: 1, tested: 1 },
+          { kind: 'queue', triggers: 3, tested: 2 },
+          { kind: 'kafka', triggers: 1, tested: 1 },
+          { kind: 'rest', triggers: 1, tested: 1 },
+          { kind: 'property', triggers: 1, tested: 0 },
+        ],
+        folders: [{ folder: 'common', triggers: 4, tested: 3 }],
+        triggerRepo: { triggers: 4, routes: 4 },
+        counts: { tested: 3, branch: 0, none: 1 },
+        items: [{ routeId: 'resolved' }],
+      });
+      const cov = (q: string) => t.app.inject({ url: `/api/summary${q}` }).then((r) => r.json<{ coverage: { total: number; automated: number; kinds?: string[] } }>().coverage);
+      expect(await cov('')).toMatchObject({ total: 8, automated: 6 });
+      expect(await cov('?kinds=file,rest')).toMatchObject({ total: 2, automated: 2, kinds: ['file', 'rest'] });
+      expect((await t.app.inject({ url: '/api/report?kinds=kafka' })).json<{ coverage: { total: number } }>().coverage.total).toBe(1);
+      expect((await t.app.inject({ url: '/api/summary?kinds=nope' })).statusCode).toBe(400);
+    } finally {
+      await t.close();
+    }
+  });
+});
+
+describe('what links a test to a trigger: labels vs body strings', () => {
+  const xml = `<routes>
+    <route id="starter"><from uri="direct:start"/><to uri="log:x"/></route>
+    <route id="worker"><from uri="seda:process"/><to uri="log:x"/></route>
+    <route id="events-in"><from uri="kafka:events"/><to uri="log:x"/></route>
+    <route id="api"><from uri="netty-http:http://0.0.0.0:8080/api"/><to uri="log:x"/></route>
+    <route id="nightly"><from uri="quartz2://grp/run?cron=0+0+2+*+*+?"/><to uri="log:x"/></route>
+    <route id="csv-in"><from uri="file:/in?include=.*\\.csv"/><to uri="log:x"/></route>
+    <route id="xml-in"><from uri="file:/in?antInclude=*.xml"/><to uri="log:x"/></route>
+    <route id="pay-in"><from uri="file:/in?include=PAY_.*\\.csv"/><to uri="log:x"/></route>
+    <route id="statements"><from uri="direct:statementJob"/><to uri="log:x"/></route>
+  </routes>`;
+  const scan = (py: string) => {
+    const out = scanRepository({ xml: [{ path: 'r.xml', text: xml }], properties: [], tests: [{ path: 'tests/test_x.py', text: py }] });
+    return Object.fromEntries(out.triggers.map((t) => [t.routeId, t.coveredBy.map((c) => c.test.split('::').pop())]));
+  };
+
+  it('ordinary words in a test body do not mark unrelated routes as tested', () => {
+    const cov = scan(
+      [
+        'def test_ui():',
+        '    click("start")',
+        '    wait_for("process")',
+        '    assert page.title == "events"',
+        '    get("/api")',
+        '    run("run")',
+        '    save(tmp_path / "report.csv")',
+        '    load("settings.xml")',
+        '    assert "nightly" in log',
+        '',
+      ].join('\n'),
+    );
+    expect(Object.values(cov).flat()).toEqual([]);
+  });
+
+  it('the same names link when the test is labelled with them, or uses the endpoint as written', () => {
+    const cov = scan(
+      [
+        '@allure.label("job", "start")',
+        'def test_a():',
+        '    pass',
+        '',
+        '@pytest.mark.route("nightly")',
+        'def test_b():',
+        '    pass',
+        '',
+        'def test_c():',
+        '    send("seda:process")',
+        '',
+        'def test_d():',
+        '    drop("PAY_20260101.csv")',
+        '',
+        'def test_e():',
+        '    start("statements")  # an 8+ letter route id is specific enough',
+        '',
+        'def test_f():',
+        '    allure.dynamic.label("topic", "events")',
+        '',
+      ].join('\n'),
+    );
+    expect(cov).toEqual({
+      starter: ['test_a'],
+      worker: ['test_c'],
+      'events-in': ['test_f'],
+      api: [],
+      nightly: ['test_b'],
+      'csv-in': [], // *.csv says nothing about which test covers it
+      'xml-in': [],
+      'pay-in': ['test_d'],
+      statements: ['test_e'],
+    });
+  });
+
+  it('camelCase, snake_case and kebab-case name the same thing', () => {
+    const cov = scan('def test_a():\n    start("statement_job")\n');
+    expect(cov.statements).toEqual(['test_a']);
+  });
+});
+
+describe('route edge cases the counts depend on', () => {
+  const scan = (xml: Array<{ path: string; text: string }>, properties: Array<{ path: string; text: string }> = []) => scanRepository({ xml, properties, tests: [] });
+  const kinds = (out: ReturnType<typeof scan>) => out.triggers.map((t) => [t.routeId, t.kind, t.scheme]);
+
+  it('a <routeTemplate> is not a route until instantiated', () => {
+    const out = scan([{ path: 'r.xml', text: '<camel><routeTemplate id="t"><templateParameter name="name"/><route><from uri="timer:{{name}}"/></route></routeTemplate><route id="real"><from uri="timer:x"/></route></camel>' }]);
+    expect(kinds(out)).toEqual([['real', 'schedule', 'timer']]);
+  });
+
+  it('master:lock:file:/in is the file endpoint inside', () => {
+    const out = scan([{ path: 'r.xml', text: '<routes><route id="m"><from uri="master:lock:file:/in?include=INV_.*"/></route></routes>' }]);
+    expect(out.triggers.map((t) => [t.kind, t.scheme, t.directory, t.filePattern])).toEqual([['file', 'file', '/in', 'INV_.*']]);
+  });
+
+  it('<from ref> uses the endpoint of its own file or module when two modules reuse an id', () => {
+    const out = scan([
+      { path: 'src/main/resources/m1/routes/r.xml', text: '<beans><endpoint id="in" uri="file:/m1"/><camelContext><route id="r1"><from ref="in"/></route></camelContext></beans>' },
+      { path: 'src/main/resources/m2/routes/r.xml', text: '<beans><endpoint id="in" uri="seda:m2"/><camelContext><route id="r2"><from ref="in"/></route></camelContext></beans>' },
+    ]);
+    expect(kinds(out)).toEqual([
+      ['r1', 'file', 'file'],
+      ['r2', 'queue', 'seda'],
+    ]);
+  });
+
+  it('Spring ${key:default} falls back to its default; Camel language is not a missing property', () => {
+    const out = scan([{ path: 'r.xml', text: '<routes><route id="a"><from uri="${in.uri:file:/in}"/></route><route id="b"><from uri="file:${file.input.dir}?fileName=${file:name}.done"/></route></routes>' }]);
+    expect(kinds(out)).toEqual([
+      ['a', 'file', 'file'],
+      ['b', 'file', 'file'],
+    ]);
+    expect(out.triggers[1]!.unresolved.map((u) => u.key)).toEqual(['file.input.dir']);
+  });
+
+  it('a property-only URI is an SFTP poll only when its key has the word sftp/ftp', () => {
+    const out = scan([
+      {
+        path: 'r.xml',
+        text: '<routes><route id="a"><from uri="{{invoiceSftpUrl}}"/></route><route id="b"><from uri="{{shiftplan.uri}}"/></route><route id="c"><from uri="{{giftpack.queue}}"/></route><route id="d"><from uri="{{in.ftp.url}}"/></route></routes>',
+      },
+    ]);
+    expect(kinds(out)).toEqual([
+      ['a', 'file', 'sftp'],
+      ['b', 'property', 'property'],
+      ['c', 'property', 'property'],
+      ['d', 'file', 'ftp'],
+    ]);
+  });
+
+  it('an identical copy of a route is counted once; a different route reusing the id is not hidden', () => {
+    const r = (id: string, uri: string) => `<routes><route id="${id}"><from uri="${uri}"/></route></routes>`;
+    const out = scan([
+      { path: 'src/main/resources/m/routes/a.xml', text: r('dup', 'file:/in') },
+      { path: 'src/main/resources/m/routes/b.xml', text: r('dup', 'file:/in') },
+      { path: 'src/main/resources/m/routes/c.xml', text: r('same-id', 'file:/a') },
+      { path: 'src/main/resources/m/routes/d.xml', text: r('same-id', 'file:/b') },
+    ]);
+    expect(out.triggers.map((t) => t.key)).toEqual(['m/dup', 'm/same-id', 'm/same-id~2']);
+    expect(out.warnings.filter((w) => w.includes('counted once'))).toHaveLength(1);
+  });
+
+  it('a URI property set to something that starts no route is reported, not silently dropped', () => {
+    const out = scan([{ path: 'r.xml', text: '<routes><route id="a"><from uri="{{a.uri}}"/></route></routes>' }], [{ path: 'app.properties', text: 'a.uri=bean:stub\n' }]);
+    expect(out.triggers).toEqual([]);
+    expect(out.otherRoutes).toBe(1);
+    expect(out.warnings).toEqual(['r.xml:1: route "a" starts from {{a.uri}} = "bean:stub", not a trigger']);
+  });
+});
+
+describe('which files a scan reads', () => {
+  it('skips route XML and .properties in test source sets, keeps the real ones', () => {
+    expect(classify('src/test/resources/application.properties')).toBeNull();
+    expect(classify('src/it/resources/routes/x.xml')).toBeNull();
+    expect(classify('module/src/integrationTest/resources/x.properties')).toBeNull();
+    expect(classify('src/main/resources/application.properties')).toBe('properties');
+    expect(classify('config/prod/app.properties')).toBe('properties');
+    expect(classify('src/main/resources/routes/x.xml')).toBe('xml');
+    expect(classify('tests/test_x.py')).toBe('tests');
+  });
+
+  it('a test override of a property does not change what the real route is', () => {
+    const out = scanRepository({
+      xml: [{ path: 'src/main/resources/routes/r.xml', text: '<routes><route id="inv"><from uri="{{invoice.in.uri}}"/></route></routes>' }],
+      properties: [{ path: 'config/prod/app.properties', text: 'invoice.in.uri=file:/in\n' }].filter((f) => classify(f.path)),
+      tests: [],
+    });
+    expect(out.triggers.map((t) => t.kind)).toEqual(['file']);
+  });
+
+  it('a file over the size limit is skipped with a warning instead of failing the scan', async () => {
+    const t = await createTestApp();
+    try {
+      const big = 'x'.repeat(6 * 1024 * 1024);
+      const zip = makeZip([
+        { name: 'repo/tests/test_a.py', data: '@pytest.mark.route("inv")\ndef test_a():\n    pass\n' },
+        { name: 'repo/tests/data/huge.xml', data: `<routes>${big}</routes>`, compress: false },
+      ]);
+      const mp = multipart({ branch: 'main', only: 'tests' }, [{ filename: 'repo.zip', content: zip, contentType: 'application/zip' }]);
+      const res = await t.app.inject({ method: 'POST', url: '/api/triggers/scan', payload: mp.payload, headers: mp.headers });
+      expect(res.statusCode).toBe(201);
+      // a tests-only scan never even opens the XML
+      expect(res.json<TriggerScanResponse>()).toMatchObject({ testsFound: 1, warnings: [] });
+      const mp2 = multipart({ branch: 'main' }, [{ filename: 'repo.zip', content: zip, contentType: 'application/zip' }]);
+      const res2 = await t.app.inject({ method: 'POST', url: '/api/triggers/scan', payload: mp2.payload, headers: mp2.headers });
+      expect(res2.statusCode).toBe(201);
+      expect(res2.json<TriggerScanResponse>().warnings).toContain('repo/tests/data/huge.xml: 6 MB, over the 5 MB a file may be: skipped');
+    } finally {
+      await t.close();
+    }
+  });
+});
+
+describe('which scans count', () => {
+  let t: TestApp;
+  beforeEach(async () => {
+    t = await createTestApp();
+  });
+  afterEach(async () => t.close());
+  const up = async (fields: Record<string, string>, files: Array<{ field: string; filename: string; content: string }>) => {
+    const mp = multipart(fields, files);
+    const res = await t.app.inject({ method: 'POST', url: '/api/triggers/scan', payload: mp.payload, headers: mp.headers });
+    expect(res.statusCode, res.body).toBe(201);
+    return res;
+  };
+  const routes = (ids: string[]) => ({ field: 'file:src/main/resources/common/routes', filename: 'r.xml', content: `<routes>${ids.map((id) => `<route id="${id}"><from uri="file:/in/${id}"/></route>`).join('')}</routes>` });
+  const test = (ids: string[]) => ({ field: 'file:tests', filename: 'test_r.py', content: ids.map((id, i) => `@pytest.mark.route("${id}")\ndef test_${i}():\n    pass\n`).join('\n') });
+  const summary = async (q = '') => (await t.app.inject({ url: `/api/summary${q}` })).json<{ coverage: { branch?: string; total: number; automated: number; unmerged?: number } }>().coverage;
+  const overview = async (q = '') => (await t.app.inject({ url: `/api/triggers/overview${q}` })).json<Record<string, unknown>>();
+
+  it('without main/master/develop the default is the long-lived branch scanned first, never a PR branch from CI', async () => {
+    await up({ branch: 'core', only: 'routes' }, [routes(['a', 'b'])]);
+    await up({ branch: 'dev', only: 'routes' }, [routes(['a'])]);
+    await up({ branch: 'bugfix/drop-b', only: 'routes' }, [routes(['a'])]);
+    await up({ branch: 'abc', only: 'routes' }, [routes(['a'])]);
+    expect(await summary()).toMatchObject({ branch: 'core', total: 2 });
+    expect(await overview()).toMatchObject({ defaultBranch: 'core', routeBranches: ['core', 'abc', 'bugfix/drop-b', 'dev'] });
+  });
+
+  it('what a scan is for comes from only=, else from what it found (not from the file types it read)', async () => {
+    await up({ branch: 'main', only: 'routes' }, [routes(['a', 'b'])]);
+    await up({ branch: 'main', only: 'tests' }, [test(['a', 'b'])]);
+    expect(await summary()).toMatchObject({ total: 2, automated: 2 });
+    // the routes repo rescanned without only=, with a deploy script in it: still routes, and the tests stay
+    await up({ branch: 'main' }, [routes(['a', 'b']), { field: 'file:scripts', filename: 'deploy.py', content: 'import os\nprint("deploy")\n' }]);
+    expect(await summary()).toMatchObject({ total: 2, automated: 2 });
+    // the test repo scanned without only=, with a pom.xml: still tests, and the routes stay
+    await up({ branch: 'main' }, [test(['a']), { field: 'file:.', filename: 'pom.xml', content: '<project/>' }]);
+    expect(await summary()).toMatchObject({ total: 2, automated: 1 });
+  });
+
+  it('a long-lived branch that is also the head of a PR keeps its own merged tests', async () => {
+    await up({ branch: 'core', only: 'routes' }, [routes(['a', 'b', 'c'])]);
+    await up({ branch: 'dev', only: 'routes' }, [routes(['a', 'b', 'c'])]);
+    await up({ branch: 'core', only: 'tests' }, [test(['a'])]);
+    await up({ branch: 'dev', only: 'tests' }, [test(['a', 'b'])]);
+    // dev → core is open: dev's tests count for core as not merged yet
+    await up({ branch: 'dev', only: 'tests', label: 'acme/tests PR #5 → core' }, [test(['a', 'b', 'c'])]);
+    expect(await summary('?branch=core')).toMatchObject({ total: 3, automated: 3, unmerged: 2 });
+    // and dev still counts its own merged tests, not the PR's
+    expect(await summary('?branch=dev')).toMatchObject({ total: 3, automated: 2, unmerged: 0 });
+    expect(await overview('?branch=dev')).toMatchObject({ testBranches: ['core', 'dev'], testRepo: { branch: 'dev' } });
+  });
+
+  it('counts a route without an id once, however many patterns it has', async () => {
+    await up({ branch: 'main', only: 'routes' }, [{ field: 'file:src/main/resources/common/routes', filename: 'r.xml', content: '<routes><route><from uri="file:/in?include=(A_.*|B_.*|C_.*)"/></route></routes>' }]);
+    expect(await overview()).toMatchObject({ triggerRepo: { triggers: 3, routes: 1 } });
+  });
+
+  it('flags scans made before the current counting rules', async () => {
+    await up({ branch: 'main', only: 'routes' }, [routes(['a'])]);
+    await up({ branch: 'main', only: 'tests' }, [test(['a'])]);
+    expect(await overview()).toMatchObject({ outdated: { routes: null, tests: null, prs: 0 } });
+    // as stored by an older version: no scanner version
+    for (const r of t.dbHandle.db.select().from(triggerScans).all()) {
+      const { scanner: _drop, ...files } = r.files;
+      t.dbHandle.db.update(triggerScans).set({ files }).where(eq(triggerScans.id, r.id)).run();
+    }
+    expect(await overview()).toMatchObject({ outdated: { routes: 'main', tests: 'main', prs: 0 } });
   });
 });

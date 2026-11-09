@@ -796,7 +796,40 @@ export const CoverageTotals = z.object({
   branch: z.string().optional(),
   /** `routes` only: the folder the numbers are limited to (none = the whole branch). */
   folder: z.string().optional(),
+  /** `routes` only: the kinds of trigger the numbers are limited to (none = every kind). */
+  kinds: z.array(z.string()).optional(),
 });
+
+/**
+ * What starts a Camel route:
+ * - `file`: a file landing in a folder (`file:`, `ftp:`, `sftp:`, `ftps:`, `smb:`), including an
+ *   SFTP/FTP poll whose whole URI is a placeholder the properties don't fill in;
+ * - `schedule`: `quartz:`, `cron:`, `timer:`, `scheduler:`;
+ * - `direct`: called by another route (`direct:`, `direct-vm:`);
+ * - `queue`: a queue worker (`seda:`, `vm:`, `jms:`, `activemq:`, `amqp:`, `sjms:`…);
+ * - `kafka`: a Kafka topic consumer;
+ * - `rest`: an HTTP endpoint (`netty-http:`, `rest:`, `restlet:`, `jetty:`, `servlet:`…);
+ * - `property`: the whole URI is a placeholder no properties file fills in, so its kind is unknown.
+ */
+export const TriggerKind = z.enum(['file', 'schedule', 'direct', 'queue', 'kafka', 'rest', 'property']);
+export type TriggerKind = z.infer<typeof TriggerKind>;
+export const TRIGGER_KIND_LABEL: Record<TriggerKind, string> = {
+  file: 'Load file',
+  schedule: 'Schedule',
+  direct: 'Direct',
+  queue: 'Queue (seda/jms)',
+  kafka: 'Kafka',
+  rest: 'REST',
+  property: 'Property-only URI',
+};
+
+/** `?kinds=file,schedule`: only these kinds of trigger (absent = every kind). */
+export const TriggerKindsParam = z
+  .string()
+  .max(200)
+  .transform((s) => [...new Set(s.split(',').map((x) => x.trim()).filter(Boolean))])
+  .pipe(z.array(TriggerKind))
+  .optional();
 
 /**
  * `?branch=&folder=` on summary, report and the trigger overview: count the triggers of this
@@ -807,6 +840,7 @@ export const ScopeBranchQuery = z.object({
   /** Test repo branch whose merged tests count (plus the PRs into it); default: the same as the routes branch. */
   tests: trimmed(LIMITS.shortTextMax).min(1).optional(),
   folder: trimmed(LIMITS.shortTextMax).min(1).optional(),
+  kinds: TriggerKindsParam,
 });
 export type ScopeBranchQuery = z.infer<typeof ScopeBranchQuery>;
 export type CoverageTotals = z.infer<typeof CoverageTotals>;
@@ -990,6 +1024,8 @@ export const ReportQuery = z.object({
   folder: trimmed(LIMITS.shortTextMax).min(1).optional(),
   /** Test repo branch whose merged tests count (plus the PRs into it); default: the same as the routes branch. */
   tests: trimmed(LIMITS.shortTextMax).min(1).optional(),
+  /** Only these kinds of trigger. */
+  kinds: TriggerKindsParam,
 });
 export type ReportQuery = z.infer<typeof ReportQuery>;
 
@@ -1220,12 +1256,6 @@ export const TRIAGE_LABELS: Record<TriageCategory, string> = {
 // Camel route triggers (scope of what can be automated, scanned from the repo)
 // ---------------------------------------------------------------------------
 
-/**
- * What starts a Camel route: a file landing in a folder (`file:`, `ftp:`, `sftp:`,
- * `ftps:`), or a schedule (`quartz:`, `cron:`, `timer:`, `scheduler:`).
- */
-export const TriggerKind = z.enum(['file', 'schedule']);
-export type TriggerKind = z.infer<typeof TriggerKind>;
 
 export const TriggerCoverage = z.object({
   /** pytest node id, e.g. `tests/routes/test_invoice.py::TestLoad::test_loads_file`. */
@@ -1302,10 +1332,18 @@ export const TriggerScanSummary = z.object({
   /** Triggers found (0 for a tests-only scan of the test repo). */
   total: z.number().int(),
   /** Route XML / properties / pytest files read. */
-  files: z.object({ xml: z.number().int(), properties: z.number().int(), tests: z.number().int() }),
+  files: z.object({
+    xml: z.number().int(),
+    properties: z.number().int(),
+    tests: z.number().int(),
+    /** Which side the scan was made for (absent: scans made without `only`, or before it was kept). */
+    only: z.enum(['routes', 'tests']).optional(),
+    /** Version of the scanner's counting rules the scan was made with (absent: before versions). */
+    scanner: z.number().int().optional(),
+  }),
   /** Tests found in the pytest files (whether or not they cover a trigger). */
   testsFound: z.number().int(),
-  /** Routes started by something other than a file or a schedule (jms, direct, rest…): not counted as triggers. */
+  /** Routes started by something that is not a trigger (bean:, imaps:, log:…). */
   otherRoutes: z.number().int(),
 });
 export type TriggerScanSummary = z.infer<typeof TriggerScanSummary>;
@@ -1384,6 +1422,8 @@ export const TriggerOverviewQuery = z.object({
   folder: trimmed(LIMITS.shortTextMax).min(1).optional(),
   /** Test repo branch whose merged tests count (plus the PRs into it); default: the same as the routes branch. */
   tests: trimmed(LIMITS.shortTextMax).min(1).optional(),
+  /** Only these kinds of trigger. */
+  kinds: TriggerKindsParam,
   status: RouteStatus.optional(),
   limit: z.coerce.number().int().min(1).max(50).default(8),
 });
@@ -1423,12 +1463,21 @@ export const TriggerOverviewResponse = z.object({
   testBranches: z.array(z.string()),
   /** Test branches counted as not merged yet: the open PRs into the tests branch (and hand-scanned ones on the default line). */
   unmergedFrom: z.array(z.string()),
-  /** Test branches scanned by hand or from CI that aren't linked to a PR target: they only count for the default branch. */
+  /** Test branches scanned by hand or from CI that aren't linked to a PR: which branch they merge into is unknown, so they don't count. */
   looseTestBranches: z.array(z.string()),
   /** Folders on the branch with their counts (tested includes unmerged), for the folder picker. */
   folders: z.array(z.object({ folder: z.string(), triggers: z.number().int(), tested: z.number().int(), unmerged: z.number().int() })),
   /** The folder the counts and items are limited to; null = the whole branch. */
   folder: z.string().nullable(),
+  /** Kinds of trigger on the branch (and folder) with their counts, whatever kinds are picked, for the type picker. */
+  kindCounts: z.array(z.object({ kind: TriggerKind, triggers: z.number().int(), tested: z.number().int() })),
+  /** The kinds the counts and items are limited to; null = every kind. */
+  kinds: z.array(TriggerKind).nullable(),
+  /**
+   * Scans counted here that were made before the current counting rules: rescan them for exact
+   * numbers. `routes`/`tests`: the branch scanned; `prs`: how many PR scans (Scan open PRs).
+   */
+  outdated: z.object({ routes: z.string().nullable(), tests: z.string().nullable(), prs: z.number().int() }),
   /** 1. The trigger repo: its scan on the default branch, and the unique triggers in it. */
   triggerRepo: ScopeSource.extend({ triggers: z.number().int(), /** Routes they belong to (a route with several patterns has several triggers). */ routes: z.number().int() }).nullable(),
   /** 2. The test repo: its scan on the default branch, the tests read, and the triggers they cover. */
@@ -1513,3 +1562,100 @@ export const TriggerListResponse = z.object({
   items: z.array(TriggerRow),
 });
 export type TriggerListResponse = z.infer<typeof TriggerListResponse>;
+
+// ---------------------------------------------------------------------------
+// Compare with my sheet: a spreadsheet of routes (one per row) against what the dashboard counts
+// ---------------------------------------------------------------------------
+
+/** The sheet's columns used, by header. Only `routeId` is required. */
+export const SheetCompareColumns = z.object({
+  routeId: z.string().min(1).max(200),
+  /** The route's XML file (tells apart one id in several modules). */
+  xml: z.string().max(200).nullish(),
+  /** What starts it: file, schedule, direct, seda, kafka, rest… */
+  kind: z.string().max(200).nullish(),
+  /** How many triggers the route has. */
+  triggers: z.string().max(200).nullish(),
+  /** Whether it is automated: yes/no, or how many of its triggers are. */
+  automated: z.string().max(200).nullish(),
+  /** The folder (module) it is in, or merged / PR. */
+  where: z.string().max(200).nullish(),
+  /** The test files that cover it. */
+  testFiles: z.string().max(200).nullish(),
+  /** PRs (numbers or branches) with tests for it. */
+  prs: z.string().max(200).nullish(),
+});
+export type SheetCompareColumns = z.infer<typeof SheetCompareColumns>;
+
+export const SheetComparePreviewResponse = z.object({
+  uploadId: z.string(),
+  fileName: z.string(),
+  sheets: z.array(z.object({ name: z.string(), headers: z.array(z.string()), rowCount: z.number().int(), columns: SheetCompareColumns.partial() })),
+});
+export type SheetComparePreviewResponse = z.infer<typeof SheetComparePreviewResponse>;
+
+export const SheetCompareRequest = z.object({
+  uploadId: z.string().min(1).max(100),
+  sheet: z.string().max(200),
+  columns: SheetCompareColumns,
+  branch: trimmed(LIMITS.shortTextMax).min(1).optional(),
+  tests: trimmed(LIMITS.shortTextMax).min(1).optional(),
+  folder: trimmed(LIMITS.shortTextMax).min(1).optional(),
+  kinds: z.array(TriggerKind).max(20).optional(),
+});
+export type SheetCompareRequest = z.infer<typeof SheetCompareRequest>;
+
+export const SheetCompareField = z.enum(['kind', 'triggers', 'automated', 'where', 'testFiles', 'prs']);
+export type SheetCompareField = z.infer<typeof SheetCompareField>;
+
+/** What the dashboard counts for one route. */
+export const SheetCompareRoute = z.object({
+  routeId: z.string().nullable(),
+  module: z.string().nullable(),
+  sourceFile: z.string(),
+  /** Line of its first trigger. */
+  line: z.number().int(),
+  kinds: z.array(TriggerKind),
+  schemes: z.array(z.string()),
+  triggers: z.number().int(),
+  /** Triggers with a test (merged or in a PR). */
+  tested: z.number().int(),
+  /** Of those, the ones only a PR's tests cover. */
+  testedInPrOnly: z.number().int(),
+  testFiles: z.array(z.string()),
+  /** Not-merged branches with tests for it, and their PR numbers where known. */
+  prBranches: z.array(z.string()),
+  prNumbers: z.array(z.number().int()),
+});
+export type SheetCompareRoute = z.infer<typeof SheetCompareRoute>;
+
+export const SheetCompareRow = z.object({
+  /** match: in both and agreeing; differs: in both, some field disagrees; sheetOnly / dashboardOnly. */
+  status: z.enum(['match', 'differs', 'sheetOnly', 'dashboardOnly']),
+  routeId: z.string(),
+  /** 1-based row in the sheet (header = 1); null for dashboard-only routes. */
+  sheetRow: z.number().int().nullable(),
+  diffs: z.array(z.object({ field: SheetCompareField, sheet: z.string(), dashboard: z.string() })),
+  /**
+   * Why: for a route only in the sheet, why the dashboard doesn't count it (not in the XML, not a
+   * trigger type, another folder or type…); for one only in the dashboard, what may have kept it
+   * out of the sheet (a type the sheet never lists, an XML file it doesn't cover, no route id…).
+   */
+  note: z.string().nullable(),
+  sheet: z.record(z.string(), z.string()).nullable(),
+  dashboard: SheetCompareRoute.nullable(),
+});
+export type SheetCompareRow = z.infer<typeof SheetCompareRow>;
+
+export const SheetCompareResponse = z.object({
+  routesFrom: z.string().nullable(),
+  testsFrom: z.string().nullable(),
+  folder: z.string().nullable(),
+  kinds: z.array(TriggerKind).nullable(),
+  columns: SheetCompareColumns,
+  counts: z.object({ sheetRows: z.number().int(), routes: z.number().int(), match: z.number().int(), differs: z.number().int(), sheetOnly: z.number().int(), dashboardOnly: z.number().int() }),
+  /** Routes in both whose field disagrees, per field. */
+  fieldCounts: z.record(SheetCompareField, z.number().int()),
+  rows: z.array(SheetCompareRow),
+});
+export type SheetCompareResponse = z.infer<typeof SheetCompareResponse>;
