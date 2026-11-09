@@ -2,3 +2,4 @@ cases/
 cases-probes/
 report*.json
 __pycache__/
+cases-selftest/

@@ -413,7 +413,9 @@ curl --fail-with-body -sS -X POST "$DASHBOARD_URL/api/triggers/scan" \
   comparison as CSV.
 - **`pnpm verify-counts --repo <camel-repo> --tests <test-repo>`** runs an independent
   implementation of the counting rules on your repos and lists every trigger it and the
-  dashboard disagree on. See [`tools/verify_counts`](tools/verify_counts/README.md).
+  dashboard disagree on. Add `--share` for `verify-counts-share.zip`: the result with every
+  disagreement as a small renamed repro, safe to send (the renaming map stays with you). See
+  [`tools/verify_counts`](tools/verify_counts/README.md).
 
 
 [`tools/distill_camel_repo.py`](tools/distill_camel_repo.py) (Python 3.9+, no

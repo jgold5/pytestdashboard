@@ -3,7 +3,7 @@
 Differential test: oracle.py vs the dashboard scanner on generated (or real) repos.
 
     python3 compare.py --seeds 0:300 [--probes] [--keep] [--out report.json]
-    python3 compare.py --repo /path/to/camel-repo [--tests /path/to/test-repo] [--pr /path/to/pr-checkout]
+    python3 compare.py --repo /path/to/camel-repo [--tests /path/to/test-repo] [--pr /path/to/pr-checkout] [--share]
 
 Per trigger it compares: existence (by file, route id, <from> index, line, pattern part /
 condition), kind, scheme, pattern kind, covered/not covered on main (false positive = scanner
@@ -177,6 +177,7 @@ def main():
     ap.add_argument('--out', default=os.path.join(HERE, 'report.json'))
     ap.add_argument('--work', help='folder for the generated cases (default: cases/ here)')
     ap.add_argument('--strict', action='store_true', help='exit 1 on any disagreement (for CI)')
+    ap.add_argument('--share', action='store_true', help='with --repo: also write verify-counts-share.zip, an anonymized summary and repros to send')
     ap.add_argument('--repo', help='compare on a real repo instead (routes + tests in one checkout)')
     ap.add_argument('--tests', help='with --repo: a separate test repo checkout')
     ap.add_argument('--pr', help='with --repo: a checkout of the test repo on a PR branch')
@@ -227,6 +228,11 @@ def main():
     with open(a.out, 'w') as f:
         json.dump({'stats': stats, 'diffs': diffs}, f, indent=1, default=list)
     print('details:', a.out)
+    if a.share and a.repo:
+        import share  # noqa: E402
+        res = share.build(a.out, dirs[0], os.path.join(os.getcwd(), 'verify-counts-share'))
+        print(f"share: {res['zip']} ({res['repros']} anonymized repros, {res['reproducing']} still disagree after renaming)")
+        print(f"       keep {res['map']} to yourself: it maps the generic words back to your names")
     if a.strict and (diffs or stats['invariant_violations']):
         sys.exit(1)
 

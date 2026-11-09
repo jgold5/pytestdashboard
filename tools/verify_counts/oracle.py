@@ -1166,11 +1166,19 @@ def scan_repository(xml_files, prop_files, test_files) -> dict:
             rid = route.attrs.get('id')
             module = module_of(path)
             if rid:
-                # SEMANTICS (dashboard doc): one route id per module; an identical copy (same inputs as written) is counted once
-                sig = [i.attrs.get('uri') if i.attrs.get('uri') is not None else 'ref:' + i.attrs.get('ref', '') for i in inputs]
-                if (module, rid) in seen_ids and seen_ids[(module, rid)] == sig:
+                # SEMANTICS (dashboard doc): one route id per module; a copy whose inputs are the same endpoints as
+                # any earlier definition of the id is counted once. A ref resolves per file, so it is compared resolved.
+                def resolved_input(i):
+                    ref = i.attrs.get('ref')
+                    uri = i.attrs.get('uri')
+                    if ref is None and uri is not None:
+                        m = re.fullmatch(r'\s*ref:(?://)?([^?\s]+)\s*', uri)
+                        ref = m.group(1) if m else None
+                    return (endpoint_uri(ref, path) if ref else None) or (uri if uri is not None else 'ref:' + (ref or ''))
+                sig = tuple(resolved_input(i) for i in inputs)
+                if sig in seen_ids.get((module, rid), set()):
                     continue
-                seen_ids.setdefault((module, rid), sig)
+                seen_ids.setdefault((module, rid), set()).add(sig)
             if not inputs:
                 continue
             conds = []

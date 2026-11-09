@@ -14,3 +14,10 @@ test-results/
 e2e/.auth/
 *.tsbuildinfo
 *.tsbuildinfo
+
+# pnpm verify-counts --share output
+verify-counts-share/
+verify-counts-share.zip
+verify-counts-share.map.json
+__pycache__/
+*.pyc
