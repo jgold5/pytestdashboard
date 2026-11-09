@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
 import { ArrowLeft, Download, FileSpreadsheet, KeyRound, Search, Share2, Sheet } from 'lucide-react';
-import type { SheetCompareColumns, SheetComparePreviewResponse, SheetCompareResponse, SheetCompareRow, TriggerKind } from '@ptd/shared';
+import { folderLabel, type SheetCompareColumns, type SheetComparePreviewResponse, type SheetCompareResponse, type SheetCompareRow, type TriggerKind } from '@ptd/shared';
 import { api, errorMessage, uploadWithProgress } from '../api/client';
 import { Anonymizer, anonymizeDeep, foldersOf } from '../lib/anonymize';
 import { cn, fmtNumber, pluralize } from '../lib/utils';
@@ -193,7 +193,7 @@ function SheetCompareDialog({ scope, onClose }: { scope: SheetScope; onClose: ()
           </div>
           <p className="text-xs text-fg-3">
             Compared with what the scope button picks: routes on {scope.branch ?? 'the default branch'}, tests {scope.tests ? `from ${scope.tests}` : 'of the same branch'}
-            {scope.folder ? `, ${scope.folder}/ only` : ''}
+            {scope.folder ? `, ${folderLabel(scope.folder)} only` : ''}
             {scope.kinds ? `, ${scope.kinds.split(',').join(' + ')} only` : ''}.
           </p>
         </div>
@@ -253,7 +253,7 @@ function Result({ result }: { result: SheetCompareResponse }) {
         <span className="font-mono">{result.testsFrom ?? '—'}</span>)
         {result.folder ? (
           <>
-            , <span className="font-mono">{result.folder}/</span> only
+            , <span className="font-mono">{folderLabel(result.folder)}</span> only
           </>
         ) : null}
         {result.kinds ? `, ${result.kinds.join(' + ')} only` : ''}.

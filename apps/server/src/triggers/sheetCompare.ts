@@ -16,6 +16,7 @@
  */
 import { desc, eq, isNotNull } from 'drizzle-orm';
 import {
+  splitFolders,
   TRIGGER_KIND_LABEL,
   type SheetCompareColumns,
   type SheetCompareField,
@@ -32,7 +33,7 @@ import { triggerScans } from '../db/schema.js';
 import type { ParsedSheet } from '../import/spreadsheet/parse.js';
 import { parsePrLabel } from './prLabel.js';
 import { bodyCanName, norm, triggerNames } from './scan.js';
-import { routeCoverage } from './routeCoverage.js';
+import { inFolders, routeCoverage } from './routeCoverage.js';
 import { listTriggers, unlinkedTests } from './store.js';
 import { isRouteScan } from './testScope.js';
 import type { SkippedRoute } from './scan.js';
@@ -175,7 +176,7 @@ export function compareSheet(db: Db, sheet: ParsedSheet, req: SheetCompareReques
     const pr = parsePrLabel(s.label);
     if (pr) prOf.set(s.branch, pr.number);
   }
-  const inScope = (t: TriggerRow) => (!req.folder || t.module === req.folder) && (!req.kinds?.length || req.kinds.includes(t.kind));
+  const inScope = (t: TriggerRow) => inFolders(t.module, req.folder) && (!req.kinds?.length || req.kinds.includes(t.kind));
   const all = routesOf(list.items, (b) => prOf.get(b) ?? null);
   const scoped = routesOf(list.items.filter(inScope), (b) => prOf.get(b) ?? null);
   const byId = new Map<string, RouteAcc[]>();
@@ -376,7 +377,7 @@ export function compareSheet(db: Db, sheet: ParsedSheet, req: SheetCompareReques
   return {
     routesFrom: list.routesFrom,
     testsFrom: list.testsFrom,
-    folder: req.folder ?? null,
+    folder: splitFolders(req.folder).join(',') || null,
     kinds: req.kinds?.length ? req.kinds : null,
     columns: cols,
     counts: {

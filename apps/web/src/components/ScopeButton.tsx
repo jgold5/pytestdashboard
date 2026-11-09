@@ -1,14 +1,14 @@
 import * as P from '@radix-ui/react-popover';
 import { Check, ChevronDown } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
-import { TRIGGER_KIND_LABEL, type TriggerKind } from '@ptd/shared';
+import { folderLabel, splitFolders, TRIGGER_KIND_LABEL, type TriggerKind } from '@ptd/shared';
 import { useTriggerOverview } from '../api/hooks';
 import { cn, fmtNumber, pluralize } from '../lib/utils';
 import { UnlinkedTestsDialog } from './UnlinkedTests';
 
 /**
  * What a page counts: a branch of the trigger repo (routes), the test repo branch whose merged
- * tests count with the PRs into it (tests), optionally one folder, and optionally some kinds of
+ * tests count with the PRs into it (tests), optionally some folders (comma-separated), and optionally some kinds of
  * trigger (comma-separated). null = the default: the default routes branch, the tests branch
  * named like the routes branch (else the test repo's default), all folders, every kind.
  */
@@ -78,7 +78,15 @@ export function ScopeButton({
   const { routes, tests, autoTests } = scopeSelection(scope, d);
   const updating = q.isPlaceholderData;
   const folders = d.folders;
-  const folderMissing = scope.folder && !folders.some((f) => f.folder === scope.folder);
+  const pickedFolders = splitFolders(scope.folder);
+  const foldersMissing = pickedFolders.filter((p) => !folders.some((f) => f.folder === p));
+  // toggling a folder, like a kind: none picked = every folder, so the first click keeps only that one
+  const toggleFolder = (name: string) => {
+    const next = pickedFolders.includes(name) ? pickedFolders.filter((x) => x !== name) : [...pickedFolders, name];
+    const all = folders.map((f) => f.folder);
+    const ordered = all.filter((x) => next.includes(x)).concat(next.filter((x) => !all.includes(x)));
+    onChange({ folder: ordered.length === 0 || all.every((x) => ordered.includes(x)) ? null : ordered.join(',') });
+  };
   const prs = d.unmergedFrom.filter((b) => !d.looseTestBranches.includes(b));
   const picked = (scope.kinds ?? '').split(',').filter(Boolean);
   const kindCounts = d.kindCounts;
@@ -89,7 +97,7 @@ export function ScopeButton({
     const ordered = all.filter((x) => next.includes(x)).concat(next.filter((x) => !all.includes(x as TriggerKind)) as TriggerKind[]);
     onChange({ kinds: ordered.length === 0 || all.every((x) => ordered.includes(x)) ? null : ordered.join(',') });
   };
-  const label = `${routes} · tests ${tests ?? '—'} · ${scope.folder ? `${scope.folder}/` : 'all folders'} · ${kindsLabel(scope.kinds)}`;
+  const label = `${routes} · tests ${tests ?? '—'} · ${folderLabel(scope.folder) ?? 'all folders'} · ${kindsLabel(scope.kinds)}`;
 
   return (
     <>
@@ -104,7 +112,7 @@ export function ScopeButton({
         <P.Trigger asChild>
           <button
             type="button"
-            aria-label={`Scope: routes from ${routes}, tests from ${tests ?? 'none'}, ${scope.folder ? `folder ${scope.folder}` : 'all folders'}, ${kindsLabel(scope.kinds)}. Change`}
+            aria-label={`Scope: routes from ${routes}, tests from ${tests ?? 'none'}, ${pickedFolders.length ? `${pluralize(pickedFolders.length, 'folder', 'folders')} ${pickedFolders.join(', ')}` : 'all folders'}, ${kindsLabel(scope.kinds)}. Change`}
             className={cn(
               'inline-flex h-8 max-w-full min-w-0 items-center gap-2 rounded-md border border-border-strong/70 bg-surface px-3 text-[13px] font-medium text-fg shadow-sm outline-none hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-ring/50 data-[state=open]:bg-surface-2',
               className,
@@ -150,20 +158,21 @@ export function ScopeButton({
                   </Choice>
                 ))}
               </Column>
-              <Column title="Folder" hint={`on ${routes}`}>
-                <Choice selected={!scope.folder} onSelect={() => onChange({ folder: null })}>
+              <Column title="Folder" hint={`on ${routes}`} multi>
+                <Choice selected={pickedFolders.length === 0} onSelect={() => onChange({ folder: null })}>
                   All folders
                 </Choice>
-                {folderMissing ? (
-                  <Choice selected onSelect={() => onChange({ folder: null })}>
-                    {scope.folder}/ <span className="ml-1 text-warn">not on {routes}</span>
+                {foldersMissing.map((m) => (
+                  <Choice key={`missing-${m}`} multi selected onSelect={() => toggleFolder(m)}>
+                    {m}/ <span className="ml-1 text-warn">not on {routes}</span>
                   </Choice>
-                ) : null}
+                ))}
                 {folders.map((f) => (
                   <Choice
                     key={f.folder}
-                    selected={f.folder === scope.folder}
-                    onSelect={() => onChange({ folder: f.folder })}
+                    multi
+                    selected={pickedFolders.includes(f.folder)}
+                    onSelect={() => toggleFolder(f.folder)}
                   >
                     <span className="truncate">{f.folder}/</span>
                     <span className={cn('ml-auto shrink-0 pl-2 text-fg-3 tabular', updating && 'opacity-50')}>

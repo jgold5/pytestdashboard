@@ -95,6 +95,24 @@ export const LIMITS = {
 const trimmed = (max: number) => z.string().trim().max(max);
 const nullableShort = trimmed(LIMITS.shortTextMax).nullable();
 
+/**
+ * A folder pick (the folder under `resources/`): one folder, or several joined with commas
+ * (`common,ingest`). Empty = every folder.
+ */
+const FolderParam = trimmed(4000).min(1);
+
+/** The folders of a pick (`common,ingest` → [common, ingest]); [] = every folder. */
+export function splitFolders(folder: string | null | undefined): string[] {
+  return [...new Set((folder ?? '').split(',').map((f) => f.trim()).filter(Boolean))];
+}
+
+/** "common/", "common/ + ingest/", "3 folders"; null for every folder. */
+export function folderLabel(folder: string | null | undefined): string | null {
+  const list = splitFolders(folder);
+  if (list.length === 0) return null;
+  return list.length <= 2 ? list.map((f) => `${f}/`).join(' + ') : `${list.length} folders`;
+}
+
 /** http(s) URLs only — blocks javascript:, data:, etc. */
 export const SafeUrl = z
   .string()
@@ -839,7 +857,7 @@ export const ScopeBranchQuery = z.object({
   branch: trimmed(LIMITS.shortTextMax).min(1).optional(),
   /** Test repo branch whose merged tests count (plus the PRs into it); default: the same as the routes branch. */
   tests: trimmed(LIMITS.shortTextMax).min(1).optional(),
-  folder: trimmed(LIMITS.shortTextMax).min(1).optional(),
+  folder: FolderParam.optional(),
   kinds: TriggerKindsParam,
 });
 export type ScopeBranchQuery = z.infer<typeof ScopeBranchQuery>;
@@ -1020,8 +1038,8 @@ export const ReportQuery = z.object({
   periodDays: z.coerce.number().int().refine((n) => [7, 30, 90, 180].includes(n)).default(30),
   /** Trigger repo branch the coverage counts (default: main/master/develop). */
   branch: trimmed(LIMITS.shortTextMax).min(1).optional(),
-  /** Only the triggers in this folder. */
-  folder: trimmed(LIMITS.shortTextMax).min(1).optional(),
+  /** Only the triggers in these folders (one, or several joined with commas). */
+  folder: FolderParam.optional(),
   /** Test repo branch whose merged tests count (plus the PRs into it); default: the same as the routes branch. */
   tests: trimmed(LIMITS.shortTextMax).min(1).optional(),
   /** Only these kinds of trigger. */
@@ -1418,8 +1436,8 @@ export type RouteStatus = z.infer<typeof RouteStatus>;
 export const TriggerOverviewQuery = z.object({
   /** Trigger repo branch to count (default: main/master/develop). */
   branch: trimmed(LIMITS.shortTextMax).min(1).optional(),
-  /** Only the triggers in this folder (the folder under `resources/`). */
-  folder: trimmed(LIMITS.shortTextMax).min(1).optional(),
+  /** Only the triggers in these folders (under `resources/`; one, or several joined with commas). */
+  folder: FolderParam.optional(),
   /** Test repo branch whose merged tests count (plus the PRs into it); default: the same as the routes branch. */
   tests: trimmed(LIMITS.shortTextMax).min(1).optional(),
   /** Only these kinds of trigger. */
@@ -1605,7 +1623,7 @@ export const SheetCompareRequest = z.object({
   columns: SheetCompareColumns,
   branch: trimmed(LIMITS.shortTextMax).min(1).optional(),
   tests: trimmed(LIMITS.shortTextMax).min(1).optional(),
-  folder: trimmed(LIMITS.shortTextMax).min(1).optional(),
+  folder: FolderParam.optional(),
   kinds: z.array(TriggerKind).max(20).optional(),
 });
 export type SheetCompareRequest = z.infer<typeof SheetCompareRequest>;
