@@ -107,8 +107,10 @@ export function splitFolders(folder: string | null | undefined): string[] {
 }
 
 /**
- * Routes left out by id: comma-separated patterns, case-insensitive. A pattern without `*` is a
- * start (`download` = ids starting with download); with `*` it is the whole id (`*-download`,
+ * Triggers left out by name: comma-separated patterns, case-insensitive, matched against the route
+ * id, the file name or pattern, and the endpoint name (see triggerNamesForExclude), or only one of
+ * them with `route:`, `file:` or `endpoint:` before the pattern. A pattern without `*` is a start
+ * (`download` = names starting with download); with `*` it is the whole name (`*-download`,
  * `*download*`).
  */
 const ExcludeParam = trimmed(4000).min(1);
@@ -129,10 +131,70 @@ function excludeRegex(pattern: string): RegExp {
   return re;
 }
 
-/** The pattern of `exclude` that leaves this route id out, else null. */
-export function excludedBy(routeId: string | null | undefined, exclude: string | null | undefined): string | null {
-  if (!routeId || !exclude) return null;
-  for (const p of splitExclude(exclude)) if (excludeRegex(p).test(routeId)) return p;
+/** What a Leave out pattern looks at: `route:`, `file:` or `endpoint:` before it; none = all three. */
+export type ExcludeField = 'route' | 'file' | 'endpoint';
+const EXCLUDE_FIELD = /^(route|id|file|endpoint):\s*(.*)$/;
+
+/** A Leave out pattern split into what it looks at and the pattern (`file:download` → file, download). */
+export function parseExcludePattern(p: string): { field: ExcludeField | null; pattern: string } {
+  const m = EXCLUDE_FIELD.exec(p.trim().toLowerCase());
+  if (!m) return { field: null, pattern: p.trim().toLowerCase() };
+  return { field: m[1] === 'id' ? 'route' : (m[1] as ExcludeField), pattern: m[2]!.trim() };
+}
+
+/** "file names starting with download", "endpoint names matching *download*". */
+export function describeExcludePattern(p: string): string {
+  const { field, pattern } = parseExcludePattern(p);
+  const what = field === 'route' ? 'route ids' : field === 'file' ? 'file names' : field === 'endpoint' ? 'endpoint names' : 'names';
+  return pattern.includes('*') ? `${what} matching ${pattern}` : `${what} starting with ${pattern}`;
+}
+
+/**
+ * What Leave out matches a trigger by: its route id; its file name or pattern (a regex's leading
+ * `^`/`(` dropped); and the name in its endpoint (`direct:downloadJob` → downloadJob, a queue or
+ * Kafka topic, a REST path from its first segment, a quartz job). The folder a file trigger
+ * watches isn't its name.
+ */
+export function triggerNamesForExclude(t: { routeId?: string | null; filePattern?: string | null; firesOn?: string | null; resolvedUri?: string | null }): Record<ExcludeField, string[]> {
+  const out: Record<ExcludeField, string[]> = { route: [], file: [], endpoint: [] };
+  const add = (field: ExcludeField, x: string | null | undefined) => {
+    const v = x?.replace(/^[\^(/]+/, '').trim();
+    if (v && !out[field].includes(v)) out[field].push(v);
+  };
+  add('route', t.routeId);
+  add('file', t.filePattern);
+  for (const uri of [t.resolvedUri, t.firesOn]) {
+    if (!uri) continue;
+    const m = /^([a-z][\w+.-]*):(\/\/)?(.*)$/i.exec(uri);
+    if (!m) {
+      add('file', uri); // a file pattern (or a schedule, which no word matches)
+      continue;
+    }
+    if (/^(file|sftp|ftps?|smb)$/i.test(m[1]!)) continue; // the folder watched isn't the trigger's name
+    const rest = (m[3] ?? '').split('?')[0]!.replace(/^(get|post|put|delete|patch):/i, '');
+    add('endpoint', rest);
+    add('endpoint', rest.split('/').filter(Boolean).pop());
+  }
+  return out;
+}
+
+/**
+ * The pattern of `exclude` that leaves this out, else null: a route id (a string), or a trigger,
+ * by its route id, file name or endpoint name, or only the one a `route:`/`file:`/`endpoint:`
+ * prefix names (see triggerNamesForExclude).
+ */
+export function excludedBy(
+  what: string | null | undefined | { routeId?: string | null; filePattern?: string | null; firesOn?: string | null; resolvedUri?: string | null },
+  exclude: string | null | undefined,
+): string | null {
+  if (!what || !exclude) return null;
+  const names = typeof what === 'string' ? { route: [what], file: [], endpoint: [] } : triggerNamesForExclude(what);
+  for (const p of splitExclude(exclude)) {
+    const { field, pattern } = parseExcludePattern(p);
+    if (!pattern) continue;
+    const pool = field ? names[field] : [...names.route, ...names.file, ...names.endpoint];
+    if (pool.some((n) => excludeRegex(pattern).test(n))) return p;
+  }
   return null;
 }
 

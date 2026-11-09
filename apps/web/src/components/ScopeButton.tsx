@@ -17,7 +17,7 @@ export interface Scope {
   folder: string | null;
   tests: string | null;
   kinds: string | null;
-  /** Route ids left out: patterns, comma-separated (`download` = ids starting with download). */
+  /** Triggers left out by name (route id, file pattern or endpoint name): patterns, comma-separated (`download` = names starting with download). */
   exclude?: string | null;
 }
 
@@ -365,11 +365,11 @@ export function ScopeButton({
                 value={excludeDraft}
                 onChange={(e) => setExcludeDraft(e.target.value)}
                 onBlur={applyExclude}
-                placeholder="route ids starting with… e.g. download, test-"
+                placeholder="names starting with… e.g. file:download, route:test-, endpoint:legacy"
                 className="h-7 min-w-0 flex-1 rounded-md border border-border-strong/70 bg-surface px-2 font-mono text-[12.5px] outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
               />
               <span className="text-[11px] text-fg-3">
-                {splitExclude(scope.exclude).length ? `${pluralize(d.excluded, 'trigger')} left out · ` : ''}comma-separated; * for anywhere (*download*)
+                {splitExclude(scope.exclude).length ? `${pluralize(d.excluded, 'trigger')} left out · ` : ''}route: / file: / endpoint: for one kind of name (none = any); * for anywhere (*download*)
               </span>
             </form>
             <div className={cn('mt-3 space-y-0.5 border-t border-border pt-2.5 text-xs text-fg-2', updating && 'opacity-60')} aria-busy={updating}>

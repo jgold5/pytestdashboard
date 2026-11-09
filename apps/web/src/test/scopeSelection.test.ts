@@ -61,3 +61,37 @@ describe('leaving routes out and saved filters', () => {
     expect(activePreset(presets, { folder: 'billing,common', kinds: 'schedule,file', exclude: null })).toBeNull();
   });
 });
+
+describe('leave out by trigger name', () => {
+  it('matches a file pattern, an endpoint name or the route id, not the folder watched', async () => {
+    const { excludedBy } = await import('@ptd/shared');
+    const file = (filePattern: string, routeId = 'invoice-load', resolvedUri = 'file:/data/in') => ({ routeId, filePattern, resolvedUri });
+    expect(excludedBy(file('DOWNLOAD_INV.*\\.csv'), 'download')).toBe('download');
+    expect(excludedBy(file('^(Download_X|Y).*'), 'download')).toBe('download');
+    expect(excludedBy(file('INV.TXT'), 'download')).toBeNull();
+    expect(excludedBy(file('INV.TXT', 'invoice-load', 'file:/data/download'), 'download')).toBeNull(); // the folder isn't the name
+    expect(excludedBy(file('INV.TXT', 'download-invoices'), 'download')).toBe('download');
+    expect(excludedBy({ routeId: 'x', filePattern: null, resolvedUri: 'direct:downloadJob' }, 'download')).toBe('download');
+    expect(excludedBy({ routeId: 'x', filePattern: null, resolvedUri: 'seda://downloads?concurrentConsumers=2' }, 'download')).toBe('download');
+    expect(excludedBy({ routeId: 'x', filePattern: null, resolvedUri: 'rest:get:/download/all' }, 'download')).toBe('download');
+    expect(excludedBy({ routeId: 'x', filePattern: null, resolvedUri: 'rest:get:/api/download/all' }, 'download')).toBeNull(); // a path starts at its first segment
+    expect(excludedBy({ routeId: 'x', firesOn: 'kafka:download-events' }, 'download')).toBe('download');
+    expect(excludedBy({ routeId: 'x', firesOn: '0 0 2 * * ?' }, 'download')).toBeNull();
+  });
+});
+
+describe('leave out by one kind of name', () => {
+  it('route:, file: and endpoint: look only at that name; no prefix looks at all three', async () => {
+    const { excludedBy, describeExcludePattern } = await import('@ptd/shared');
+    const byFile = { routeId: 'invoice-load', filePattern: 'DOWNLOAD_INV.*', resolvedUri: 'file:/in' };
+    const byRoute = { routeId: 'download-invoices', filePattern: 'INV.TXT', resolvedUri: 'file:/in' };
+    const byEndpoint = { routeId: 'job-a', filePattern: null, resolvedUri: 'direct:downloadJob' };
+    expect([byFile, byRoute, byEndpoint].map((t) => excludedBy(t, 'download'))).toEqual(['download', 'download', 'download']);
+    expect([byFile, byRoute, byEndpoint].map((t) => excludedBy(t, 'file:download'))).toEqual(['file:download', null, null]);
+    expect([byFile, byRoute, byEndpoint].map((t) => excludedBy(t, 'route:download'))).toEqual([null, 'route:download', null]);
+    expect([byFile, byRoute, byEndpoint].map((t) => excludedBy(t, 'Endpoint: download'))).toEqual([null, null, 'endpoint: download']);
+    expect(excludedBy('download-x', 'file:download')).toBeNull(); // a bare route id is only a route id
+    expect(describeExcludePattern('file:download')).toBe('file names starting with download');
+    expect(describeExcludePattern('*download*')).toBe('names matching *download*');
+  });
+});

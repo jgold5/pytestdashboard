@@ -165,8 +165,8 @@ export function inFolders(module: string | null | undefined, folder: string | nu
   return list.length === 0 || (!!module && list.includes(module));
 }
 
-export const inScope = (r: Pick<TriggerOverviewRow, 'module' | 'kind' | 'routeId'>, f: ScopeFilter): boolean =>
-  inFolders(r.module, f.folder) && (!f.kinds?.length || f.kinds.includes(r.kind)) && !excludedBy(r.routeId, f.exclude);
+export const inScope = (r: Pick<TriggerOverviewRow, 'module' | 'kind' | 'routeId' | 'firesOn'>, f: ScopeFilter): boolean =>
+  inFolders(r.module, f.folder) && (!f.kinds?.length || f.kinds.includes(r.kind)) && !excludedBy(r, f.exclude);
 
 /** Counts of a branch's triggers, optionally only those in some folders and of some kinds. */
 export function scopeCounts(cov: RouteCoverage, filter: ScopeFilter = {}): { total: number; tested: number; branch: number; none: number } {
@@ -226,7 +226,7 @@ export function routeOverview(db: Db, q: TriggerOverviewQuery): TriggerOverviewR
     kinds: q.kinds?.length ? q.kinds : null,
     exclude: splitExclude(q.exclude).join(',') || null,
     fresh: null,
-    excluded: cov ? cov.rows.filter((r) => inScope(r, { folder: q.folder, kinds: q.kinds }) && excludedBy(r.routeId, q.exclude)).length : 0,
+    excluded: cov ? cov.rows.filter((r) => inScope(r, { folder: q.folder, kinds: q.kinds }) && excludedBy(r, q.exclude)).length : 0,
     outdated: cov?.outdated ?? { routes: null, tests: null, prs: 0 },
     triggerRepo: cov
       ? {
