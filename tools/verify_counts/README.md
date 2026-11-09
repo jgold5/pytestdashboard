@@ -60,6 +60,10 @@ file and the properties it uses, the test files with the `conftest.py` files and
 import, and what the dashboard makes of it; all renamed like `--share`. Send
 `route-test-examples.zip`; keep `route-test-examples.map.json` to yourself.
 
+The test repo is read as it is checked out (usually `main`): a route whose test files are only on
+an open PR's branch is skipped and counted ("test files not in this checkout"). To include those,
+run it again with the test repo checked out on that PR's branch.
+
 To pick routes by hand instead (or as well): `--route some-route-id=test_some_route.py`, repeated.
 
 `python3 tools/verify_counts/oracle.py <repo> --summary` prints the oracle's own counts (per
