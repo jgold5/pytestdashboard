@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from 'react';
 import { ArrowLeft, Download, FileSpreadsheet, KeyRound, Search, Share2, Sheet } from 'lucide-react';
 import type { SheetCompareColumns, SheetComparePreviewResponse, SheetCompareResponse, SheetCompareRow, TriggerKind } from '@ptd/shared';
 import { api, errorMessage, uploadWithProgress } from '../api/client';
-import { Anonymizer, anonymizeDeep } from '../lib/anonymize';
+import { Anonymizer, anonymizeDeep, foldersOf } from '../lib/anonymize';
 import { cn, fmtNumber, pluralize } from '../lib/utils';
 import { Button } from './ui/button';
 import { Dialog } from './ui/dialog';
@@ -412,7 +412,7 @@ function ShareButtons({ result, fileName }: { result: SheetCompareResponse; file
   };
   const share = () => {
     const anon = new Anonymizer();
-    const renamed = anonymizeDeep(result, anon, NOT_NAMES);
+    const renamed = anonymizeDeep(result, anon, NOT_NAMES, false, foldersOf(result));
     save(`${anon.text(base)}-vs-dashboard-share.json`, {
       about:
         'Compare with my sheet: a spreadsheet of routes against what the dashboard counts. Every name is replaced by a made-up word of the same length, the same everywhere; the dashboard’s own words are kept.',
