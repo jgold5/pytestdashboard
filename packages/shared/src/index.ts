@@ -1514,6 +1514,11 @@ export const TriggerRow = Trigger.extend({
   change: TriggerChange.nullable(),
   /** Only with `compare`: whether it was automated on the compare branch. */
   automatedBefore: z.boolean().nullable(),
+  /**
+   * No test names it, but a tested route hands it work (direct:, seda:, jms:, kafka:): the chain of
+   * route ids from that tested route to the one calling it. It still counts as not tested.
+   */
+  runVia: z.array(z.string()).nullable().optional(),
 });
 export type TriggerRow = z.infer<typeof TriggerRow>;
 
@@ -1626,6 +1631,8 @@ export const SheetCompareRoute = z.object({
   /** Not-merged branches with tests for it, and their PR numbers where known. */
   prBranches: z.array(z.string()),
   prNumbers: z.array(z.number().int()),
+  /** Untested, but a tested route hands it work: the route ids from that route to its caller. */
+  runVia: z.array(z.string()).nullable(),
 });
 export type SheetCompareRoute = z.infer<typeof SheetCompareRoute>;
 

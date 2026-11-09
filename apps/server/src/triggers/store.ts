@@ -13,7 +13,7 @@ import type { Db } from '../db/client.js';
 import { testCases, triggerScans } from '../db/schema.js';
 import { recordCoverageSnapshot } from '../domain/coverage.js';
 import { badRequest } from '../errors.js';
-import { coverTriggers, type ScanOutput, type StoredTrigger, type TestLabels } from './scan.js';
+import { coverTriggers, endpointKey, type ScanOutput, type StoredTrigger, type TestLabels } from './scan.js';
 
 /** Scans kept per branch (the latest is the branch's scope; older ones are history). */
 export const SCANS_KEPT_PER_BRANCH = 20;
@@ -281,13 +281,15 @@ export function listTriggers(db: Db, q: TriggerQuery): TriggerListResponse {
   const base = q.compare ? viewOf(db, latest, q.compare, { unmerged: false, tests: q.tests }) : null;
   const baseByKey = base ? new Map(base.triggers.map((t) => [t.key, t])) : null;
   const link = caseLinker(db);
+  const via = runVia(head.triggers, head.covered);
   const row = (t: StoredTrigger, covered: Covered, change: TriggerRow['change'], before: StoredTrigger | undefined): TriggerRow => {
-    const { match: _match, ...api } = t;
+    const { match: _match, calls: _calls, ...api } = t;
     return {
       ...LEGACY_DEFAULTS,
       ...api,
       coveredBy: covered.map((c) => ({ ...c, testCaseId: link(c.test) })),
       branches: branchesOf.get(t.key) ?? [],
+      runVia: covered.length === 0 ? (via.get(t.key) ?? null) : null,
       change,
       automatedBefore: base ? (before ? (base.covered.get(before.key)?.length ?? 0) > 0 : false) : null,
     };
@@ -360,4 +362,39 @@ function divergence(db: Db, here: readonly TestLabels[], there: readonly TestLab
 /** Delete all scans of a branch (e.g. a merged PR branch). */
 export function deleteBranchScans(db: Db, branch: string): number {
   return db.delete(triggerScans).where(inArray(triggerScans.branch, [branch])).run().changes;
+}
+
+/**
+ * Triggers no test names that a tested route still runs: it hands them work through direct:,
+ * seda:, jms: or kafka:, possibly through other untested routes in between. Trigger key → the
+ * route ids from the tested route to the one calling it. Informational: they stay untested.
+ */
+export function runVia(triggers: readonly StoredTrigger[], covered: ReadonlyMap<string, readonly unknown[]>): Map<string, string[]> {
+  const byEndpoint = new Map<string, StoredTrigger[]>();
+  for (const t of triggers) {
+    if (t.kind !== 'direct' && t.kind !== 'queue' && t.kind !== 'kafka') continue;
+    const k = endpointKey(t.resolvedUri);
+    if (k) byEndpoint.set(k, [...(byEndpoint.get(k) ?? []), t]);
+  }
+  const out = new Map<string, string[]>();
+  if (byEndpoint.size === 0) return out;
+  const name = (t: StoredTrigger) => t.routeId ?? t.key;
+  // breadth first from every tested trigger, so each route gets the shortest chain
+  let frontier: Array<{ t: StoredTrigger; path: string[] }> = triggers.filter((t) => (covered.get(t.key)?.length ?? 0) > 0).map((t) => ({ t, path: [name(t)] }));
+  const seen = new Set(frontier.map((f) => f.t.key));
+  while (frontier.length) {
+    const next: typeof frontier = [];
+    for (const { t, path } of frontier) {
+      for (const call of t.calls ?? []) {
+        for (const target of byEndpoint.get(call) ?? []) {
+          if (seen.has(target.key)) continue;
+          seen.add(target.key);
+          out.set(target.key, path);
+          if (path.length < 10) next.push({ t: target, path: [...path, name(target)] });
+        }
+      }
+    }
+    frontier = next;
+  }
+  return out;
 }
