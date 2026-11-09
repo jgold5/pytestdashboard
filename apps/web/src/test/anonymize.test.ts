@@ -55,7 +55,7 @@ describe('anonymizing a sheet comparison for sharing', () => {
   const text = JSON.stringify(out);
 
   it('leaves none of the names in it', () => {
-    for (const name of ['acme', 'Acme', 'ACME', 'invoice', 'Invoice', 'INVOICE', 'billing', 'legacy', 'Audit', '20260101'])
+    for (const name of ['acme', 'Acme', 'ACME', 'invoice', 'Invoice', 'INVOICE', 'billing', 'legacy', 'export', 'Audit', 'core', '20260101'])
       expect(text, name).not.toContain(name);
   });
 

@@ -11,7 +11,10 @@
  * The key (made-up → original) is for the person who shares, not for the one they share with.
  */
 
-/** Words the dashboard writes itself (every word of its reasons and labels), and generic technical vocabulary: never names. */
+/**
+ * Generic technical vocabulary, and every word of the dashboard's own messages (its reasons and labels, taken
+ * from the string literals of sheetCompare.ts, SheetCompare.tsx and scan.ts): never names. Anything else is renamed.
+ */
 const KEEP = new Set(
   `a an and are as at be by for from in is it of on or the to with not no yes but than that this there them its it's so if
   above all also another any anywhere apart as at automated agree agrees calls closest column columns compare compared comparison
@@ -30,39 +33,15 @@ const KEEP = new Set(
   pr prs branch branches folder folders module modules id ids key keys automated tested untested
   agrees differs sheetonly dashboardonly match differs merged none true false null
   starts ends with regex contains startswith endswith
-  absolute accent activemq agree agrees align all allure also amqp and another antinclude apart api
-  application auto automated bad body border branch branches but button calls camelfilename center choose
-  closest coap color column compare compared comparison condition config const contains copy count counted
-  counts cover covered createelement createobjecturl cron csv cxfrs dash dashboard dashboardonly dashed
-  default defined deletefilename dialog differ differences differs diffs direct document doesn don download
-  drop dsl dynamic each else elsewhere endpoint ends endswith enrich entry env errors events every everything
-  exec ext failed file filename files filled filter first flex focus folder folders font for found from ftp
-  ftps full gap get ghost glob grid has have head headers here hidden hover how href http https identical
-  import include inline inonly inout inp input inputs instantiates isn items its java jetty jms join kafka
-  key kind kinds kotlin label leave left length lib lined lines list listing lists load main many map mark
-  master match max may medium merged missing mix module mono more mqtt name names near netty new noext none
-  norm not note nothing nowrap number numbers oklab once one only onlyname ordinary other otherwise out
-  outline outside overflow parse passed per picked placeholder plain platform pointer points poll pollenrich
-  prbranches preview primary prlabel problems properties property prs push pytest quartz queue rabbitmq raw
-  read reading reason reasons ref regex relative removed repeatcount repeatinterval required resources rest
-  restlet result ring rounded route routecoverage routeid routes routetemplate row rows run runvia same says
-  scan scanned schedule scheduled scheduler schema search seda select semibold service servlet sets several
-  sftp shared sheet sheetids sheetonly sheetrow show shrink side simple size sjms skip smb soft something
-  space spreadsheet spring src start starts startswith status sticky store strays strong substr substring
-  suggests surface sys tab tablist tabular tells test tested testedinpronly testfiles tests testscope text
-  than that the them there this timer tmp tolowercase too tool top touppercase tracking translate transparent
-  trigger triggers trim truncate tsv txt type types under undertow unresolved until upload uppercase uri url
-  utils value values via visible warn was what when where which whitespace why wiretap with without word
-  words worker wrap xlsx xml yes you your
-  about abs acc add against among array automat base best boolean both can candidates canon cap case cell
-  cells change client close cols containing continue core coverage covering cur delete desc describe detect
-  dev develop drizzle edits entries entrykind exp export extends extra field find flat function header idx
-  includes index interface into keyof knows latest let levenshtein like link linked listed location lower
-  manual matched math mean min mine most node nums numtriggers object ones open order orm oui own page parsed
-  partial pending pop prefix prev ptd pullrequests readonly record reg replace req request response return
-  routefile routename say scans scheme schemes scope scoped separator set skipped slice some sort source
-  sourcefile split string strings tell testfile testpath theirs then those throw times todo trig triggercount
-  typeof typo undefined unlinked unmerged upper used usual ways weak wheres within write xmlfile`.split(/\s+/).filter(Boolean),
+  absolute accent against align ant auto bad body border browser button cancel center choose col color cols
+  dashed details diffs download drop empty endss enrich entry everywhere ext failed field filter flex focus
+  font gap ghost glob grid headers hidden holds hover inline interval items keep kept leave left length like
+  made max medium mix mono noext nots nowrap oklab onlyname otherwise outline overflow own picks pointer
+  points preview primary private problems rabbitmq relative removed repeat replaced required result ring
+  rounded save scheduled schemes scope search semibold sets share sharing show shown shrink side simple size
+  skip soft space spreadsheet spring start startss sticky strong substr substring surface tab tablist tabular
+  tap template times tolowercase top touppercase tracking translate transparent truncate unlinked unresolved
+  upload uppercase var visible warn whitespace wire wrap write yourself`.split(/\s+/).filter(Boolean),
 );
 
 const CONSONANTS = 'bdfgklmnprstvz';
