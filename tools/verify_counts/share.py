@@ -674,6 +674,125 @@ def selftest(seeds: str, probes: bool, work: str) -> int:
     return 1 if bad else 0
 
 
+def build_examples(routes_repo: str, tests_repo: str, pairs: List[tuple], out_dir: str) -> Dict:
+    """
+    Package a few routes with the test files that are meant to test them, renamed like --share, so
+    someone can see how those tests exercise a route. `pairs`: (route id, [test file paths or names]).
+    """
+    import tempfile
+    case = tempfile.mkdtemp(prefix='ptd-examples-')
+    os.makedirs(os.path.join(case, 'repo'))
+    os.symlink(os.path.abspath(routes_repo), os.path.join(case, 'repo', '__routes__'))
+    os.symlink(os.path.abspath(tests_repo), os.path.join(case, 'repo', '__tests__'))
+    repo = Repo(case)
+    namer = Namer()
+    all_py = repo.py_files('repo')
+    plans = []
+    problems = []
+    for route_id, files in pairs:
+        xml = next((p for p in repo.xml_files() if re.search(r'\bid\s*=\s*["\']' + re.escape(route_id) + '["\']', repo.text('repo', p))), None)
+        if not xml:
+            problems.append((route_id, 'no route with this id in the routes repo'))
+            continue
+        tests = []
+        for f in files:
+            f = f.strip().lstrip('./')
+            found = [p for p in all_py if p == f'__tests__/{f}' or p.endswith('/' + f) or p.split('/')[-1] == f.split('/')[-1]]
+            if not found:
+                problems.append((route_id, f'no test file named {f.split("/")[-1]} in the test repo'))
+            tests += found[:1]
+        ids = [f'{t}::x' for t in tests]
+        rf = route_files(repo, xml)
+        items = [('repo', p, repo.text('repo', p), 'xml', None) for p in rf['xml']]
+        items += [('repo', p, repo.text('repo', p), 'properties', set(rf['keys'])) for p in rf['properties']]
+        items += [('repo', p, repo.text('repo', p), 'python', None) for p in test_files(repo, 'repo', ids)]
+        plans.append((route_id, xml, tests, items))
+
+    def anonymize(kind: str, text: str, keys: Optional[Set[str]]) -> str:
+        if kind == 'xml':
+            return anonymize_xml(text, namer)
+        if kind == 'properties':
+            return anonymize_properties(text, namer, keys)
+        return anonymize_python(text, namer)
+
+    namer.collect()
+    for route_id, _, _, items in plans:
+        namer.text(route_id)
+        for side, p, text, kind, keys in items:
+            namer.path(p)
+            anonymize(kind, text, keys)
+            if kind == 'xml':
+                register_patterns(text, namer)
+    namer.finalize()
+
+    shutil.rmtree(out_dir, ignore_errors=True)
+    os.makedirs(os.path.join(out_dir, 'examples'))
+    work = out_dir + '.work'
+    shutil.rmtree(work, ignore_errors=True)
+    written = []
+    for n, (route_id, xml, tests, items) in enumerate(plans, 1):
+        files = {'xml': [], 'properties': [], 'tests': []}
+        cdir = os.path.join(work, f'e{n}')
+        for side, p, text, kind, keys in items:
+            entry = {'path': namer.path(p), 'text': anonymize(kind, text, keys)}
+            files['tests' if kind == 'python' else kind].append(entry)
+            dst = os.path.join(cdir, 'repo', entry['path'])
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            with open(dst, 'w') as f:
+                f.write(entry['text'])
+        written.append({'n': n, 'route': namer.text(route_id), 'route_file': namer.path(xml), 'test_files': [namer.path(t) for t in tests], 'files': files, 'dir': cdir})
+
+    # what the dashboard makes of each example (on the renamed copy)
+    import compare  # noqa: E402
+    if written:
+        scans = compare.run_scanner([w['dir'] for w in written])
+        for w in written:
+            sc = scans[w['dir']]
+            mine = [t for t in sc['triggers'] if t['routeId'] == w['route']]
+            w['dashboard'] = [{'kind': t['kind'], 'pattern': t['filePattern'], 'tested_by': t['via']} for t in mine]
+            w['tests_read'] = len(sc['tests'])
+
+    for w in written:
+        with open(os.path.join(out_dir, 'examples', f"{w['n']:02d}-{w['route']}.json"), 'w') as f:
+            json.dump({k: w[k] for k in ('route', 'route_file', 'test_files', 'dashboard', 'tests_read', 'files')}, f, indent=1)
+    with open(os.path.join(out_dir, 'summary.md'), 'w') as f:
+        f.write('# Routes and the tests meant to test them (anonymized)\n\n')
+        for w in written:
+            linked = any(t['tested_by'] for t in w['dashboard'])
+            f.write(f"- {w['route']} ({w['route_file']}): {len(w['test_files'])} test file(s), {w['tests_read']} tests read; "
+                    f"the dashboard {'links' if linked else 'does not link'} them\n")
+        for rid, msg in problems:
+            f.write(f'- route {namer.text(rid)}: {msg if "named" not in msg else "a test file named in the command was not found"}\n')
+    with open(out_dir + '.map.json', 'w') as f:
+        json.dump({'words': namer.words, 'numbers': namer.numbers}, f, indent=1, sort_keys=True)
+    zip_path = out_dir + '.zip'
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as z:
+        for dp, _, fns in os.walk(out_dir):
+            for fn in fns:
+                full = os.path.join(dp, fn)
+                z.write(full, os.path.relpath(full, os.path.dirname(out_dir)))
+    shutil.rmtree(work, ignore_errors=True)
+    shutil.rmtree(case, ignore_errors=True)
+    return {'examples': len(written), 'problems': problems, 'zip': zip_path, 'map': out_dir + '.map.json'}
+
+
+if __name__ == '__main__' and len(sys.argv) > 1 and sys.argv[1] == '--examples':
+    import argparse
+    ap = argparse.ArgumentParser(prog='share.py --examples', description='Package routes with the tests meant to test them, renamed, to send.')
+    ap.add_argument('--examples', action='store_true')
+    ap.add_argument('--repo', required=True, help='the Camel routes repo')
+    ap.add_argument('--tests', required=True, help='the test repo')
+    ap.add_argument('--route', action='append', required=True, metavar='ROUTE_ID=test_a.py,test_b.py',
+                    help='a route id and its test files (paths in the test repo, or file names); repeat for each route')
+    a = ap.parse_args()
+    pairs = [(r.split('=', 1)[0], [f for f in (r.split('=', 1)[1] if '=' in r else '').split(',') if f]) for r in a.route]
+    res = build_examples(a.repo, a.tests, pairs, os.path.join(os.getcwd(), 'route-test-examples'))
+    for rid, msg in res['problems']:
+        print(f'warning: route "{rid}": {msg}')
+    print(f"{res['examples']} examples → {res['zip']}  (send this)")
+    print(f"keep {res['map']} to yourself: it maps the made-up words back to your names")
+    sys.exit(0)
+
 if __name__ == '__main__' and len(sys.argv) > 1 and sys.argv[1] == '--selftest':
     sys.exit(selftest(sys.argv[2] if len(sys.argv) > 2 else '0:20', '--probes' in sys.argv, os.path.join(HERE, 'cases-selftest')))
 

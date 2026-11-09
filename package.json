@@ -14,6 +14,7 @@
     "seed": "pnpm --filter @ptd/server seed",
     "reset-data": "pnpm --filter @ptd/server reset-data",
     "verify-counts": "python3 tools/verify_counts/compare.py",
+    "share-examples": "python3 tools/verify_counts/share.py --examples",
     "typecheck": "pnpm -r typecheck && tsc -p e2e",
     "lint": "eslint .",
     "format": "prettier --write .",

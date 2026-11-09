@@ -46,6 +46,20 @@ Renaming never changes a count: CI anonymizes generated repos and checks they sc
 Send the zip. Keep **`verify-counts-share.map.json`** (generic words → your names) to
 yourself: it is what turns a fix's explanation back into your route names.
 
+### Sending a few routes with the tests meant to test them
+
+When the dashboard doesn't link a test you know tests a route (Compare with my sheet shows them),
+package a few such pairs, renamed the same way, to show how those tests exercise their routes:
+
+```bash
+pnpm share-examples --repo /path/to/camel-repo --tests /path/to/test-repo \
+  --route some-route-id=test_some_route.py --route other-route=tests/x/test_other.py,test_more.py
+```
+
+Each example holds the route's XML file and the properties it uses, the test files with the
+`conftest.py` files and modules they import, and what the dashboard makes of it. Send
+`route-test-examples.zip`; keep `route-test-examples.map.json` to yourself.
+
 `python3 tools/verify_counts/oracle.py <repo> --summary` prints the oracle's own counts (per
 kind and folder) for one checkout.
 
