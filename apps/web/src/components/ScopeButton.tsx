@@ -37,6 +37,28 @@ export function kindsLabel(kinds: string | null): string {
   return list.length <= 2 ? list.map((k) => KIND_SHORT[k] ?? k).join(' + ') : `${list.length} types`;
 }
 
+/**
+ * The routes and tests branches a scope stands for, worked out like the server does (a picked
+ * branch it has, else the default; tests: the picked branch, else the one named like the routes
+ * branch, else the test repo's default), so a pick shows before the new counts arrive.
+ */
+export function scopeSelection(
+  scope: Pick<Scope, 'branch' | 'tests'>,
+  d: { routeBranches: string[]; defaultBranch: string | null; testBranches: string[]; triggerRepo?: { branch: string } | null; testRepo?: { branch: string } | null },
+): { routes: string; tests: string | null; autoTests: string | null } {
+  const routes =
+    scope.branch && d.routeBranches.includes(scope.branch) ? scope.branch : (d.defaultBranch ?? d.triggerRepo?.branch ?? d.routeBranches[0]!);
+  // the tests branch used when none is picked: the one named like the routes branch, else the default
+  const autoTests = d.testBranches.includes(routes) ? routes : (d.testBranches[0] ?? null);
+  const tests =
+    scope.tests && d.testBranches.includes(scope.tests)
+      ? scope.tests
+      : scope.tests
+        ? (d.testRepo?.branch ?? autoTests) // a branch the list doesn't show (from a link): the server's answer
+        : (autoTests ?? d.testRepo?.branch ?? null);
+  return { routes, tests, autoTests };
+}
+
 /** One button that reads like a sentence ("core · tests main · common/ · all types"); the lists open in a panel. */
 export function ScopeButton({
   scope,
@@ -52,10 +74,9 @@ export function ScopeButton({
   const d = q.data;
   if (!d || d.routeBranches.length === 0) return null;
 
-  const routes = d.triggerRepo?.branch ?? d.defaultBranch ?? d.routeBranches[0]!;
-  const tests = d.testRepo?.branch ?? null;
-  // the tests branch used when none is picked: the one named like the routes branch, else the default
-  const autoTests = d.testBranches.includes(routes) ? routes : (d.testBranches[0] ?? null);
+  // what was picked shows at once; the counts follow when the server answers
+  const { routes, tests, autoTests } = scopeSelection(scope, d);
+  const updating = q.isPlaceholderData;
   const folders = d.folders;
   const folderMissing = scope.folder && !folders.some((f) => f.folder === scope.folder);
   const prs = d.unmergedFrom.filter((b) => !d.looseTestBranches.includes(b));
@@ -145,7 +166,7 @@ export function ScopeButton({
                     onSelect={() => onChange({ folder: f.folder })}
                   >
                     <span className="truncate">{f.folder}/</span>
-                    <span className="ml-auto shrink-0 pl-2 text-fg-3 tabular">
+                    <span className={cn('ml-auto shrink-0 pl-2 text-fg-3 tabular', updating && 'opacity-50')}>
                       {fmtNumber(f.tested)}/{fmtNumber(f.triggers)}
                     </span>
                   </Choice>
@@ -158,7 +179,7 @@ export function ScopeButton({
                 {kindCounts.map((c) => (
                   <Choice key={c.kind} multi selected={picked.includes(c.kind)} onSelect={() => toggleKind(c.kind)}>
                     <span className="truncate font-sans">{TRIGGER_KIND_LABEL[c.kind]}</span>
-                    <span className="ml-auto shrink-0 pl-2 text-fg-3 tabular">
+                    <span className={cn('ml-auto shrink-0 pl-2 text-fg-3 tabular', updating && 'opacity-50')}>
                       {fmtNumber(c.tested)}/{fmtNumber(c.triggers)}
                     </span>
                   </Choice>
@@ -168,7 +189,8 @@ export function ScopeButton({
                 ) : null}
               </Column>
             </div>
-            <div className="mt-3 space-y-0.5 border-t border-border pt-2.5 text-xs text-fg-2">
+            <div className={cn('mt-3 space-y-0.5 border-t border-border pt-2.5 text-xs text-fg-2', updating && 'opacity-60')} aria-busy={updating}>
+              {updating ? <p className="text-fg-3">Updating counts…</p> : null}
               {tests ? (
                 prs.length > 0 ? (
                   <p>
