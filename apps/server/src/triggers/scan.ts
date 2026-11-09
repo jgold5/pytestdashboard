@@ -73,7 +73,8 @@ export function buildPropertyIndex(files: ReadonlyArray<{ path: string; text: st
 }
 
 /** Camel simple/file language functions that also use `${…}`. */
-const CAMEL_LANGUAGE = /^(date|file|header|headers|exchangeProperty|body|bodyAs|in|out|bean|sys|sysenv|env|exchangeId|id|messageTimestamp|camelId|routeId|random|uuid|type|ref|properties|exception)\b/;
+const CAMEL_LANGUAGE =
+  /^(?:(?:date|file|bean|ref|properties|type|random|env|sysenv|sys|bodyAs|mandatoryBodyAs|headerAs|exchangePropertyAs)\s*[:(]|(?:header|headers|exchangeProperty|body|sys|sysenv|env|exception|variable|variables)\s*(?:[.[(]|$)|(?:in|out)\.(?:header|headers|body)\b|(?:exchangeId|id|messageTimestamp|camelId|routeId|uuid|body|in\.body|exception|exchange|threadName|hostName|stepId)\s*$)/;
 
 const PLACEHOLDER = /\{\{([^{}]+)\}\}|\$\{([^{}]+)\}/g;
 
@@ -125,12 +126,14 @@ export function resolvePlaceholders(input: string, props: PropertyIndex, near?: 
           return distinct[0] as string;
         }
         if (distinct.length === 0) {
-          if (fallback !== null && a !== undefined) {
+          // ${…} can also be Camel's file/simple language (e.g. ${date:now:yyyyMMdd}): not a property
+          const camel = a === undefined && CAMEL_LANGUAGE.test(body);
+          // {{key:default}} (Camel) and ${key:default} (Spring): the default when no file sets the key
+          if (fallback !== null && !camel) {
             changed = true;
             return fallback;
           }
-          // ${…} can also be Camel's file/simple language (e.g. ${date:now:yyyyMMdd}): not a missing property
-          if ((a !== undefined || !CAMEL_LANGUAGE.test(key)) && !unresolved.has(key)) unresolved.set(key, { key, values: [] });
+          if (!camel && !unresolved.has(key)) unresolved.set(key, { key, values: [] });
           return whole;
         }
         if (!unresolved.has(key)) unresolved.set(key, { key, values: values ?? [] });
@@ -172,11 +175,17 @@ export function kindOfScheme(scheme: string): TriggerKind | null {
 
 /** A `from` URI that is nothing but a placeholder (`{{invoice.sftp.url}}`, `${in.uri}`), maybe with options after it. */
 const PROPERTY_ONLY = /^\s*(?:\{\{([^{}]+)\}\}|\$\{([^{}]+)\})/;
-/** The scheme a placeholder's key or default suggests (`{{sftp.invoice.url}}` → sftp), for a file poll the properties don't fill in. */
-function guessFileScheme(text: string): string | null {
-  const m = /(?:^|[^a-z])(sftp|ftps|ftp|smb)(?:[^a-z]|$)/i.exec(text) ?? /(sftp|ftps|ftp)/i.exec(text);
-  return m ? (m[1] as string).toLowerCase() : null;
+/** The scheme a placeholder's key suggests (`{{sftp.invoice.url}}`, `{{invoiceSftpUri}}` → sftp), for a file poll the properties don't fill in. */
+export function guessFileScheme(key: string): string | null {
+  const words = key
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/);
+  return ['sftp', 'ftps', 'ftp', 'smb'].find((w) => words.includes(w)) ?? null;
 }
+
+/** `master:lockName:file:/in` (only one node consumes): the endpoint inside. */
+export const unwrapMaster = (uri: string): string => /^\s*master:[^:]*:(.+)$/s.exec(uri)?.[1] ?? uri;
 
 function decode(v: string): string {
   const raw = /^RAW\((.*)\)$/s.exec(v) ?? /^RAW\{(.*)\}$/s.exec(v);
@@ -307,6 +316,7 @@ export function scanCamelXml(file: string, xml: string): { routes: RawRoute[]; e
   const branches: RawCondition[] = [];
   let lineAt = 0;
   let line = 1;
+  let template = 0;
   const lineOf = (offset: number): number => {
     for (; lineAt < offset; lineAt++) if (text.charCodeAt(lineAt) === 10) line++;
     return line;
@@ -316,6 +326,12 @@ export function scanCamelXml(file: string, xml: string): { routes: RawRoute[]; e
     const name = m[2] as string;
     const selfClosing = m[4] === '/';
     const route = stack[stack.length - 1];
+    // a <routeTemplate> is a blueprint, not a route: its <route> runs only when instantiated (with parameters)
+    if (name === 'routeTemplate') {
+      if (closing) template = Math.max(0, template - 1);
+      else if (!selfClosing) template++;
+      continue;
+    }
     if (name === 'route') {
       if (closing) {
         const done = stack.pop();
@@ -324,7 +340,7 @@ export function scanCamelXml(file: string, xml: string): { routes: RawRoute[]; e
       } else if (!selfClosing) {
         const a = attrs(m[3] ?? '');
         const r: RawRoute = { routeId: a.id ?? a.routeId ?? null, file, line: lineOf(m.index ?? 0), inputs: [], conditions: [], markers: [] };
-        routes.push(r);
+        if (template === 0) routes.push(r);
         stack.push(r);
         starts.push((m.index ?? 0) + m[0].length);
       }
@@ -368,223 +384,23 @@ export function scanCamelXml(file: string, xml: string): { routes: RawRoute[]; e
 }
 
 // ---------------------------------------------------------------------------
-// pytest files
+// pytest files: see pytest.ts
 // ---------------------------------------------------------------------------
 
-export interface ScannedTest {
-  /** pytest node id: `path::Class::test_name`. */
-  id: string;
-  file: string;
-  cls: string | null;
-  name: string;
-  /**
-   * Candidate strings: decorator string arguments and marker names (also from
-   * `pytestmark`), and the string literals in the test body (allure.dynamic.* labels,
-   * a trigger file the test drops, a route id it starts).
-   */
-  strings: string[];
-  /**
-   * Jira/Xray keys (ABC-123) the test names anywhere: its docstring and comments (also the
-   * comment lines just above it), decorators, strings, and the class / module docstring and
-   * comments around it. A test on the default branch naming a case's key marks it automated.
-   */
-  keys: string[];
-}
-
-const JIRA_KEY_G = /\b[A-Z][A-Z0-9_]{1,50}-\d{1,12}\b/g;
-const jiraKeys = (text: string): string[] => [...text.matchAll(JIRA_KEY_G)].map((m) => m[0]);
-
-const STRING_LIT = /[rRbBuUfF]{0,2}("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')/g;
-/** Decorators whose string arguments are not about what is tested. (parametrize counts: a list of route ids is.) */
-const IGNORED_DECORATORS = /^@pytest\.mark\.(usefixtures|skip|skipif|xfail|filterwarnings|timeout|flaky|order|dependency)\b|^@pytest\.fixture\b|^@(staticmethod|classmethod|property)\b/;
-
-function strings(code: string): string[] {
-  const out: string[] = [];
-  for (const m of code.matchAll(STRING_LIT)) {
-    const lit = m[1] as string;
-    const q = lit.startsWith('"""') || lit.startsWith("'''") ? 3 : 1;
-    const v = lit
-      .slice(q, -q)
-      .replace(/\\(.)/g, (_, c: string) => (c === 'n' ? '\n' : c === 't' ? '\t' : c))
-      .trim();
-    if (v && v.length <= 300) out.push(v);
-  }
-  return out;
-}
-
-function decoratorStrings(text: string): string[] {
-  if (IGNORED_DECORATORS.test(text)) return [];
-  const out = strings(text);
-  // a bare marker (`@pytest.mark.invoice_load`) names something by itself
-  const marker = /^@pytest\.mark\.(\w+)/.exec(text);
-  if (marker && marker[1] !== 'parametrize') out.push(marker[1] as string);
-  return out;
-}
-
-/** `pytestmark = pytest.mark.x` / `[pytest.mark.x, pytest.mark.y("z")]`: marker names and their string arguments. */
-function pytestmarkStrings(text: string): string[] {
-  const out: string[] = [];
-  for (const m of text.matchAll(/pytest\.mark\.(\w+)\s*(\((?:[^()]|\([^()]*\))*\))?/g)) {
-    if (IGNORED_DECORATORS.test(`@pytest.mark.${m[1]}`)) continue;
-    out.push(m[1] as string, ...strings(m[2] ?? ''));
-  }
-  return out;
-}
-
-/** Body string literals worth matching: short, single-line values (not docstrings or SQL). */
-const bodyStrings = (body: string): string[] => strings(body).filter((v) => v.length <= 120 && !v.includes('\n'));
-
-const indentOf = (s: string): number => s.length - s.trimStart().length;
-const parenDepth = (s: string): number => {
-  let d = 0;
-  for (const c of s.replace(STRING_LIT, '""')) {
-    if (c === '(' || c === '[' || c === '{') d++;
-    else if (c === ')' || c === ']' || c === '}') d--;
-  }
-  return d;
-};
-
-/**
- * Any Python file can hold tests: pytest's default names are test_*.py and *_test.py, but
- * python_files can change them and a file passed on the command line is collected whatever
- * its name. Only `def test…` functions are read from them.
- */
-export const isPytestFile = (path: string): boolean => /\.py$/.test(path);
-
-/** Test functions and the strings that could label them (indentation-based; no Python parser needed). */
-export function scanPytestFile(file: string, source: string): ScannedTest[] {
-  const lines = source.replace(/\r\n?/g, '\n').split('\n');
-  const tests: ScannedTest[] = [];
-  let pending: string[] = [];
-  /** Keys in the comments and decorators directly above the next def/class. */
-  let pendingKeys: string[] = [];
-  let cls: { name: string; indent: number; strings: string[]; keys: string[] } | null = null;
-  const moduleMarks: string[] = [];
-  /** Strings in module-level assignments (ROUTE_ID = "invoice-load"), shared by the file's tests. */
-  const moduleConsts: string[] = [];
-  /** Keys in the module docstring, module-level comments and constants: shared by the file's tests. */
-  const moduleKeys: string[] = [];
-  /** A comment block or statement that isn't directly above a def belongs to the class or module around it. */
-  const flushPendingKeys = (indent: number) => {
-    if (pendingKeys.length) (cls && indent > cls.indent ? cls.keys : moduleKeys).push(...pendingKeys);
-    pendingKeys = [];
-  };
-  let skipIndent = -1;
-  for (let i = 0; i < lines.length; i++) {
-    const raw = lines[i] as string;
-    const trimmed = raw.trim();
-    if (!trimmed) continue;
-    const indent = indentOf(raw);
-    if (skipIndent >= 0) {
-      if (indent > skipIndent) continue; // body of a helper function
-      skipIndent = -1;
-    }
-    if (trimmed.startsWith('#')) {
-      pendingKeys.push(...jiraKeys(trimmed));
-      continue;
-    }
-    if (cls && indent <= cls.indent && !trimmed.startsWith('@')) cls = null;
-    if (/^pytestmark\s*=/.test(trimmed)) {
-      let text = trimmed;
-      while (parenDepth(text) > 0 && i + 1 < lines.length) text += ` ${(lines[++i] as string).trim()}`;
-      const marks = pytestmarkStrings(text);
-      if (cls && indent > cls.indent) {
-        cls.strings.push(...marks);
-        cls.keys.push(...jiraKeys(text));
-      } else if (indent === 0) {
-        moduleMarks.push(...marks);
-        moduleKeys.push(...jiraKeys(text));
-      }
-      flushPendingKeys(indent);
-      pending = [];
-      continue;
-    }
-    if (trimmed.startsWith('@')) {
-      let text = trimmed;
-      while (parenDepth(text) > 0 && i + 1 < lines.length) text += ` ${(lines[++i] as string).trim()}`;
-      pending.push(...decoratorStrings(text));
-      pendingKeys.push(...jiraKeys(text));
-      continue;
-    }
-    const c = /^class\s+(\w+)/.exec(trimmed);
-    if (c) {
-      cls = /^Test/.test(c[1] as string) ? { name: c[1] as string, indent, strings: pending, keys: [...pendingKeys] } : null;
-      if (!cls) flushPendingKeys(indent);
-      pending = [];
-      pendingKeys = [];
-      continue;
-    }
-    const d = /^(?:async\s+)?def\s+(test\w*)\s*\(/.exec(trimmed);
-    if (!d && /^(?:async\s+)?def\s+\w+\s*\(/.test(trimmed)) {
-      skipIndent = indent;
-      pending = [];
-      pendingKeys = [];
-      continue;
-    }
-    if (/^[A-Za-z_][\w.]*(?:\s*,\s*[A-Za-z_][\w.]*)*\s*(?::[^=]+)?=(?!=)/.test(trimmed) && (indent === 0 || (cls && indent > cls.indent))) {
-      let text = trimmed;
-      while (parenDepth(text) > 0 && i + 1 < lines.length) text += ` ${(lines[++i] as string).trim()}`;
-      const found = bodyStrings(text.slice(text.indexOf('=') + 1));
-      if (indent === 0) {
-        moduleConsts.push(...found);
-        moduleKeys.push(...jiraKeys(text));
-      } else if (cls) {
-        cls.strings.push(...found);
-        cls.keys.push(...jiraKeys(text));
-      }
-      flushPendingKeys(indent);
-      pending = [];
-      continue;
-    }
-    if (d) {
-      const inClass = cls !== null && indent > cls.indent;
-      const body: string[] = [];
-      let j = i + 1;
-      for (; j < lines.length; j++) {
-        const l = lines[j] as string;
-        if (l.trim() && indentOf(l) <= indent) break;
-        body.push(l);
-      }
-      const name = d[1] as string;
-      const bodyText = body.join('\n');
-      tests.push({
-        id: inClass && cls ? `${file}::${cls.name}::${name}` : `${file}::${name}`,
-        file,
-        cls: inClass && cls ? cls.name : null,
-        name,
-        strings: [...new Set([...pending, ...(inClass && cls ? cls.strings : []), ...bodyStrings(bodyText)])],
-        // the body's raw text includes its docstring and comments
-        keys: [...new Set([...pendingKeys, ...(inClass && cls ? cls.keys : []), ...jiraKeys(trimmed), ...jiraKeys(bodyText)])],
-      });
-      pending = [];
-      pendingKeys = [];
-      i = j - 1;
-      continue;
-    }
-    // anything else (module/class docstring lines, statements): its keys belong to the module or class
-    (cls && indent > cls.indent ? cls.keys : moduleKeys).push(...jiraKeys(trimmed));
-    flushPendingKeys(indent);
-    pending = [];
-  }
-  flushPendingKeys(0);
-  // module-level pytestmark and constants apply to every test in the file, wherever they are written
-  const shared = [...moduleMarks, ...moduleConsts];
-  if (shared.length) for (const t of tests) t.strings = [...new Set([...t.strings, ...shared])];
-  if (moduleKeys.length) for (const t of tests) t.keys = [...new Set([...t.keys, ...moduleKeys])];
-  return tests;
-}
-
-/** allure-pytest's fullName for a scanned test: `tests.routes.test_invoice.TestLoad#test_x`. */
-export function allureFullName(t: ScannedTest): string {
-  const mod = t.file.replace(/\.py$/, '').split('/').filter(Boolean).join('.');
-  return `${mod}${t.cls ? `.${t.cls}` : ''}#${t.name}`;
-}
+import { scanPytestFiles } from './pytest.js';
+export { allureFullName, isPytestFile, scanPytestFile, scanPytestFiles, type ScannedTest } from './pytest.js';
 
 // ---------------------------------------------------------------------------
 // Triggers and coverage
 // ---------------------------------------------------------------------------
 
-const norm = (s: string): string => s.trim().toLowerCase().replace(/[\s_.-]+/g, '-');
+/** Names compare case-, separator- and camelCase-insensitively: invoiceLoad = invoice_load = Invoice-Load. */
+export const norm = (s: string): string =>
+  s
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+    .toLowerCase()
+    .replace(/[\s_.-]+/g, '-');
 
 /**
  * Camel `include` is a Java regex. Only simple patterns are tried (no nested
@@ -870,6 +686,11 @@ export function splitFilePatterns(pattern: string, kind: 'regex' | 'glob' | 'nam
 export interface TestLabels {
   id: string;
   strings: string[];
+  /**
+   * The strings it is labelled with (decorators, markers, allure.* calls): trusted for any of a
+   * trigger's names. Absent in scans stored before labels were told apart from body strings.
+   */
+  labels?: string[];
   /** Jira/Xray keys the test names (absent in scans stored before keys were collected). */
   keys?: string[];
 }
@@ -902,32 +723,78 @@ function fileTester(t: StoredTrigger): ((fileName: string) => boolean) | null {
     const re = fileLanguageRegex(done);
     if (re) testers.push((f) => re.test(f));
   }
-  // a pattern that accepts any file (include=.*, "not X") says nothing about which test covers it
-  const selective = testers.filter((x) => BROAD_PROBES.filter((p) => x(p)).length < 2);
+  // a pattern that accepts any file (include=.*, "not X", *.csv) says nothing about which test covers it
+  const probes = broadProbes([m?.pattern, t.filePattern, m?.condition, t.condition, done]);
+  const selective = testers.filter((x) => probes.filter((p) => x(p)).length < 2);
   return selective.length ? (f) => selective.some((x) => x(f)) : null;
 }
 
 /** Made-up file names: a pattern accepting most of them is too broad to link a test by file name. */
 const BROAD_PROBES = ['zq_probe_7x3.tmp', 'QZ9PROBE.XYZ', 'probe-file.txt'];
 
-/** Names a label can use for a trigger: route id, schedule name, the job a branch sends files to, file/trigger-file name. */
-function triggerNames(t: StoredTrigger): string[] {
-  const names: string[] = [];
-  if (t.routeId) names.push(t.routeId);
-  if (t.kind === 'schedule') {
-    const name = parseEndpoint(t.resolvedUri)?.path.split('/').filter(Boolean).pop();
-    if (name) names.push(name);
+/**
+ * The probes plus the same made-up names with each extension the pattern names
+ * (`.*\.csv` → zq_probe_7x3.csv…), so an extension-only pattern counts as broad too.
+ */
+export function broadProbes(patterns: ReadonlyArray<string | null | undefined>): string[] {
+  const exts = new Set<string>();
+  for (const p of patterns) {
+    if (!p) continue;
+    const plain = p.replace(/\\/g, '');
+    for (const m of plain.matchAll(/\.([A-Za-z0-9]{1,8})(?![A-Za-z0-9])/g)) exts.add((m[1] as string).toLowerCase());
+    for (const m of plain.matchAll(/\.\(\??:?([A-Za-z0-9|]+)\)/g)) for (const e of (m[1] as string).split('|')) if (e) exts.add(e.toLowerCase());
+    // ends with 'csv' in a condition (${file:name} ends with '.csv' / ext == 'csv')
+    for (const m of plain.matchAll(/'\.?([A-Za-z0-9]{1,8})'/g)) exts.add((m[1] as string).toLowerCase());
   }
-  // a <choice> branch's job: direct:invoiceJob ↔ label "invoiceJob"
-  const job = t.target ? parseEndpoint(t.target)?.path.split(/[/?]/).filter(Boolean).pop() : null;
-  if (job) names.push(job);
-  names.push(...endpointNames(t));
-  if (t.kind === 'file') {
-    for (const v of [t.filePattern, t.match?.pattern, t.doneFile, t.match?.doneFile]) if (v) names.push(v);
-  }
-  return [...new Set(names.map(norm).filter(Boolean))];
+  const out = [...BROAD_PROBES];
+  for (const e of exts) out.push(`zq_probe_7x3.${e}`, `QZ9PROBE.${e.toUpperCase()}`, `probe-file.${e}`);
+  return out;
 }
 
+/**
+ * What a name is, for how much a body string must look like it before it counts:
+ *   id    the route id
+ *   name  another name for it: a schedule's, a branch's job, a queue/topic/direct endpoint's, a REST path
+ *   file  a file pattern or trigger file name
+ *   uri   the endpoint as written (seda:orders, direct:invoiceJob): specific by itself
+ */
+type NameKind = 'id' | 'name' | 'file' | 'uri';
+
+/** Names a test can use for a trigger, normalized, with their kind. */
+function triggerNames(t: StoredTrigger): Array<{ n: string; kind: NameKind }> {
+  const names: Array<{ n: string; kind: NameKind }> = [];
+  const add = (v: string | null | undefined, kind: NameKind) => {
+    const n = v ? norm(v) : '';
+    if (n) names.push({ n, kind });
+  };
+  add(t.routeId, 'id');
+  if (t.kind === 'schedule') add(parseEndpoint(t.resolvedUri)?.path.split('/').filter(Boolean).pop(), 'name');
+  // a <choice> branch's job: direct:invoiceJob ↔ label "invoiceJob" (or "direct:invoiceJob")
+  if (t.target) {
+    add(parseEndpoint(t.target)?.path.split(/[/?]/).filter(Boolean).pop(), 'name');
+    add(t.target.split('?')[0], 'uri');
+  }
+  for (const v of endpointNames(t)) add(v, 'name');
+  if (t.kind !== 'file' && t.kind !== 'property' && !PROPERTY_ONLY.test(t.resolvedUri)) add(t.resolvedUri.split('?')[0]?.replace(/^([\w+.-]+):\/\//, '$1:'), 'uri');
+  if (t.kind === 'file') for (const v of [t.filePattern, t.match?.pattern, t.doneFile, t.match?.doneFile]) add(v, 'file');
+  const seen = new Set<string>();
+  return names.filter((x) => !seen.has(`${x.kind}\0${x.n}`) && !!seen.add(`${x.kind}\0${x.n}`));
+}
+
+/**
+ * Does a string in a test's body (not one it is labelled with) say enough to link it by this
+ * name? Labels (decorators, markers, allure.*) link by any name. A body is full of short
+ * words ("orders", "start", "load"), so there a name has to be distinctive: several words
+ * (invoice-load, parseInvoice, api/orders) or a number (OSCAR150) — or, for a route id or a
+ * file name, at least 8 characters. The endpoint as written (seda:orders) always counts.
+ */
+export function bodyCanName(n: string, kind: NameKind): boolean {
+  if (kind === 'uri') return true;
+  const core = n.replace(/^[/-]+|[/-]+$/g, '');
+  const several = core.length >= 5 && /[-\d/:]/.test(core);
+  if (several) return true;
+  return (kind === 'id' || kind === 'file') && core.length >= 8;
+}
 /**
  * Names for a route started by another route, a queue, Kafka or HTTP: the endpoint's name
  * (direct:invoiceJob → invoiceJob, jms:queue:ORDERS → ORDERS, kafka:invoices → invoices) or
@@ -953,19 +820,22 @@ function endpointNames(t: StoredTrigger): string[] {
 const FILE_NAME_LIKE = /^[\w.-]+\.\w+$/;
 
 /**
- * Which tests cover which triggers (by trigger key). Exact names go through an
- * index; only labels that look like file names (INV_20260101.csv) are tested
- * against each file trigger's patterns.
+ * Which tests cover which triggers (by trigger key). Exact names go through an index; only
+ * strings that look like file names (INV_20260101.csv) are tried against each file trigger's
+ * patterns. A string a test is labelled with links by any of the trigger's names; a string
+ * from its body only by a distinctive one (see bodyCanName).
  */
 export function coverTriggers(triggers: readonly StoredTrigger[], tests: readonly TestLabels[]): Map<string, TriggerCoverage[]> {
-  const byName = new Map<string, Array<{ test: string; via: string }>>();
+  const byName = new Map<string, Array<{ test: string; via: string; label: boolean }>>();
   const fileLabels: Array<{ test: string; via: string }> = [];
   for (const t of tests) {
+    // scans stored before labels were told apart: every string counts as a label (as it did then)
+    const labels = t.labels ? new Set(t.labels) : null;
     for (const s of t.strings) {
       const n = norm(s);
       if (!n) continue;
       const list = byName.get(n) ?? [];
-      list.push({ test: t.id, via: s });
+      list.push({ test: t.id, via: s, label: labels ? labels.has(s) : true });
       byName.set(n, list);
       if (FILE_NAME_LIKE.test(s.trim())) fileLabels.push({ test: t.id, via: s.trim() });
     }
@@ -973,7 +843,10 @@ export function coverTriggers(triggers: readonly StoredTrigger[], tests: readonl
   const out = new Map<string, TriggerCoverage[]>();
   for (const t of triggers) {
     const hits = new Map<string, string>();
-    for (const n of triggerNames(t)) for (const h of byName.get(n) ?? []) if (!hits.has(h.test)) hits.set(h.test, h.via);
+    for (const { n, kind } of triggerNames(t)) {
+      const body = bodyCanName(n, kind);
+      for (const h of byName.get(n) ?? []) if (!hits.has(h.test) && (h.label || body)) hits.set(h.test, h.via);
+    }
     const tester = fileLabels.length ? fileTester(t) : null;
     if (tester) for (const f of fileLabels) if (!hits.has(f.test) && tester(f.via)) hits.set(f.test, f.via);
     out.set(
@@ -1028,13 +901,21 @@ function describeSchedule(scheme: string, p: Record<string, string>): string | n
 export function scanRepository(input: ScanInput): ScanOutput {
   const warnings: string[] = [];
   const props = buildPropertyIndex(input.properties);
-  const endpoints = new Map<string, string>();
+  /** `<endpoint id uri>` by id: ids are per Camel context, so the same file's, else the same module's, else the only one. */
+  const endpointDefs = new Map<string, Array<{ file: string; module: string | null; uri: string }>>();
   const raw: RawRoute[] = [];
   for (const f of input.xml) {
     const r = scanCamelXml(f.path, f.text);
     raw.push(...r.routes);
-    for (const [id, uri] of r.endpoints) endpoints.set(id, uri);
+    for (const [id, uri] of r.endpoints) endpointDefs.set(id, [...(endpointDefs.get(id) ?? []), { file: f.path, module: moduleOf(f.path), uri }]);
   }
+  const endpointFor = (ref: string, file: string): string | undefined => {
+    const defs = endpointDefs.get(ref) ?? [];
+    const module = moduleOf(file);
+    return (defs.find((d) => d.file === file) ?? (defs.filter((d) => d.module === module).length === 1 ? defs.find((d) => d.module === module) : undefined) ?? (defs.length === 1 ? defs[0] : undefined))?.uri;
+  };
+  /** Route id → its inputs as written, to tell a copy of a route (counted once) from a different route reusing the id. */
+  const firstInputs = new Map<string, string>();
 
   const triggers: StoredTrigger[] = [];
   const usedKeys = new Set<string>();
@@ -1051,8 +932,16 @@ export function scanRepository(input: ScanInput): ScanOutput {
     if (r.routeId) {
       const id = `${module ?? ''}\0${r.routeId}`;
       const first = routeIds.get(id);
-      if (first) warnings.push(`route id "${r.routeId}" is defined more than once${module ? ` in ${module}` : ''} (${r.file}:${r.line}, first at ${first})`);
-      else routeIds.set(id, `${r.file}:${r.line}`);
+      const inputs = JSON.stringify(r.inputs.map((x) => x.uri ?? `ref:${x.ref}`));
+      if (first) {
+        // Camel won't start two routes with one id in a context: an identical copy is counted once
+        const copy = firstInputs.get(id) === inputs;
+        warnings.push(`route id "${r.routeId}" is defined more than once${module ? ` in ${module}` : ''} (${r.file}:${r.line}, first at ${first})${copy ? ': the same route, counted once' : ''}`);
+        if (copy) continue;
+      } else {
+        routeIds.set(id, `${r.file}:${r.line}`);
+        firstInputs.set(id, inputs);
+      }
     }
     if (r.inputs.length === 0) continue;
     const conditions = r.conditions
@@ -1063,14 +952,21 @@ export function scanRepository(input: ScanInput): ScanOutput {
     // the marker file a load route deletes when it is done: its trigger file when the <from> names none
     const marker = r.markers[0] ? resolvePlaceholders(r.markers[0], props, r.file) : null;
     r.inputs.forEach((inp, idx) => {
-      const uri = inp.uri ?? (inp.ref ? endpoints.get(inp.ref) : undefined);
+      const uri = inp.uri ?? (inp.ref ? endpointFor(inp.ref, r.file) : undefined);
       if (!uri) {
         warnings.push(`${r.file}:${inp.line}: <from> without a uri${inp.ref ? ` (endpoint "${inp.ref}" not found)` : ''}`);
         return;
       }
-      const resolved = resolvePlaceholders(uri, props, r.file);
+      const filled = resolvePlaceholders(uri, props, r.file);
+      const resolved = { ...filled, text: unwrapMaster(filled.text), firstVariant: unwrapMaster(filled.firstVariant) };
       let ep = parseEndpoint(resolved.firstVariant);
       let kind = ep ? kindOfScheme(ep.scheme) : null;
+      const fromProperty = PROPERTY_ONLY.test(uri);
+      if (fromProperty && (!ep || !kind) && !PROPERTY_ONLY.test(resolved.firstVariant)) {
+        // the property is set, to something that starts no route (bean:, stub:, empty): say so rather than drop it silently
+        warnings.push(`${r.file}:${inp.line}: route ${r.routeId ? `"${r.routeId}" ` : ''}starts from ${uri.trim()} = "${resolved.firstVariant.trim().slice(0, 80)}", not a trigger`);
+        return;
+      }
       if (!ep) {
         // the whole URI is a property no properties file fills in: an SFTP/FTP poll when its key says so, else of unknown kind
         const only = PROPERTY_ONLY.exec(resolved.firstVariant);
@@ -1150,7 +1046,7 @@ export function scanRepository(input: ScanInput): ScanOutput {
     if (!routeHasTrigger) otherRoutes++;
   }
 
-  const tests: TestLabels[] = input.tests.flatMap((f) => scanPytestFile(f.path, f.text)).map((t) => ({ id: t.id, strings: t.strings, keys: t.keys }));
+  const tests: TestLabels[] = scanPytestFiles(input.tests).map((t) => ({ id: t.id, strings: t.strings, labels: t.labels, keys: t.keys }));
   const coverage = coverTriggers(triggers, tests);
   for (const t of triggers) t.coveredBy = coverage.get(t.key) ?? [];
   return { triggers, tests, testsFound: tests.length, otherRoutes, warnings };

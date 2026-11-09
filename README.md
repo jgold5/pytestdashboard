@@ -308,8 +308,9 @@ removed triggers, the page shows:
 
 #### Uploading scans from CI
 
-Instead of (or as well as) scanning from the dashboard, CI in each repo can upload a scan
-on `main` and on every PR branch:
+Instead of (or as well as) scanning from the dashboard, CI in each repo can upload a scan:
+the Camel repo on its long-lived branches (`main`, `core`, `dev`…), the test repo on those
+and on every PR:
 
 ```bash
 # Camel repo: route XML and properties
@@ -319,23 +320,28 @@ curl --fail-with-body -sS -X POST "$DASHBOARD_URL/api/triggers/scan" \
   --form-string "branch=$BRANCH" --form-string "commit=$COMMIT" --form-string "only=routes" \
   -F "files=@scan.zip;type=application/zip"
 
-# Test repo: pytest files (only=tests ignores route copies kept there as test data).
-# List the Python files your tests live in; every file sent is read as a test file.
-git ls-files 'src/route_test/*.py' '*test_*.py' '*_test.py' | zip -q -@ scan.zip
+# Test repo: every Python file (constants, conftest.py fixtures and helpers that tests use
+# count too; only=tests ignores route copies kept there as test data). On a PR build, the
+# label says which branch the PR merges into: without it, a PR branch's tests count nowhere.
+git ls-files '*.py' | zip -q -@ scan.zip
+LABEL=${PR_NUMBER:+"$REPO PR #$PR_NUMBER → $PR_BASE_BRANCH"}
 curl --fail-with-body -sS -X POST "$DASHBOARD_URL/api/triggers/scan" \
   -H "Authorization: Bearer $DASHBOARD_INGEST_TOKEN" \
   --form-string "branch=$BRANCH" --form-string "commit=$COMMIT" --form-string "only=tests" \
-  -F "files=@scan.zip;type=application/zip"
+  ${LABEL:+--form-string "label=$LABEL"} -F "files=@scan.zip;type=application/zip"
 ```
 
 - **Branches across two repos.** The page joins each branch's latest route scan
   with its latest test scan. When a branch has only one of the two, the other comes
-  from the default branch (`main`, `master` or `develop`). So a PR in the test repo is
+  from the default branch (`main`, `master` or `develop`; without those, the branch without
+  a `/` in its name that was scanned first, so a PR branch can't become it). So a PR in the test repo is
   shown against `main`'s routes, and a PR in the Camel repo against `main`'s tests. The
   page says where each came from.
 - **Reading the routes.** Routes are read from Camel XML: `<route id>` with its
-  `<from uri>` (or `<from ref>` pointing at an `<endpoint>`). XML under `src/test/` is
-  skipped, because it holds test fixtures. Route ids are scoped per module, meaning
+  `<from uri>` (or `<from ref>` pointing at an `<endpoint>`). XML and `.properties` under
+  `src/test/`, `src/it/` and other test source sets are skipped, because they hold test
+  fixtures and test overrides. A `<routeTemplate>` isn't a route until it is instantiated, and
+  an identical copy of a route (same id and input in one module) is counted once. Route ids are scoped per module, meaning
   the folder under `resources/`, so the same id in two modules counts as two routes.
 - **Placeholders.** `{{key}}` and `${key}` are filled in from the `.properties` file
   nearest to the route: the module's own file first, then shared ones higher up.
@@ -353,15 +359,37 @@ curl --fail-with-body -sS -X POST "$DASHBOARD_URL/api/triggers/scan" \
   - each pattern, when `include=(INV|CRN)_.*` or `antInclude=INV_*.csv,CRN_*.csv` lists several;
   - each `<when>`/`<filter>` that tests the file name (`${file:name} starts with 'INV_'`,
     `${header.CamelFileName} regex '…'`), shown with the job it sends the file to.
+- **Kinds of trigger.** A route counts when it starts from a file (`file:`, `sftp:`, `ftp:`,
+  `smb:`), a schedule (`quartz:`, `cron:`, `timer:`, `scheduler:`), another route (`direct:`),
+  a queue (`seda:`, `jms:`, `activemq:`, your `jmsComponent…:` endpoints), Kafka, or HTTP
+  (`netty-http:`, `rest:`, `restlet:`…), or when its whole URI is a property no properties file
+  sets (an SFTP poll when the key says sftp/ftp). `bean:`, `imaps:` and the like don't count.
+  Pick the kinds you count with the scope button's **Types** list.
 - **What counts as a test covering a trigger.** One of the test's strings has to name
-  the trigger's route ID, its schedule, the job a `<when>` sends files to
-  (`direct:invoiceJob`), its trigger file, or a file it would pick up (for example
-  `INV_20260101.csv` for `include=INV_.*\.csv`). The strings are read from:
-  - decorators: Allure labels and pytest markers;
-  - `pytestmark`;
-  - string literals in the test body, such as a trigger file the test drops.
+  the trigger: its route ID, its schedule, the job a `<when>` sends files to
+  (`direct:invoiceJob`), its queue, topic or `direct:` name, its REST path, its trigger file,
+  or a file it would pick up (for example `INV_20260101.csv` for `include=INV_.*\.csv`).
+  - **Labels** link by any of those names: Allure labels and pytest markers in decorators,
+    `parametrize` values, `pytestmark` on the class or module, and `allure.*` calls in the body.
+  - **Other strings** in the test (its body, the constants it uses, the fixtures it asks
+    for) are full of ordinary words, so they link only by a distinctive name: several words
+    (`invoice-load`, `parseInvoice`, `api/orders`), one with a digit (`OSCAR150`), a route id or
+    file name of 8+ letters, or the endpoint as written (`seda:orders`). `"orders"` or
+    `"start"` in a body never marks a route as tested.
+  - A pattern that accepts nearly any file (`.*`, `*.csv`) links no test by file name.
+  - Names compare without regard to case, `_`, `-`, `.` or camelCase.
+  - Constants count for the tests that use them, also when imported from another file;
+    fixtures count for the tests that ask for them (same file or a `conftest.py` above it).
+    Commented-out code doesn't count.
 
-  `parametrize` values don't count. The page shows which string made each match.
+  The page shows which string made each match, and **See the N that don't** lists the
+  tests that link to nothing with what was read in each.
+- **Which tests count for a branch.** The test repo branch of the same name (or the one you
+  pick) is what is merged; open PRs into it, scanned with **Scan open PRs** (or uploaded from
+  CI with a PR label), count as not merged yet. A test branch scanned without a PR link
+  doesn't count anywhere, since the branch it merges into is unknown.
+- **Rescan after an update.** When the counting rules change, scans made before are flagged
+  in the scope panel; rescan them for exact numbers (Scan open PRs rescans the PR branches).
 - **Compare with** another trigger repo branch (e.g. `main`) to see what a branch adds,
   changes or removes, and which triggers it newly automates; the other side counts only
   its merged tests.

@@ -665,18 +665,21 @@ function Coverage({ r }: { r: TriggerRow }) {
 
 function NoScans({ onScanned }: { onScanned: (branch: string) => void }) {
   const origin = typeof window !== 'undefined' ? window.location.origin : 'https://dashboard.example.com';
-  const snippet = `# Run on main and on every PR branch, in each repo. Use the upload-only INGEST token.
-# Camel repo: route XML and properties
+  const snippet = `# Use the upload-only INGEST token.
+# Camel repo, on its long-lived branches (main, core, dev…): route XML and properties
 git ls-files '*.xml' '*.properties' | zip -q -@ scan.zip
 curl -fsS -X POST "${origin}/api/triggers/scan" -H "Authorization: Bearer $PTD_INGEST_TOKEN" \\
   --form-string "branch=$GIT_BRANCH" --form-string "commit=$GIT_COMMIT" --form-string "only=routes" \\
   -F "file=@scan.zip;type=application/zip"
 
-# Test repo: pytest files
-git ls-files '*test_*.py' '*_test.py' | zip -q -@ scan.zip
+# Test repo, on its long-lived branches and on every PR: all Python files (constants,
+# conftest.py and helpers count too). On a PR, the label says which branch it merges into;
+# without it a PR branch's tests don't count anywhere.
+git ls-files '*.py' | zip -q -@ scan.zip
+LABEL=\${PR_NUMBER:+"$REPO PR #$PR_NUMBER → $PR_BASE_BRANCH"}
 curl -fsS -X POST "${origin}/api/triggers/scan" -H "Authorization: Bearer $PTD_INGEST_TOKEN" \\
   --form-string "branch=$GIT_BRANCH" --form-string "commit=$GIT_COMMIT" --form-string "only=tests" \\
-  -F "file=@scan.zip;type=application/zip"`;
+  \${LABEL:+--form-string "label=$LABEL"} -F "file=@scan.zip;type=application/zip"`;
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(snippet);

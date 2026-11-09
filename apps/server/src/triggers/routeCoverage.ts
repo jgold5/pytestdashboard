@@ -6,19 +6,12 @@
  *   inProgress  = the rest that a test on some other branch (a PR) already covers
  * Reads trigger_scans directly so the coverage module needn't depend on the trigger store.
  */
-import { desc, inArray } from 'drizzle-orm';
+import { desc, inArray, sql } from 'drizzle-orm';
 import { TriggerKind, type RouteStatus, type ScopeSource, type TriggerOverviewQuery, type TriggerOverviewResponse, type TriggerOverviewRow } from '@ptd/shared';
 import type { Db } from '../db/client.js';
 import { triggerScans } from '../db/schema.js';
-import { parsePrLabel } from './prLabel.js';
-import { changedTests, testScope } from './testScope.js';
+import { changedTests, indexScans, isOutdated, testScope } from './testScope.js';
 import { coverTriggers, type StoredTrigger, type TestLabels } from './scan.js';
-
-const MAIN_BRANCHES = ['main', 'master', 'develop'];
-const rank = (b: string): number => {
-  const i = MAIN_BRANCHES.indexOf(b);
-  return i >= 0 ? i : MAIN_BRANCHES.length;
-};
 
 export interface RouteCoverage {
   total: number;
@@ -30,7 +23,7 @@ export interface RouteCoverage {
   scannedAt: string;
   /** Every trigger on that branch with its status, sorted by module then route. */
   rows: TriggerOverviewRow[];
-  /** Branches with a route scan, the default first, and the default (main/master/develop if scanned). */
+  /** Branches with a route scan, the default first, and the default. */
   routeBranches: string[];
   defaultBranch: string;
   testBranches: string[];
@@ -39,6 +32,7 @@ export interface RouteCoverage {
   /** Where the two halves came from: the trigger repo's scan and the test repo's scan. */
   triggerRepo: ScopeSource;
   testRepo: (ScopeSource & { tests: number; testsLinked: number }) | null;
+  outdated: TriggerOverviewResponse['outdated'];
 }
 
 /** Per database (scan ids only identify a scan within one database), one entry per branch counted. */
@@ -46,16 +40,17 @@ const caches = new WeakMap<Db, Map<string, { key: string; value: RouteCoverage }
 
 const firesOn = (t: StoredTrigger): string => t.filePattern ?? t.schedule ?? t.condition ?? t.resolvedUri;
 
+/** A route, for counting routes: its id in its module, else (no id) its file and `from` (the key before the pattern part). */
+export const routeOf = (r: Pick<TriggerOverviewRow, 'key' | 'module' | 'routeId'>): string =>
+  r.routeId ? `${r.module ?? ''}\0${r.routeId}` : (r.key.split('::')[0] as string).replace(/~\d+$/, '').replace(/#\d+$/, '');
+
 /**
  * `branch`: the trigger repo branch to count (falls back to the default when it has no route
- * scan). Its merged tests come from the same branch of the test repo, else from the test repo's
- * default branch. Not merged yet:
- *   - PR branches the GitHub sync scanned, only for the branch their PR targets;
- *   - other branches scanned by hand or from CI, only for the default line. A branch that is
- *     also scanned in the trigger repo, or is main/master/develop, is long-lived: never counted.
+ * scan); `testsBranch`: the test repo branch whose merged tests count (default: the same name).
+ * Which scans count is decided by testScope.ts.
  */
 export function routeCoverage(db: Db, branch?: string, testsBranch?: string): RouteCoverage | null {
-  // latest scan per branch, separately for route and test scans (light columns first)
+  // every scan, newest first (light columns only)
   const rows = db
     .select({
       id: triggerScans.id,
@@ -64,33 +59,26 @@ export function routeCoverage(db: Db, branch?: string, testsBranch?: string): Ro
       commit: triggerScans.commit,
       scannedAt: triggerScans.scannedAt,
       label: triggerScans.label,
+      testsFound: triggerScans.testsFound,
+      otherRoutes: triggerScans.otherRoutes,
+      triggerCount: sql<number>`json_array_length(${triggerScans.triggers})`,
     })
     .from(triggerScans)
     .orderBy(desc(triggerScans.scannedAt), desc(triggerScans.id))
     .all();
-  const routes = new Map<string, (typeof rows)[number]>();
-  const testRows = new Map<string, (typeof rows)[number]>();
-  const byId = new Map(rows.map((r) => [r.id, r] as const));
-  for (const r of rows) {
-    if (r.files.xml > 0 && !routes.has(r.branch)) routes.set(r.branch, r);
-    if (r.files.tests > 0 && !testRows.has(r.branch)) testRows.set(r.branch, r);
-  }
-  if (routes.size === 0) return null;
-  const byRank = [...routes.keys()].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
-  const defaultBranch = byRank[0]!;
-  const mainBranch = branch && routes.has(branch) ? branch : defaultBranch;
-  const mainScan = routes.get(mainBranch)!;
+  const idx = indexScans(rows);
+  if (!idx.defaultRoutes) return null;
+  const byRank = [idx.defaultRoutes, ...[...idx.routes.keys()].filter((b) => b !== idx.defaultRoutes).sort((a, b) => a.localeCompare(b))];
+  const defaultBranch = idx.defaultRoutes;
+  const mainBranch = branch && idx.routes.has(branch) ? branch : defaultBranch;
+  const mainScan = idx.routes.get(mainBranch)!;
   // tests: the test repo branch picked (default: the same name as the routes branch)
-  const scope = testScope(testsBranch || mainBranch, testRows, new Set(routes.keys()));
-  // long-lived test branches only: the default ones and those also in the trigger repo (not PR or hand-scanned feature branches)
-  const testBranches = [...testRows.values()]
-    .filter((r) => !parsePrLabel(r.label) && (routes.has(r.branch) || rank(r.branch) < MAIN_BRANCHES.length))
-    .map((r) => r.branch)
-    .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+  const scope = testScope(testsBranch || mainBranch, idx);
+  const testBranches = idx.testBranches;
   const mainTests = scope.merged?.id ?? null;
   const otherTests = scope.unmerged.map((s) => [s.branch, s.id] as const);
 
-  const key = `${mainScan.id}:${mainTests}:${otherTests.map(([, id]) => id).join(',')}:${byRank.join(',')}`;
+  const key = `${mainScan.id}:${mainTests}:${otherTests.map(([, id]) => id).join(',')}:${byRank.join(',')}:${[mainScan, scope.merged, ...scope.unmerged].map((x) => (x && isOutdated(x) ? 1 : 0)).join('')}`;
   let perBranch = caches.get(db);
   if (!perBranch) caches.set(db, (perBranch = new Map()));
   const cacheKey = `${mainBranch}\0${testsBranch ?? ''}`;
@@ -135,7 +123,7 @@ export function routeCoverage(db: Db, branch?: string, testsBranch?: string): Ro
   const mainTestLabels = testsOf(mainTests);
   const linked = new Set([...onMain.values()].flatMap((cov) => cov.map((c) => c.test)));
   const source = (r: (typeof rows)[number]): ScopeSource => ({ repo: r.label, branch: r.branch, commit: r.commit, scannedAt: r.scannedAt });
-  const testScan = mainTests ? byId.get(mainTests) : undefined;
+  const testScan = scope.merged ?? undefined;
   out.sort((a, b) => (a.module ?? '').localeCompare(b.module ?? '') || (a.routeId ?? a.key).localeCompare(b.routeId ?? b.key));
   const value: RouteCoverage = {
     total: triggers.length,
@@ -149,11 +137,14 @@ export function routeCoverage(db: Db, branch?: string, testsBranch?: string): Ro
     defaultBranch,
     testBranches,
     unmergedFrom: otherTests.map(([b]) => b),
-    looseTestBranches: [...testRows.values()]
-      .filter((r) => !parsePrLabel(r.label) && !routes.has(r.branch) && rank(r.branch) === MAIN_BRANCHES.length)
-      .map((r) => r.branch),
+    looseTestBranches: scope.loose,
     triggerRepo: source(mainScan),
     testRepo: testScan ? { ...source(testScan), tests: mainTestLabels.length, testsLinked: linked.size } : null,
+    outdated: {
+      routes: isOutdated(mainScan) ? mainScan.branch : null,
+      tests: testScan && isOutdated(testScan) ? testScan.branch : null,
+      prs: scope.unmerged.filter(isOutdated).length,
+    },
   };
   perBranch.set(cacheKey, { key, value });
   return value;
@@ -224,11 +215,12 @@ export function routeOverview(db: Db, q: TriggerOverviewQuery): TriggerOverviewR
     folder: q.folder ?? null,
     kindCounts: cov ? kindCounts(cov, q.folder) : [],
     kinds: q.kinds?.length ? q.kinds : null,
+    outdated: cov?.outdated ?? { routes: null, tests: null, prs: 0 },
     triggerRepo: cov
       ? {
           ...cov.triggerRepo,
           triggers: scoped!.total,
-          routes: new Set(cov.rows.filter((r) => inScope(r, filter)).map((r) => `${r.module ?? ''}\0${r.routeId ?? r.key}`)).size,
+          routes: new Set(cov.rows.filter((r) => inScope(r, filter)).map(routeOf)).size,
         }
       : null,
     testRepo: cov?.testRepo ? { ...cov.testRepo, triggersTested: scoped!.tested } : null,

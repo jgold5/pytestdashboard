@@ -6,7 +6,7 @@
  * or both. Coverage is matched when read: the branch's latest route scan (else the
  * default branch's) against its latest test scan (else the default branch's).
  */
-import { changedTests, testScope } from './testScope.js';
+import { SCANNER_VERSION, changedTests, indexScans, testScope, type ScanIndex } from './testScope.js';
 import { and, desc, eq, inArray, lt, notInArray, or } from 'drizzle-orm';
 import type { Trigger, TriggerListResponse, TriggerQuery, TriggerRow, TriggerScanFields, TriggerScanResponse, TriggerScanSummary, UnlinkedTestsResponse } from '@ptd/shared';
 import type { Db } from '../db/client.js';
@@ -25,8 +25,7 @@ type Covered = TriggerRow['coveredBy'];
 /** Fields that scans stored before they existed lack. */
 const LEGACY_DEFAULTS = { patternKind: null, condition: null, target: null, input: 1, module: null, doneFile: null } as const;
 
-const hasRoutes = (r: ScanRow): boolean => r.files.xml > 0;
-const hasTests = (r: ScanRow): boolean => r.files.tests > 0;
+type IndexedRow = ScanRow & { triggerCount: number };
 
 function summary(r: ScanRow): TriggerScanSummary {
   return {
@@ -54,7 +53,7 @@ export function saveScan(db: Db, fields: TriggerScanFields, out: ScanOutput, fil
       tests: out.tests,
       testsFound: out.testsFound,
       otherRoutes: out.otherRoutes,
-      files,
+      files: { ...files, ...(fields.only ? { only: fields.only } : {}), scanner: SCANNER_VERSION },
     })
     .returning()
     .get();
@@ -111,30 +110,27 @@ const rank = (branch: string): number => {
 
 interface Latest {
   /** Every branch's latest scan, newest first. */
-  all: ScanRow[];
-  routes: Map<string, ScanRow>;
-  tests: Map<string, ScanRow>;
+  all: IndexedRow[];
+  /** Which scans count (testScope.ts). */
+  idx: ScanIndex<IndexedRow>;
 }
 
 /** Latest scan per branch, separately for route scans and test scans (a scan of both repos counts for both). */
 function latestScans(db: Db): Latest {
-  const rows = db.select().from(triggerScans).orderBy(desc(triggerScans.scannedAt), desc(triggerScans.id)).all();
-  const routes = new Map<string, ScanRow>();
-  const tests = new Map<string, ScanRow>();
-  const all = new Map<string, ScanRow>();
-  for (const r of rows) {
-    if (!all.has(r.branch)) all.set(r.branch, r);
-    if (hasRoutes(r) && !routes.has(r.branch)) routes.set(r.branch, r);
-    if (hasTests(r) && !tests.has(r.branch)) tests.set(r.branch, r);
-  }
-  return { all: [...all.values()], routes, tests };
+  const rows: IndexedRow[] = db
+    .select()
+    .from(triggerScans)
+    .orderBy(desc(triggerScans.scannedAt), desc(triggerScans.id))
+    .all()
+    .map((r) => ({ ...r, triggerCount: r.triggers.length }));
+  const all = new Map<string, IndexedRow>();
+  for (const r of rows) if (!all.has(r.branch)) all.set(r.branch, r);
+  return { all: [...all.values()], idx: indexScans(rows) };
 }
 
-/** The branch's own scan, else the default branch's (main, master, develop, then the newest). */
-function pick(scans: Map<string, ScanRow>, branch: string): ScanRow | null {
-  const own = scans.get(branch);
-  if (own) return own;
-  return [...scans.values()].sort((a, b) => rank(a.branch) - rank(b.branch))[0] ?? null;
+/** The branch's own route scan, else the default branch's. */
+function pick(idx: ScanIndex<IndexedRow>, branch: string): IndexedRow | null {
+  return idx.routes.get(branch) ?? (idx.defaultRoutes ? (idx.routes.get(idx.defaultRoutes) ?? null) : null);
 }
 
 /** Matching is the costly part with thousands of triggers: cache it per (route scan, test scans). */
@@ -206,9 +202,9 @@ interface View {
  * carries the PR branch it is on). Same rule as the Overview's numbers (see testScope).
  */
 function viewOf(db: Db, latest: Latest, branch: string, opts: { unmerged?: boolean; tests?: string } = {}): View {
-  const routes = pick(latest.routes, branch);
+  const routes = pick(latest.idx, branch);
   // tests: the test repo branch picked (default: the same name as the routes branch)
-  const full = testScope(opts.tests || branch, latest.tests, new Set(latest.routes.keys()));
+  const full = testScope(opts.tests || branch, latest.idx);
   // a comparison's "before" side is what is merged there, without its open PRs
   const scope = opts.unmerged === false ? { ...full, unmerged: [] } : full;
   const tests = scope.merged;
@@ -236,8 +232,8 @@ function viewOf(db: Db, latest: Latest, branch: string, opts: { unmerged?: boole
 
 /** Every branch merged: one row per trigger (as on the default branch, else the newest), covered by any branch's tests. */
 function mergedView(db: Db, latest: Latest): View {
-  const order = [...latest.routes.values()].sort((a, b) => rank(a.branch) - rank(b.branch));
-  const testScans = [...latest.tests.values()];
+  const order = [...latest.idx.routes.values()].sort((a, b) => Number(b.branch === latest.idx.defaultRoutes) - Number(a.branch === latest.idx.defaultRoutes));
+  const testScans = [...latest.idx.tests.values()];
   const allTests = testScans.flatMap((s) => s.tests);
   const testsKey = `all:${testScans.map((s) => s.id).join(',')}`;
   const triggers = new Map<string, StoredTrigger>();
@@ -257,7 +253,7 @@ function mergedView(db: Db, latest: Latest): View {
 /** The merged tests that cover none of the branch's triggers, and the strings read in each: to see why. */
 export function unlinkedTests(db: Db, q: Pick<TriggerQuery, 'branch' | 'tests'>): UnlinkedTestsResponse {
   const latest = latestScans(db);
-  const branch = q.branch ?? [...latest.routes.keys()].sort((a, b) => rank(a) - rank(b))[0];
+  const branch = q.branch ?? latest.idx.defaultRoutes;
   if (!branch) return { routesFrom: null, testsFrom: null, testsRead: 0, unlinked: 0, tests: [] };
   const view = viewOf(db, latest, branch, { unmerged: false, tests: q.tests });
   const linked = new Set([...view.covered.values()].flat().map((c) => c.test));
@@ -278,7 +274,7 @@ export function listTriggers(db: Db, q: TriggerQuery): TriggerListResponse {
   if (q.compare && !known.has(q.compare)) throw badRequest(`No trigger scan for branch "${q.compare}"`);
 
   const branchesOf = new Map<string, string[]>();
-  for (const s of latest.routes.values()) for (const t of s.triggers) branchesOf.set(t.key, [...(branchesOf.get(t.key) ?? []), s.branch]);
+  for (const s of latest.idx.routes.values()) for (const t of s.triggers) branchesOf.set(t.key, [...(branchesOf.get(t.key) ?? []), s.branch]);
 
   const head = q.branch ? viewOf(db, latest, q.branch, { tests: q.tests }) : mergedView(db, latest);
   const base = q.compare ? viewOf(db, latest, q.compare, { unmerged: false, tests: q.tests }) : null;

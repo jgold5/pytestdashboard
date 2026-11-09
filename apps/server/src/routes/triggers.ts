@@ -59,7 +59,7 @@ export function triggerRoutes(app: FastifyInstance, { db, config }: Deps, zipLim
     try {
       const zip = path.join(tmp, 'branch.zip');
       await downloadBranchZip(config.github, body.repo, body.branch, zip);
-      const { repo, topDir } = await readRepoZip(zip, REPO_ARCHIVE_LIMITS, { stripTopDir: true });
+      const { repo, topDir } = await readRepoZip(zip, REPO_ARCHIVE_LIMITS, { stripTopDir: true, only: body.only });
       applyOnly(repo, body.only);
       if (repo.files.xml === 0 && repo.files.tests === 0) {
         throw new AppError(400, 'nothing_to_scan', `${body.repo}@${body.branch} has no ${body.only === 'routes' ? 'Camel route XML' : 'Python test files'}`);

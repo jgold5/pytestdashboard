@@ -205,8 +205,22 @@ export function ScopeButton({
                   <span className="font-mono">{d.looseTestBranches.slice(0, 3).join(', ')}</span>
                   {d.looseTestBranches.length > 3 ? '…' : ''}){' '}
                   {d.looseTestBranches.length === 1 ? "isn't" : "aren't"} linked to a PR, so{' '}
-                  {d.looseTestBranches.length === 1 ? 'it counts' : 'they count'} for the default
-                  branch only. Scan open PRs links them.
+                  {d.looseTestBranches.length === 1 ? "it doesn't" : "they don't"} count: which branch{' '}
+                  {d.looseTestBranches.length === 1 ? 'it merges' : 'they merge'} into is unknown. Scan open PRs
+                  links them.
+                </p>
+              ) : null}
+              {d.outdated.routes || d.outdated.tests || d.outdated.prs > 0 ? (
+                <p className="text-warn">
+                  The counting rules changed since{' '}
+                  {[
+                    d.outdated.routes ? `the routes scan of ${d.outdated.routes}` : null,
+                    d.outdated.tests ? `the tests scan of ${d.outdated.tests}` : null,
+                    d.outdated.prs > 0 ? pluralize(d.outdated.prs, 'PR scan') : null,
+                  ]
+                    .filter(Boolean)
+                    .join(', ')}
+                  : rescan {d.outdated.prs > 0 && !d.outdated.routes && !d.outdated.tests ? 'with Scan open PRs' : 'them (Scan a branch, then Scan open PRs)'} for exact numbers.
                 </p>
               ) : null}
             </div>

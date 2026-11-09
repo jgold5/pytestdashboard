@@ -1332,10 +1332,18 @@ export const TriggerScanSummary = z.object({
   /** Triggers found (0 for a tests-only scan of the test repo). */
   total: z.number().int(),
   /** Route XML / properties / pytest files read. */
-  files: z.object({ xml: z.number().int(), properties: z.number().int(), tests: z.number().int() }),
+  files: z.object({
+    xml: z.number().int(),
+    properties: z.number().int(),
+    tests: z.number().int(),
+    /** Which side the scan was made for (absent: scans made without `only`, or before it was kept). */
+    only: z.enum(['routes', 'tests']).optional(),
+    /** Version of the scanner's counting rules the scan was made with (absent: before versions). */
+    scanner: z.number().int().optional(),
+  }),
   /** Tests found in the pytest files (whether or not they cover a trigger). */
   testsFound: z.number().int(),
-  /** Routes started by something other than a file or a schedule (jms, direct, rest…): not counted as triggers. */
+  /** Routes started by something that is not a trigger (bean:, imaps:, log:…). */
   otherRoutes: z.number().int(),
 });
 export type TriggerScanSummary = z.infer<typeof TriggerScanSummary>;
@@ -1455,7 +1463,7 @@ export const TriggerOverviewResponse = z.object({
   testBranches: z.array(z.string()),
   /** Test branches counted as not merged yet: the open PRs into the tests branch (and hand-scanned ones on the default line). */
   unmergedFrom: z.array(z.string()),
-  /** Test branches scanned by hand or from CI that aren't linked to a PR target: they only count for the default branch. */
+  /** Test branches scanned by hand or from CI that aren't linked to a PR: which branch they merge into is unknown, so they don't count. */
   looseTestBranches: z.array(z.string()),
   /** Folders on the branch with their counts (tested includes unmerged), for the folder picker. */
   folders: z.array(z.object({ folder: z.string(), triggers: z.number().int(), tested: z.number().int(), unmerged: z.number().int() })),
@@ -1465,6 +1473,11 @@ export const TriggerOverviewResponse = z.object({
   kindCounts: z.array(z.object({ kind: TriggerKind, triggers: z.number().int(), tested: z.number().int() })),
   /** The kinds the counts and items are limited to; null = every kind. */
   kinds: z.array(TriggerKind).nullable(),
+  /**
+   * Scans counted here that were made before the current counting rules: rescan them for exact
+   * numbers. `routes`/`tests`: the branch scanned; `prs`: how many PR scans (Scan open PRs).
+   */
+  outdated: z.object({ routes: z.string().nullable(), tests: z.string().nullable(), prs: z.number().int() }),
   /** 1. The trigger repo: its scan on the default branch, and the unique triggers in it. */
   triggerRepo: ScopeSource.extend({ triggers: z.number().int(), /** Routes they belong to (a route with several patterns has several triggers). */ routes: z.number().int() }).nullable(),
   /** 2. The test repo: its scan on the default branch, the tests read, and the triggers they cover. */
