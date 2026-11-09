@@ -246,7 +246,8 @@ interface RawTest extends Strings {
 interface FileModel {
   path: string;
   consts: Map<string, Value>;
-  fixtures: Map<string, Value & { params: string[] }>;
+  /** `labels`/`labelRefs`: the fixture's `params=[…]`, which parametrize every test asking for it. */
+  fixtures: Map<string, Value & { params: string[]; labels: string[]; labelRefs: string[] }>;
   /** Local name → what it imports: a module (`name` null) or a name in a module. */
   imports: Map<string, { module: string; name: string | null; level: number }>;
   tests: RawTest[];
@@ -367,8 +368,9 @@ function parseFile(file: string, source: string): FileModel {
   const classConst = (ref: string): Value | null => {
     for (let k = classes.length - 1; k >= 0; k--) {
       const c = classes[k] as ClassScope;
-      const name = ref.startsWith('self.') ? ref.slice(5) : ref.startsWith(`${c.name}.`) ? ref.slice(c.name.length + 1) : ref;
-      const v = c.consts.get(name);
+      // a bare X in a method is not the class's X (Python looks it up in the module): only self.X, cls.X, Klass.X
+      const name = ref.startsWith('self.') ? ref.slice(5) : ref.startsWith(`${c.name}.`) ? ref.slice(c.name.length + 1) : null;
+      const v = name ? c.consts.get(name) : undefined;
       if (v) return v;
     }
     return null;
@@ -466,7 +468,16 @@ function parseFile(file: string, source: string): FileModel {
       } else if (isFixture && (atTop || inClass)) {
         const s = emptyStrings();
         collect([defaults, ...(inline ? [inline] : []), ...body], s);
-        model.fixtures.set(name, { strings: [...s.strong, ...s.weak], refs: [...s.strongRefs, ...s.weakRefs], params });
+        // @pytest.fixture(params=[…]): like parametrize, its values are what each test using it runs with
+        const fxDeco = decorators.find((x) => FIXTURE_DECORATOR.test(x.text.trim()));
+        const paramsArg = fxDeco ? /\bparams\s*=\s*(\[[\s\S]*\]|\([\s\S]*\)|[A-Za-z_][\w.]*)/.exec(fxDeco.text)?.[1] : undefined;
+        model.fixtures.set(name, {
+          strings: [...s.strong, ...s.weak],
+          refs: [...s.strongRefs, ...s.weakRefs],
+          params,
+          labels: paramsArg ? strings(paramsArg) : [],
+          labelRefs: paramsArg ? namesIn(bareOf(paramsArg)) : [],
+        });
       }
       decorators = [];
       pendingKeys = [];
@@ -608,7 +619,7 @@ export function scanPytestFiles(files: ReadonlyArray<{ path: string; text: strin
 
   /** The fixture a test (or fixture) asks for by parameter name: its own file, then conftest.py files above it, nearest first. */
   const conftests = models.filter((m) => /(^|\/)conftest\.py$/.test(m.path));
-  const fixtureFor = (m: FileModel, name: string): { owner: FileModel; fx: Value & { params: string[] } } | null => {
+  const fixtureFor = (m: FileModel, name: string): { owner: FileModel; fx: Value & { params: string[]; labels: string[]; labelRefs: string[] } } | null => {
     const own = m.fixtures.get(name);
     if (own) return { owner: m, fx: own };
     const here = dirOf(m.path);
@@ -630,15 +641,15 @@ export function scanPytestFiles(files: ReadonlyArray<{ path: string; text: strin
     }
     return null;
   };
-  const fixtureStrings = (m: FileModel, params: readonly string[], depth: number, seen: Set<string>): string[] => {
-    if (depth > 2) return [];
-    const out: string[] = [];
+  const fixtureStrings = (m: FileModel, params: readonly string[], depth: number, seen: Set<string>, out = { strong: [] as string[], weak: [] as string[] }) => {
+    if (depth > 2) return out;
     for (const p of params) {
       const found = fixtureFor(m, p);
       if (!found || seen.has(`${found.owner.path}\0fixture:${p}`)) continue;
       seen.add(`${found.owner.path}\0fixture:${p}`);
-      out.push(...found.fx.strings, ...found.fx.refs.flatMap((r) => resolve(found.owner, r, 0, new Set())));
-      out.push(...fixtureStrings(found.owner, found.fx.params, depth + 1, seen));
+      out.strong.push(...found.fx.labels, ...found.fx.labelRefs.flatMap((r) => resolve(found.owner, r, 0, new Set())));
+      out.weak.push(...found.fx.strings, ...found.fx.refs.flatMap((r) => resolve(found.owner, r, 0, new Set())));
+      fixtureStrings(found.owner, found.fx.params, depth + 1, seen, out);
     }
     return out;
   };
@@ -646,9 +657,13 @@ export function scanPytestFiles(files: ReadonlyArray<{ path: string; text: strin
   const out: ScannedTest[] = [];
   for (const m of models) {
     const markStrong = [...m.moduleMarks, ...m.moduleMarkRefs.flatMap((r) => resolve(m, r, 0, new Set()))];
+    // two tests with one name: pytest collects only the last (the first is shadowed)
+    const last = new Map(m.tests.map((t) => [t.id, t] as const));
     for (const t of m.tests) {
-      const strong = [...t.strong, ...t.strongRefs.flatMap((r) => resolve(m, r, 0, new Set())), ...markStrong];
-      const weak = [...t.weak, ...t.weakRefs.flatMap((r) => resolve(m, r, 0, new Set())), ...fixtureStrings(m, t.params, 0, new Set())];
+      if (last.get(t.id) !== t) continue;
+      const fx = fixtureStrings(m, t.params, 0, new Set());
+      const strong = [...t.strong, ...t.strongRefs.flatMap((r) => resolve(m, r, 0, new Set())), ...markStrong, ...fx.strong];
+      const weak = [...t.weak, ...t.weakRefs.flatMap((r) => resolve(m, r, 0, new Set())), ...fx.weak];
       const labels = [...new Set(strong)];
       out.push({
         id: t.id,

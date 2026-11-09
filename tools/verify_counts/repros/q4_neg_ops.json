@@ -1,0 +1,15 @@
+{
+ "xml": [
+  {
+   "path": "src/main/resources/m/routes/r.xml",
+   "text": "<routes><route id=\"a\"><from uri=\"file:/in\"/><choice><when><simple>${file:name} !=~ 'skip.csv' &amp;&amp; ${file:name} startsWith 'INV'</simple><to uri=\"direct:a\"/></when><when><simple>${file:ext} !in 'tmp,part' &amp;&amp; ${file:name} startsWith 'PAY'</simple><to uri=\"direct:b\"/></when><when><simple>${file:name} !regex '.*\\.tmp' &amp;&amp; ${file:name} startsWith 'CRN'</simple><to uri=\"direct:c\"/></when><when><simple>${header.CamelFileName.toLowerCase().startsWith('gl_')}</simple><to uri=\"direct:d\"/></when></choice></route></routes>"
+  }
+ ],
+ "properties": [],
+ "tests": [
+  {
+   "path": "tests/test_a.py",
+   "text": "def test_a():\n    drop_file(\"INV_SKIP.CSV\")\n\ndef test_b():\n    drop_file(\"PAY_1.tmp\")\n\ndef test_c():\n    drop_file(\"CRN_1.tmp\")\n\ndef test_d():\n    drop_file(\"GL_2026.csv\")\n\ndef test_e():\n    drop_file(\"skip.csv\")\n"
+  }
+ ]
+}

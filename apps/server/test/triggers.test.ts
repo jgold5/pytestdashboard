@@ -279,7 +279,7 @@ describe('repo layout seen in practice', () => {
 
 describe('matching only when a pattern names something specific', () => {
   it('rewrites Java-style calls and ${properties:…} into simple-language conditions', () => {
-    expect(normalizeCondition('${header.CamelFileName.toUpperCase().endsWith(".GZ")}')).toBe("${header.CamelFileName} ends with '.GZ'");
+    expect(normalizeCondition('${header.CamelFileName.toUpperCase().endsWith(".GZ")}')).toBe("${header.CamelFileName} ~ends with '.GZ'");
     expect(normalizeCondition("${in.header.CamelFileName.substring(9,16)} contains '0003_26'")).toBe("${in.header.CamelFileName} contains '0003_26'");
     expect(normalizeCondition("${file:name.substring(0,3)} == 'INV'")).toBe("${file:name} contains 'INV'");
     expect(normalizeCondition('${header.CamelFileName} == ${properties:invoice.name}')).toBe("${header.CamelFileName} == '{{invoice.name}}'");

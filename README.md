@@ -396,7 +396,21 @@ curl --fail-with-body -sS -X POST "$DASHBOARD_URL/api/triggers/scan" \
 - **Cleaning up.** Remove an abandoned branch's scans with the bin icon next to the branch
   picker on Triggers, or `DELETE /api/triggers/branches/<branch>`.
 
-To share how your routes and tests are written without sharing the code, run
+#### Checking the counts
+
+- **Compare with my sheet** (Triggers page): upload a spreadsheet of routes, one per row
+  (columns like `route_id`, `xml`, `entry_kind`, `triggers`, `automated`, `where`,
+  `test_files`, `prs` are found by name). Each row is lined up with the route the dashboard
+  counts for the current scope, every column you have is compared, and a route on one side
+  only says why: not in the XML (closest id, Java DSL, another branch), started by something
+  that isn't a trigger (`bean:`…), outside the folder or types picked, or for a route your
+  sheet lacks, a type it never lists, an XML file it doesn't cover, no route id. Download the
+  comparison as CSV.
+- **`pnpm verify-counts --repo <camel-repo> --tests <test-repo>`** runs an independent
+  implementation of the counting rules on your repos and lists every trigger it and the
+  dashboard disagree on. See [`tools/verify_counts`](tools/verify_counts/README.md).
+
+
 [`tools/distill_camel_repo.py`](tools/distill_camel_repo.py) (Python 3.9+, no
 packages) over both repos in one go:
 

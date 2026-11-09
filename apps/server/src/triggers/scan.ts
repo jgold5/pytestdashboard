@@ -74,7 +74,7 @@ export function buildPropertyIndex(files: ReadonlyArray<{ path: string; text: st
 
 /** Camel simple/file language functions that also use `${…}`. */
 const CAMEL_LANGUAGE =
-  /^(?:(?:date|file|bean|ref|properties|type|random|env|sysenv|sys|bodyAs|mandatoryBodyAs|headerAs|exchangePropertyAs)\s*[:(]|(?:header|headers|exchangeProperty|body|sys|sysenv|env|exception|variable|variables)\s*(?:[.[(]|$)|(?:in|out)\.(?:header|headers|body)\b|(?:exchangeId|id|messageTimestamp|camelId|routeId|uuid|body|in\.body|exception|exchange|threadName|hostName|stepId)\s*$)/;
+  /^(?:(?:date|file|bean|ref|properties|type|random|env|sysenv|sys|bodyAs|mandatoryBodyAs|headerAs|exchangePropertyAs|header|headers|exchangeProperty|variable)\s*[:(]|(?:header|headers|exchangeProperty|body|sys|sysenv|env|exception|variable|variables)\s*(?:[.[(]|$)|(?:in|out)\.(?:header|headers|body)\b|(?:exchangeId|id|messageTimestamp|camelId|routeId|uuid|body|in\.body|exception|exchange|threadName|hostName|stepId)\s*$)/;
 
 const PLACEHOLDER = /\{\{([^{}]+)\}\}|\$\{([^{}]+)\}/g;
 
@@ -95,6 +95,20 @@ export interface Resolved {
 function nearest(values: Array<{ file: string; value: string }> | undefined, near: string | undefined) {
   if (!values || !near || values.length < 2) return values;
   const dir = near.split('/').slice(0, -1);
+  // a properties file applies to a route when it sits in a folder above it, or in the route's own module
+  // (resources/<module>/config/…); another module's file never does. Environment folders elsewhere (config/prod) all apply.
+  const root = moduleRoot(near);
+  const applies = values.filter((v) => {
+    const d = v.file.split('/').slice(0, -1);
+    return (d.length <= dir.length && d.every((s, k) => dir[k] === s)) || (root !== null && v.file.startsWith(`${root}/`));
+  });
+  const sameTree = (v: { file: string }) => {
+    const r = moduleRoot(v.file);
+    return r !== null && r !== root;
+  };
+  if (applies.length > 0) values = applies;
+  else if (root !== null) values = values.filter((v) => !sameTree(v)).length ? values.filter((v) => !sameTree(v)) : values;
+  if (values.length < 2) return values;
   let best = -1;
   const scored = values.map((v) => {
     const d = v.file.split('/').slice(0, -1);
@@ -106,6 +120,16 @@ function nearest(values: Array<{ file: string; value: string }> | undefined, nea
   return scored.filter((x) => x.n === best).map((x) => x.v);
 }
 
+/** `src/main/resources/<module>` for a file in a module, else null. */
+function moduleRoot(file: string): string | null {
+  const segs = file.split('/');
+  const r = segs.lastIndexOf('resources');
+  return r >= 0 && r + 2 < segs.length ? segs.slice(0, r + 2).join('/') : null;
+}
+
+/** Camel property functions: `{{env:NAME}}`, `{{sys:NAME:default}}`, `{{service:NAME}}` — not keys of a properties file. */
+const PROPERTY_FUNCTION = /^(env|sys|sysenv|service|service\.host|service\.port)$/i;
+
 /** Fill in placeholders (values may reference other keys; ≤ 5 rounds). `near` = the file being resolved, for module-scoped properties. */
 export function resolvePlaceholders(input: string, props: PropertyIndex, near?: string): Resolved {
   const unresolved = new Map<string, Trigger['unresolved'][number]>();
@@ -116,7 +140,18 @@ export function resolvePlaceholders(input: string, props: PropertyIndex, near?: 
       out = out.replace(PLACEHOLDER, (whole, a: string | undefined, b: string | undefined) => {
         const body = (a ?? b ?? '').trim();
         const colon = body.indexOf(':');
-        // `{{env:NAME}}`-style functions and `${date:now:yyyyMMdd}` (Camel file language) are not property keys
+        // `{{env:NAME[:default]}}`: an environment variable, unknown here; its default when it has one
+        if (a !== undefined && colon > 0 && PROPERTY_FUNCTION.test(body.slice(0, colon))) {
+          const rest = body.slice(colon + 1);
+          const c2 = rest.indexOf(':');
+          if (c2 >= 0) {
+            changed = true;
+            return rest.slice(c2 + 1);
+          }
+          if (!unresolved.has(body)) unresolved.set(body, { key: body, values: [] });
+          return whole;
+        }
+        // `${date:now:yyyyMMdd}` (Camel file language) is not a property key
         const key = colon >= 0 ? body.slice(0, colon) : body;
         const fallback = colon >= 0 ? body.slice(colon + 1) : null;
         const values = nearest(props.get(key), near);
@@ -253,6 +288,8 @@ export interface RawRoute {
    * file when its `<from>` has no doneFileName.
    */
   markers: string[];
+  /** Inside a <routeTemplate>: a blueprint, not a route until instantiated. */
+  template?: boolean;
 }
 
 /** `${file:parent}/NAME`: a file next to the one being processed. */
@@ -340,7 +377,8 @@ export function scanCamelXml(file: string, xml: string): { routes: RawRoute[]; e
       } else if (!selfClosing) {
         const a = attrs(m[3] ?? '');
         const r: RawRoute = { routeId: a.id ?? a.routeId ?? null, file, line: lineOf(m.index ?? 0), inputs: [], conditions: [], markers: [] };
-        if (template === 0) routes.push(r);
+        if (template > 0) r.template = true;
+        routes.push(r);
         stack.push(r);
         starts.push((m.index ?? 0) + m[0].length);
       }
@@ -406,16 +444,17 @@ export const norm = (s: string): string =>
  * Camel `include` is a Java regex. Only simple patterns are tried (no nested
  * quantifiers, bounded length) so an uploaded pattern can't hang the server.
  */
-function safeRegex(pattern: string): RegExp | null {
+function safeRegex(pattern: string, flags = 'i'): RegExp | null {
   if (pattern.length > 300 || /\([^)]*[+*}][^)]*\)\s*[+*{]/.test(pattern) || /\\[1-9]|\(\?[<!=]/.test(pattern)) return null;
   try {
-    return new RegExp(`^(?:${pattern})$`, 'i');
+    return new RegExp(`^(?:${pattern})$`, flags);
   } catch {
     return null;
   }
 }
 
-function antRegex(glob: string): RegExp {
+/** Camel's antInclude is case-sensitive unless the endpoint sets antFilterCaseSensitive=false. */
+function antRegex(glob: string, caseSensitive = true): RegExp {
   const re = glob
     .split(',')
     .map((g) =>
@@ -427,19 +466,22 @@ function antRegex(glob: string): RegExp {
         .join('.*'),
     )
     .join('|');
-  return new RegExp(`^(?:${re})$`, 'i');
+  return new RegExp(`^(?:${re})$`, caseSensitive ? '' : 'i');
 }
 
 // ---------------------------------------------------------------------------
 // Conditions on the file name (<choice><when><simple>${file:name} starts with 'INV_'</simple>…)
 // ---------------------------------------------------------------------------
 
-type NamePart = 'name' | 'onlyname' | 'noext' | 'ext';
+/** ext/noext: after/before the first dot (Camel's file:ext, file:name.noext); ext1/noext1: the last one (.single). */
+type NamePart = 'name' | 'onlyname' | 'noext' | 'noext1' | 'ext' | 'ext1';
 interface Atom {
   part: NamePart;
-  op: 'starts' | 'ends' | 'contains' | 'regex' | 'eq' | 'eqi' | 'in';
+  op: 'starts' | 'ends' | 'contains' | 'regex' | 'eq' | 'in';
   value: string;
   negate: boolean;
+  /** Ignoring case: =~, ~~, or a name passed through toUpperCase()/toLowerCase(). Camel's other operators are case-sensitive. */
+  ci: boolean;
 }
 export interface FileCondition {
   /** OR of AND-groups. */
@@ -448,20 +490,19 @@ export interface FileCondition {
 }
 
 const FILE_REF =
-  /\$\{\s*(?:file:(name|onlyname)(\.noext)?|file:(ext|name\.ext)|(?:in\.)?headers?(?:\.|\[\s*['"]?)CamelFileName(Only)?(?:['"]?\s*\])?)\s*\}/i;
-const ATOM = new RegExp(
-  `${FILE_REF.source}\\s*(not\\s+starts\\s+with|starts\\s+with|startsWith|not\\s+ends\\s+with|ends\\s+with|endsWith|not\\s+contains|contains|not\\s+regex|regex|=~|==|!=|not\\s+in|in)\\s*(?:'([^']*)'|"([^"]*)")`,
-  'gi',
-);
+  /\$\{\s*(?:file:(name|onlyname)(\.noext(?:\.single)?)?|file:(ext(?:\.single)?|name\.ext(?:\.single)?)|(?:in\.)?headers?(?:\.|:|\[\s*['"]?)CamelFileName(Only)?(?:['"]?\s*\])?)\s*\}/i;
+/** Simple-language operators, longest first; `~starts with`… are this parser's own, for a name passed through toUpperCase(). */
+const OPERATORS = String.raw`!~~|~~|!=~|=~|!=|==|~starts\s+with|~ends\s+with|~regex|~in|!startsWith|!starts\s+with|!endsWith|!ends\s+with|!contains|!regex|!in|not\s+starts\s+with|starts\s+with|startsWith|not\s+ends\s+with|ends\s+with|endsWith|not\s+contains|contains|not\s+regex|regex|not\s+in|in`;
+const ATOM = new RegExp(`${FILE_REF.source}\\s*(${OPERATORS})\\s*(?:'([^']*)'|"([^"]*)")`, 'gi');
 
 function atomPart(m: RegExpMatchArray): NamePart {
-  if (m[3]) return 'ext';
-  if (m[2]) return 'noext';
+  if (m[3]) return /single$/i.test(m[3]) ? 'ext1' : 'ext';
+  if (m[2]) return /single$/i.test(m[2]) ? 'noext1' : 'noext';
   if (m[1]?.toLowerCase() === 'onlyname' || m[4]) return 'onlyname';
   return 'name';
 }
 
-const NAME_BASE = String.raw`(?:in\.)?headers?(?:\.|\[\s*['"]?)CamelFileName(?:Only)?(?:['"]?\s*\])?|file:(?:name|onlyname)(?:\.noext)?`;
+const NAME_BASE = String.raw`(?:in\.)?headers?(?:\.|:|\[\s*['"]?)CamelFileName(?:Only)?(?:['"]?\s*\])?|file:(?:name|onlyname)(?:\.noext)?`;
 const METHOD_CHAIN = new RegExp(String.raw`\$\{\s*(${NAME_BASE})((?:\.\w+\((?:[^()'"]|'[^']*'|"[^"]*")*\))+)\s*\}`, 'gi');
 const BOOLEAN_METHODS: Record<string, string> = {
   startswith: 'starts with',
@@ -483,14 +524,19 @@ export function normalizeCondition(expr: string): string {
     .replace(/\$\{\s*properties:([^}:]+)(?::[^}]*)?\}/gi, "'{{$1}}'")
     .replace(METHOD_CHAIN, (_whole, base: string, chain: string) => {
       let sub = false;
+      let ci = false;
       for (const m of chain.matchAll(/\.(\w+)\(((?:[^()'"]|'[^']*'|"[^"]*")*)\)/g)) {
         const name = (m[1] as string).toLowerCase();
         if (name === 'substring' || name === 'substr') sub = true;
+        if (name === 'touppercase' || name === 'tolowercase') ci = true;
         const op = BOOLEAN_METHODS[name];
         if (op) {
           const arg = /^\s*(?:'([^']*)'|"([^"]*)")\s*$/.exec(m[2] ?? '');
           if (!arg) return `\${${base}}`;
-          return `\${${base}} ${sub && op !== 'regex' ? 'contains' : op} '${arg[1] ?? arg[2] ?? ''}'`;
+          const plain = sub && op !== 'regex' ? 'contains' : op;
+          // after toUpperCase()/toLowerCase() the comparison ignores case
+          const used = ci ? ({ contains: '~~', '==': '=~', 'starts with': '~starts with', 'ends with': '~ends with', regex: '~regex' } as Record<string, string>)[plain] ?? plain : plain;
+          return `\${${base}} ${used} '${arg[1] ?? arg[2] ?? ''}'`;
         }
       }
       return `\${${base}}${sub ? ' §substring§' : ''}`;
@@ -509,23 +555,22 @@ export function parseFileCondition(rawExpr: string): FileCondition | null {
     for (const andPart of orPart.split(/&&|\s+and\s+/i)) {
       for (const m of andPart.matchAll(ATOM)) {
         const rawOp = (m[5] as string).toLowerCase().replace(/\s+/g, ' ');
-        const negate = rawOp.startsWith('not ') || rawOp === '!=';
-        const base = rawOp.replace(/^not /, '');
+        const negate = rawOp.startsWith('not ') || rawOp.startsWith('!');
+        const ci = rawOp.includes('~');
+        const base = rawOp.replace(/^not |^!/, '').replace(/^~(?!~)/, '');
         const op: Atom['op'] =
           base === 'starts with' || base === 'startswith'
             ? 'starts'
             : base === 'ends with' || base === 'endswith'
               ? 'ends'
-              : base === 'contains'
+              : base === 'contains' || base === '~~'
                 ? 'contains'
                 : base === 'regex'
                   ? 'regex'
-                  : base === '=~'
-                    ? 'eqi'
-                    : base === 'in'
-                      ? 'in'
-                      : 'eq';
-        atoms.push({ part: atomPart(m), op, value: m[6] ?? m[7] ?? '', negate });
+                  : base === 'in'
+                    ? 'in'
+                    : 'eq';
+        atoms.push({ part: atomPart(m), op, value: m[6] ?? m[7] ?? '', negate, ci });
       }
     }
     if (atoms.length > 0) groups.push(atoms);
@@ -537,8 +582,8 @@ export function parseFileCondition(rawExpr: string): FileCondition | null {
 function displayGroup(atoms: Atom[]): string {
   const pos = atoms.filter((a) => !a.negate && (a.part === 'name' || a.part === 'onlyname'));
   const start = pos.find((a) => a.op === 'starts');
-  const end = pos.find((a) => a.op === 'ends') ?? atoms.find((a) => !a.negate && a.part === 'ext' && (a.op === 'eq' || a.op === 'eqi'));
-  const endText = end ? (end.part === 'ext' ? `.${end.value.replace(/^\./, '')}` : end.value) : '';
+  const end = pos.find((a) => a.op === 'ends') ?? atoms.find((a) => !a.negate && (a.part === 'ext' || a.part === 'ext1') && a.op === 'eq');
+  const endText = end ? (end.part === 'ext' || end.part === 'ext1' ? `.${end.value.replace(/^\./, '')}` : end.value) : '';
   const rest = atoms.filter((a) => a !== start && a !== end);
   const parts: string[] = [];
   if (start || end) parts.push(`${start?.value ?? ''}*${endText}`);
@@ -554,7 +599,7 @@ function displayGroup(atoms: Atom[]): string {
               ? `/${a.value}/`
               : a.op === 'in'
                 ? a.value.split(',').map((x) => x.trim()).join(' | ')
-                : a.part === 'ext'
+                : a.part === 'ext' || a.part === 'ext1'
                   ? `*.${a.value.replace(/^\./, '')}`
                   : a.value;
     parts.push(a.negate ? `not ${v}` : v);
@@ -564,17 +609,21 @@ function displayGroup(atoms: Atom[]): string {
 
 function namePart(file: string, part: NamePart): string {
   const only = file.slice(file.lastIndexOf('/') + 1);
-  const dot = only.lastIndexOf('.');
-  if (part === 'ext') return dot > 0 ? only.slice(dot + 1) : '';
-  if (part === 'noext') return dot > 0 ? only.slice(0, dot) : only;
+  const first = only.indexOf('.', 1);
+  const last = only.lastIndexOf('.');
+  if (part === 'ext') return first > 0 ? only.slice(first + 1) : '';
+  if (part === 'ext1') return last > 0 ? only.slice(last + 1) : '';
+  if (part === 'noext') return first > 0 ? only.slice(0, first) : only;
+  if (part === 'noext1') return last > 0 ? only.slice(0, last) : only;
   return part === 'onlyname' ? only : file;
 }
 
 export function conditionMatches(cond: FileCondition, fileName: string): boolean {
   return cond.groups.some((atoms) =>
     atoms.every((a) => {
-      const v = namePart(fileName, a.part).toLowerCase();
-      const x = a.value.toLowerCase();
+      const raw = namePart(fileName, a.part);
+      const v = a.ci ? raw.toLowerCase() : raw;
+      const x = a.ci ? a.value.toLowerCase() : a.value;
       const hit =
         a.op === 'starts'
           ? v.startsWith(x)
@@ -583,10 +632,10 @@ export function conditionMatches(cond: FileCondition, fileName: string): boolean
             : a.op === 'contains'
               ? v.includes(x)
               : a.op === 'regex'
-                ? (safeRegex(a.value)?.test(namePart(fileName, a.part)) ?? false)
+                ? (safeRegex(a.value, a.ci ? 'i' : '')?.test(raw) ?? false)
                 : a.op === 'in'
                   ? x.split(',').some((y) => y.trim() === v)
-                  : v === x.replace(a.part === 'ext' ? /^\./ : /$^/, '');
+                  : v === x.replace(a.part === 'ext' || a.part === 'ext1' ? /^\./ : /$^/, '');
       return a.negate ? !hit : hit;
     }),
   );
@@ -702,7 +751,8 @@ export type StoredTrigger = Trigger & {
 
 const escapeRe = (s: string): string => s.replace(/[.*+?^$()|[\]{}\\]/g, '\\$&');
 /** fileName / doneFileName may use the file language (INV_${date:now:yyyyMMdd}.csv, ${file:name}.done): any value there. */
-const fileLanguageRegex = (pattern: string): RegExp | null => safeRegex(pattern.split(/\$\{[^}]*\}/).map(escapeRe).join('.*'));
+/** Camel compares fileName / doneFileName exactly (name.equals), so case counts. */
+const fileLanguageRegex = (pattern: string): RegExp | null => safeRegex(pattern.split(/\$\{[^}]*\}/).map(escapeRe).join('.*'), '');
 
 /** Does a file name (a label like INV_20260101.csv) start this file trigger? */
 function fileTester(t: StoredTrigger): ((fileName: string) => boolean) | null {
@@ -715,7 +765,7 @@ function fileTester(t: StoredTrigger): ((fileName: string) => boolean) | null {
     if (cond && cond.groups.every((g) => g.some((x) => !x.negate && x.value.length >= 3))) testers.push((f) => conditionMatches(cond, f));
   } else if (m?.pattern ?? t.filePattern) {
     const pattern = (m?.pattern ?? t.filePattern) as string;
-    const re = t.patternKind === 'regex' ? safeRegex(pattern) : t.patternKind === 'glob' ? antRegex(pattern) : fileLanguageRegex(pattern);
+    const re = t.patternKind === 'regex' ? safeRegex(pattern) : t.patternKind === 'glob' ? antRegex(pattern, !/[?&]antFilterCaseSensitive=false\b/i.test(t.resolvedUri)) : fileLanguageRegex(pattern);
     if (re) testers.push((f) => re.test(f));
   }
   const done = m?.doneFile ?? t.doneFile;
@@ -758,10 +808,10 @@ export function broadProbes(patterns: ReadonlyArray<string | null | undefined>):
  *   file  a file pattern or trigger file name
  *   uri   the endpoint as written (seda:orders, direct:invoiceJob): specific by itself
  */
-type NameKind = 'id' | 'name' | 'file' | 'uri';
+export type NameKind = 'id' | 'name' | 'file' | 'uri';
 
 /** Names a test can use for a trigger, normalized, with their kind. */
-function triggerNames(t: StoredTrigger): Array<{ n: string; kind: NameKind }> {
+export function triggerNames(t: StoredTrigger): Array<{ n: string; kind: NameKind }> {
   const names: Array<{ n: string; kind: NameKind }> = [];
   const add = (v: string | null | undefined, kind: NameKind) => {
     const n = v ? norm(v) : '';
@@ -806,7 +856,14 @@ function endpointNames(t: StoredTrigger): string[] {
   if (!ep || PROPERTY_ONLY.test(ep.path)) return [];
   if (t.kind === 'rest') {
     const url = /^[a-z][\w+.-]*:\/\/[^/]*(\/[^?#]*)?/i.exec(ep.path);
-    let p = url ? (url[1] ?? '') : ep.path.replace(/^(get|post|put|delete|patch|head|options):/i, '');
+    let p: string;
+    if (url) p = url[1] ?? '';
+    else if (ep.scheme === 'rest' || ep.scheme === 'rest-api') {
+      // rest:verb:path[:uriTemplate]
+      const [path = '', template = ''] = ep.path.replace(/^(get|post|put|delete|patch|head|options):/i, '').split(':');
+      p = `${path.replace(/\/$/, '')}/${template.replace(/^\//, '')}`;
+    } else if (ep.scheme === 'http' || ep.scheme === 'https' || /^[^/]*:\d+(\/|$)/.test(ep.path)) p = ep.path.replace(/^[^/]*/, ''); // host:port/path
+    else p = ep.path;
     if (ep.params.contextPath) p = `${ep.params.contextPath.replace(/\/$/, '')}/${p.replace(/^\//, '')}`;
     p = p.replace(/\/+$/, '');
     if (!p || p === '/' || p.includes('{{')) return [];
@@ -863,7 +920,18 @@ export interface ScanInput {
   tests: ReadonlyArray<{ path: string; text: string }>;
 }
 
+/** A route the scan read but doesn't count, and why. */
+export interface SkippedRoute {
+  routeId: string | null;
+  module: string | null;
+  file: string;
+  line: number;
+  reason: string;
+}
+
 export interface ScanOutput {
+  /** Routes read but not counted: what starts them is not a trigger, a template, a copy… */
+  skippedRoutes: SkippedRoute[];
   triggers: StoredTrigger[];
   /** Tests found in the uploaded pytest files, for matching against any branch's triggers later. */
   tests: TestLabels[];
@@ -927,8 +995,14 @@ export function scanRepository(input: ScanInput): ScanOutput {
     return k;
   };
   let otherRoutes = 0;
+  const skippedRoutes: SkippedRoute[] = [];
   for (const r of raw) {
     const module = moduleOf(r.file);
+    const skip = (reason: string) => skippedRoutes.push({ routeId: r.routeId, module, file: r.file, line: r.line, reason });
+    if (r.template) {
+      skip('a <routeTemplate>: not a route until something instantiates it');
+      continue;
+    }
     if (r.routeId) {
       const id = `${module ?? ''}\0${r.routeId}`;
       const first = routeIds.get(id);
@@ -937,13 +1011,19 @@ export function scanRepository(input: ScanInput): ScanOutput {
         // Camel won't start two routes with one id in a context: an identical copy is counted once
         const copy = firstInputs.get(id) === inputs;
         warnings.push(`route id "${r.routeId}" is defined more than once${module ? ` in ${module}` : ''} (${r.file}:${r.line}, first at ${first})${copy ? ': the same route, counted once' : ''}`);
-        if (copy) continue;
+        if (copy) {
+          skip(`an identical copy of the route at ${first}: counted once`);
+          continue;
+        }
       } else {
         routeIds.set(id, `${r.file}:${r.line}`);
         firstInputs.set(id, inputs);
       }
     }
-    if (r.inputs.length === 0) continue;
+    if (r.inputs.length === 0) {
+      skip('has no <from>');
+      continue;
+    }
     const conditions = r.conditions
       .map((c) => ({ c, resolved: resolvePlaceholders(normalizeCondition(c.expr), props, r.file) }))
       .map((x) => ({ ...x, parsed: parseFileCondition(x.resolved.firstVariant) }))
@@ -952,7 +1032,9 @@ export function scanRepository(input: ScanInput): ScanOutput {
     // the marker file a load route deletes when it is done: its trigger file when the <from> names none
     const marker = r.markers[0] ? resolvePlaceholders(r.markers[0], props, r.file) : null;
     r.inputs.forEach((inp, idx) => {
-      const uri = inp.uri ?? (inp.ref ? endpointFor(inp.ref, r.file) : undefined);
+      // <from ref="x"/> and the ref: component (<from uri="ref:x"/>) both name an <endpoint id="x">
+      const refId = inp.ref ?? /^\s*ref:(?:\/\/)?([^?\s]+)\s*$/.exec(inp.uri ?? '')?.[1];
+      const uri = (refId ? endpointFor(refId, r.file) : undefined) ?? inp.uri ?? undefined;
       if (!uri) {
         warnings.push(`${r.file}:${inp.line}: <from> without a uri${inp.ref ? ` (endpoint "${inp.ref}" not found)` : ''}`);
         return;
@@ -1043,11 +1125,17 @@ export function scanRepository(input: ScanInput): ScanOutput {
         });
       }
     });
-    if (!routeHasTrigger) otherRoutes++;
+    if (!routeHasTrigger) {
+      otherRoutes++;
+      const first = r.inputs[0];
+      const raw = first?.uri ?? (first?.ref ? `ref ${first.ref}` : '');
+      const filled = first?.uri ? resolvePlaceholders(first.uri, props, r.file).firstVariant.trim() : raw;
+      skip(`starts from ${filled.split('?')[0]?.slice(0, 120)}${filled !== raw && raw ? ` (${raw.trim().slice(0, 80)})` : ''}, which is not a trigger type (file, schedule, direct, queue, Kafka, REST)`);
+    }
   }
 
   const tests: TestLabels[] = scanPytestFiles(input.tests).map((t) => ({ id: t.id, strings: t.strings, labels: t.labels, keys: t.keys }));
   const coverage = coverTriggers(triggers, tests);
   for (const t of triggers) t.coveredBy = coverage.get(t.key) ?? [];
-  return { triggers, tests, testsFound: tests.length, otherRoutes, warnings };
+  return { skippedRoutes, triggers, tests, testsFound: tests.length, otherRoutes, warnings };
 }

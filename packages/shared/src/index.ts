@@ -1562,3 +1562,100 @@ export const TriggerListResponse = z.object({
   items: z.array(TriggerRow),
 });
 export type TriggerListResponse = z.infer<typeof TriggerListResponse>;
+
+// ---------------------------------------------------------------------------
+// Compare with my sheet: a spreadsheet of routes (one per row) against what the dashboard counts
+// ---------------------------------------------------------------------------
+
+/** The sheet's columns used, by header. Only `routeId` is required. */
+export const SheetCompareColumns = z.object({
+  routeId: z.string().min(1).max(200),
+  /** The route's XML file (tells apart one id in several modules). */
+  xml: z.string().max(200).nullish(),
+  /** What starts it: file, schedule, direct, seda, kafka, rest… */
+  kind: z.string().max(200).nullish(),
+  /** How many triggers the route has. */
+  triggers: z.string().max(200).nullish(),
+  /** Whether it is automated: yes/no, or how many of its triggers are. */
+  automated: z.string().max(200).nullish(),
+  /** The folder (module) it is in, or merged / PR. */
+  where: z.string().max(200).nullish(),
+  /** The test files that cover it. */
+  testFiles: z.string().max(200).nullish(),
+  /** PRs (numbers or branches) with tests for it. */
+  prs: z.string().max(200).nullish(),
+});
+export type SheetCompareColumns = z.infer<typeof SheetCompareColumns>;
+
+export const SheetComparePreviewResponse = z.object({
+  uploadId: z.string(),
+  fileName: z.string(),
+  sheets: z.array(z.object({ name: z.string(), headers: z.array(z.string()), rowCount: z.number().int(), columns: SheetCompareColumns.partial() })),
+});
+export type SheetComparePreviewResponse = z.infer<typeof SheetComparePreviewResponse>;
+
+export const SheetCompareRequest = z.object({
+  uploadId: z.string().min(1).max(100),
+  sheet: z.string().max(200),
+  columns: SheetCompareColumns,
+  branch: trimmed(LIMITS.shortTextMax).min(1).optional(),
+  tests: trimmed(LIMITS.shortTextMax).min(1).optional(),
+  folder: trimmed(LIMITS.shortTextMax).min(1).optional(),
+  kinds: z.array(TriggerKind).max(20).optional(),
+});
+export type SheetCompareRequest = z.infer<typeof SheetCompareRequest>;
+
+export const SheetCompareField = z.enum(['kind', 'triggers', 'automated', 'where', 'testFiles', 'prs']);
+export type SheetCompareField = z.infer<typeof SheetCompareField>;
+
+/** What the dashboard counts for one route. */
+export const SheetCompareRoute = z.object({
+  routeId: z.string().nullable(),
+  module: z.string().nullable(),
+  sourceFile: z.string(),
+  /** Line of its first trigger. */
+  line: z.number().int(),
+  kinds: z.array(TriggerKind),
+  schemes: z.array(z.string()),
+  triggers: z.number().int(),
+  /** Triggers with a test (merged or in a PR). */
+  tested: z.number().int(),
+  /** Of those, the ones only a PR's tests cover. */
+  testedInPrOnly: z.number().int(),
+  testFiles: z.array(z.string()),
+  /** Not-merged branches with tests for it, and their PR numbers where known. */
+  prBranches: z.array(z.string()),
+  prNumbers: z.array(z.number().int()),
+});
+export type SheetCompareRoute = z.infer<typeof SheetCompareRoute>;
+
+export const SheetCompareRow = z.object({
+  /** match: in both and agreeing; differs: in both, some field disagrees; sheetOnly / dashboardOnly. */
+  status: z.enum(['match', 'differs', 'sheetOnly', 'dashboardOnly']),
+  routeId: z.string(),
+  /** 1-based row in the sheet (header = 1); null for dashboard-only routes. */
+  sheetRow: z.number().int().nullable(),
+  diffs: z.array(z.object({ field: SheetCompareField, sheet: z.string(), dashboard: z.string() })),
+  /**
+   * Why: for a route only in the sheet, why the dashboard doesn't count it (not in the XML, not a
+   * trigger type, another folder or type…); for one only in the dashboard, what may have kept it
+   * out of the sheet (a type the sheet never lists, an XML file it doesn't cover, no route id…).
+   */
+  note: z.string().nullable(),
+  sheet: z.record(z.string(), z.string()).nullable(),
+  dashboard: SheetCompareRoute.nullable(),
+});
+export type SheetCompareRow = z.infer<typeof SheetCompareRow>;
+
+export const SheetCompareResponse = z.object({
+  routesFrom: z.string().nullable(),
+  testsFrom: z.string().nullable(),
+  folder: z.string().nullable(),
+  kinds: z.array(TriggerKind).nullable(),
+  columns: SheetCompareColumns,
+  counts: z.object({ sheetRows: z.number().int(), routes: z.number().int(), match: z.number().int(), differs: z.number().int(), sheetOnly: z.number().int(), dashboardOnly: z.number().int() }),
+  /** Routes in both whose field disagrees, per field. */
+  fieldCounts: z.record(SheetCompareField, z.number().int()),
+  rows: z.array(SheetCompareRow),
+});
+export type SheetCompareResponse = z.infer<typeof SheetCompareResponse>;

@@ -1,0 +1,15 @@
+{
+ "xml": [
+  {
+   "path": "src/main/resources/m/routes/r.xml",
+   "text": "<routes><route id=\"a\"><from uri=\"file:/in\"/><choice><when><simple>${file:ext} == 'gz' &amp;&amp; ${file:name} starts with 'REP'</simple><to uri=\"direct:gzJob\"/></when></choice></route></routes>"
+  }
+ ],
+ "properties": [],
+ "tests": [
+  {
+   "path": "tests/test_a.py",
+   "text": "def test_a():\n    drop_file(\"REPORT_1.csv.gz\")\n"
+  }
+ ]
+}

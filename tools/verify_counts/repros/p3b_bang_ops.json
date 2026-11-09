@@ -1,0 +1,15 @@
+{
+ "xml": [
+  {
+   "path": "src/main/resources/m/routes/r.xml",
+   "text": "<routes><route id=\"a\"><from uri=\"file:/in\"/><choice><when><simple>${file:name} !startsWith 'TMP' &amp;&amp; ${file:name} endsWith '.xml'</simple><to uri=\"direct:x\"/></when></choice></route></routes>"
+  }
+ ],
+ "properties": [],
+ "tests": [
+  {
+   "path": "tests/test_a.py",
+   "text": "@allure.label(\"file\", \"TMP_1.xml\")\ndef test_a():\n    pass\n"
+  }
+ ]
+}

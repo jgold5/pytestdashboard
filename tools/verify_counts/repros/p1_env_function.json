@@ -1,0 +1,10 @@
+{
+ "xml": [
+  {
+   "path": "src/main/resources/m/routes/r.xml",
+   "text": "<routes><route id=\"a\"><from uri=\"{{env:INVOICE_SFTP_URL}}\"/></route><route id=\"b\"><from uri=\"{{env:ORDERS_IN_URI}}\"/></route></routes>"
+  }
+ ],
+ "properties": [],
+ "tests": []
+}

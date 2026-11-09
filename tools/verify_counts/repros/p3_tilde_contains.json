@@ -1,0 +1,10 @@
+{
+ "xml": [
+  {
+   "path": "src/main/resources/m/routes/r.xml",
+   "text": "<routes><route id=\"a\"><from uri=\"file:/in\"/><choice><when><simple>${file:name} ~~ 'inv_'</simple><to uri=\"direct:invoiceJob\"/></when><when><simple>${file:name} starts with 'CRN_'</simple><to uri=\"direct:creditJob\"/></when></choice></route></routes>"
+  }
+ ],
+ "properties": [],
+ "tests": []
+}

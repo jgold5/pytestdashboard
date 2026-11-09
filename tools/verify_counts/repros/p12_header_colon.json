@@ -1,0 +1,10 @@
+{
+ "xml": [
+  {
+   "path": "src/main/resources/m/routes/r.xml",
+   "text": "<routes><route id=\"a\"><from uri=\"file:/in\"/><choice><when><simple>${header:CamelFileName} starts with 'INV_'</simple><to uri=\"direct:invoiceJob\"/></when></choice></route></routes>"
+  }
+ ],
+ "properties": [],
+ "tests": []
+}

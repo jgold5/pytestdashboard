@@ -53,6 +53,7 @@ export function saveScan(db: Db, fields: TriggerScanFields, out: ScanOutput, fil
       tests: out.tests,
       testsFound: out.testsFound,
       otherRoutes: out.otherRoutes,
+      skippedRoutes: out.skippedRoutes,
       files: { ...files, ...(fields.only ? { only: fields.only } : {}), scanner: SCANNER_VERSION },
     })
     .returning()
