@@ -25,6 +25,7 @@ import { FlakyMeter, REVIEW_META, TRIAGE_META } from '../components/status';
 import { PipelineFunnel, stageHref } from '../components/pipeline';
 import { RunGroupChip } from '../components/RunGroup';
 import { kindsLabel, ScopeButton } from '../components/ScopeButton';
+import { ActiveFilters } from '../components/ActiveFilters';
 import { useScopeBranch, useScopeExclude, useScopeFolder, useScopeKinds, useScopeTests } from '../lib/scopeBranch';
 import { cn, fmtNumber, fmtPct, fmtRelative, pluralize } from '../lib/utils';
 
@@ -63,6 +64,15 @@ export function OverviewPage() {
             </Link>
           </>
         }
+      />
+      <ActiveFilters
+        className="mb-4"
+        scope={{ folder, kinds, exclude }}
+        onChange={(p) => {
+          if ('folder' in p) setFolder(p.folder ?? null);
+          if ('kinds' in p) setKinds(p.kinds ?? null);
+          if ('exclude' in p) setExclude(p.exclude ?? null);
+        }}
       />
       {empty ? (
         <Card>
