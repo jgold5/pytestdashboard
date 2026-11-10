@@ -67,7 +67,7 @@ describe('compare with my sheet', () => {
     });
     expect(res.statusCode, res.body).toBe(200);
     const cmp = res.json<SheetCompareResponse>();
-    expect(cmp.counts).toEqual({ sheetRows: 5, routes: 4, match: 2, differs: 1, sheetOnly: 2, dashboardOnly: 1 });
+    expect(cmp.counts).toEqual({ sheetRows: 5, routes: 4, match: 2, differs: 1, sheetOnly: 2, dashboardOnly: 1, outside: 0 });
     const by = Object.fromEntries(cmp.rows.map((r) => [r.routeId, r]));
     expect(by['invoice-load']).toMatchObject({ status: 'match', sheetRow: 2 });
     expect(by['orders-worker']).toMatchObject({ status: 'match' }); // only in PR #12, as the sheet says
@@ -88,8 +88,10 @@ describe('compare with my sheet', () => {
       payload: { uploadId: preview.uploadId, sheet: preview.sheets[0]!.name, columns: preview.sheets[0]!.columns, kinds: ['queue'] },
     });
     const only = q.json<SheetCompareResponse>();
-    expect(only.counts).toMatchObject({ routes: 1, match: 1, dashboardOnly: 0 });
-    expect(only.rows.find((r) => r.routeId === 'invoice-load')!.note).toContain('outside the folder/types picked');
+    // the sheet's rows outside the types picked aren't compared: they're "outside", not "only in the sheet"
+    expect(only.counts).toMatchObject({ routes: 1, match: 1, dashboardOnly: 0, outside: 2, sheetOnly: 2 });
+    expect(only.rows.find((r) => r.routeId === 'invoice-load')).toMatchObject({ status: 'outside', note: expect.stringContaining('outside the folder/types picked') });
+    expect(only.rows.find((r) => r.routeId === 'audit')!.status).toBe('sheetOnly'); // not counted anywhere: still a difference
 
     // several folders: the routes in any of them
     const cmpFolders = async (folder: string) =>

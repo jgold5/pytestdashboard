@@ -1806,8 +1806,12 @@ export const SheetCompareRoute = z.object({
 export type SheetCompareRoute = z.infer<typeof SheetCompareRoute>;
 
 export const SheetCompareRow = z.object({
-  /** match: in both and agreeing; differs: in both, some field disagrees; sheetOnly / dashboardOnly. */
-  status: z.enum(['match', 'differs', 'sheetOnly', 'dashboardOnly']),
+  /**
+   * match: in both and agreeing; differs: in both, some field disagrees; sheetOnly / dashboardOnly;
+   * outside: a sheet row whose route the dashboard counts, but outside the folders/types/exclusion
+   * picked (not compared, not a difference).
+   */
+  status: z.enum(['match', 'differs', 'sheetOnly', 'dashboardOnly', 'outside']),
   routeId: z.string(),
   /** 1-based row in the sheet (header = 1); null for dashboard-only routes. */
   sheetRow: z.number().int().nullable(),
@@ -1830,7 +1834,16 @@ export const SheetCompareResponse = z.object({
   kinds: z.array(TriggerKind).nullable(),
   exclude: z.string().nullable(),
   columns: SheetCompareColumns,
-  counts: z.object({ sheetRows: z.number().int(), routes: z.number().int(), match: z.number().int(), differs: z.number().int(), sheetOnly: z.number().int(), dashboardOnly: z.number().int() }),
+  counts: z.object({
+    sheetRows: z.number().int(),
+    routes: z.number().int(),
+    match: z.number().int(),
+    differs: z.number().int(),
+    sheetOnly: z.number().int(),
+    dashboardOnly: z.number().int(),
+    /** Sheet rows whose route is outside the folders/types/exclusion picked: left out of the comparison. */
+    outside: z.number().int().default(0),
+  }),
   /** Routes in both whose field disagrees, per field. */
   fieldCounts: z.record(SheetCompareField, z.number().int()),
   rows: z.array(SheetCompareRow),

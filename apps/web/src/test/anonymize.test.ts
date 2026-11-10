@@ -9,7 +9,7 @@ const result: SheetCompareResponse = {
   kinds: ['file', 'queue'],
   exclude: null,
   columns: { routeId: 'route_id', xml: 'xml', automated: 'automated', testFiles: 'test_files', prs: 'prs' },
-  counts: { sheetRows: 3, routes: 3, match: 1, differs: 1, sheetOnly: 1, dashboardOnly: 1 },
+  counts: { sheetRows: 3, routes: 3, match: 1, differs: 1, sheetOnly: 1, dashboardOnly: 1, outside: 0 },
   fieldCounts: { kind: 0, triggers: 0, automated: 1, where: 0, testFiles: 1, prs: 0 },
   rows: [
     {

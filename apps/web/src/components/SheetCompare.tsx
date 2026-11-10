@@ -26,6 +26,7 @@ const STATUS: Record<SheetCompareRow['status'], { label: string; cls: string }> 
   differs: { label: 'Differs', cls: 'border-[color-mix(in_oklab,var(--warn)_45%,transparent)] text-warn' },
   sheetOnly: { label: 'Only in sheet', cls: 'border-[color-mix(in_oklab,var(--st-failed)_40%,transparent)] text-st-failed' },
   dashboardOnly: { label: 'Not in sheet', cls: 'border-[color-mix(in_oklab,var(--st-failed)_40%,transparent)] text-st-failed' },
+  outside: { label: 'Outside your filters', cls: 'border-border text-fg-3' },
 };
 type Filter = 'problems' | SheetCompareRow['status'] | 'all';
 
@@ -239,7 +240,8 @@ function Result({ result }: { result: SheetCompareResponse }) {
   const rows = useMemo(() => {
     const s = q.trim().toLowerCase();
     return result.rows
-      .filter((r) => (filter === 'all' ? true : filter === 'problems' ? r.status !== 'match' : r.status === filter))
+      // the sheet's rows outside the filters picked aren't compared: only their own tile shows them
+      .filter((r) => (filter === 'all' ? r.status !== 'outside' : filter === 'problems' ? r.status !== 'match' && r.status !== 'outside' : r.status === filter))
       .filter((r) => !s || r.routeId.toLowerCase().includes(s) || (r.dashboard?.module ?? '').toLowerCase().includes(s) || (r.note ?? '').toLowerCase().includes(s));
   }, [result, filter, q]);
   const tiles: Array<{ key: Filter; label: string; n: number; tone?: string }> = [
@@ -247,12 +249,14 @@ function Result({ result }: { result: SheetCompareResponse }) {
     { key: 'differs', label: 'Differ', n: c.differs, tone: c.differs ? 'text-warn' : undefined },
     { key: 'sheetOnly', label: 'Only in your sheet', n: c.sheetOnly, tone: c.sheetOnly ? 'text-st-failed' : undefined },
     { key: 'dashboardOnly', label: 'Missing from your sheet', n: c.dashboardOnly, tone: c.dashboardOnly ? 'text-st-failed' : undefined },
+    ...(c.outside ? [{ key: 'outside' as const, label: 'Outside your filters (not compared)', n: c.outside, tone: 'text-fg-3' }] : []),
   ];
   const fields = Object.entries(result.fieldCounts).filter(([, n]) => n > 0);
   return (
     <div className="space-y-3">
       <p className="text-xs text-fg-2">
-        {pluralize(c.sheetRows, 'sheet row')} against {pluralize(c.routes, 'route')} counted on <span className="font-mono">{result.routesFrom ?? '—'}</span> (tests from{' '}
+        {pluralize(c.sheetRows - (c.outside ?? 0), 'sheet row')}
+        {c.outside ? ` (and ${fmtNumber(c.outside)} outside your filters, not compared)` : ''} against {pluralize(c.routes, 'route')} counted on <span className="font-mono">{result.routesFrom ?? '—'}</span> (tests from{' '}
         <span className="font-mono">{result.testsFrom ?? '—'}</span>)
         {result.folder ? (
           <>
@@ -262,7 +266,7 @@ function Result({ result }: { result: SheetCompareResponse }) {
         {result.kinds ? `, ${result.kinds.join(' + ')} only` : ''}
         {excludeLabel(result.exclude) ? `, ${excludeLabel(result.exclude)}` : ''}.
       </p>
-      <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+      <div className={cn('grid grid-cols-2 gap-2', c.outside ? 'md:grid-cols-5' : 'md:grid-cols-4')}>
         {tiles.map((t) => (
           <button
             key={t.key}
@@ -293,7 +297,7 @@ function Result({ result }: { result: SheetCompareResponse }) {
                 filter === k ? 'border-accent/50 bg-accent-soft font-medium text-fg' : 'border-border bg-surface text-fg-2 hover:bg-surface-2',
               )}
             >
-              {k === 'problems' ? `Everything that doesn't agree (${fmtNumber(c.differs + c.sheetOnly + c.dashboardOnly)})` : `All (${fmtNumber(result.rows.length)})`}
+              {k === 'problems' ? `Everything that doesn't agree (${fmtNumber(c.differs + c.sheetOnly + c.dashboardOnly)})` : `All compared (${fmtNumber(result.rows.length - (c.outside ?? 0))})`}
             </button>
           ))}
         </div>

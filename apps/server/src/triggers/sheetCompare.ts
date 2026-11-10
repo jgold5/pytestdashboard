@@ -271,7 +271,9 @@ export function compareSheet(db: Db, sheet: ParsedSheet, req: SheetCompareReques
     }
     const route = candidates[0];
     if (!route) {
-      rows.push({ status: 'sheetOnly', routeId, sheetRow: row.n, diffs: [], note: whyNotCounted(routeId), sheet: sheetValues, dashboard: null });
+      // counted on the branch, but outside the folders/types/exclusion picked: not part of this comparison
+      const outside = anyById.has(norm(routeId));
+      rows.push({ status: outside ? 'outside' : 'sheetOnly', routeId, sheetRow: row.n, diffs: [], note: whyNotCounted(routeId), sheet: sheetValues, dashboard: null });
       continue;
     }
     used.add(route.key);
@@ -392,6 +394,7 @@ export function compareSheet(db: Db, sheet: ParsedSheet, req: SheetCompareReques
       match: count('match'),
       differs: count('differs'),
       sheetOnly: count('sheetOnly'),
+      outside: count('outside'),
       dashboardOnly: count('dashboardOnly'),
     },
     fieldCounts,
