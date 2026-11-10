@@ -108,6 +108,9 @@ describe('anonymizing a sheet comparison for sharing', () => {
     expect(a.text('it may be defined in Java/Kotlin DSL, under src/test, or only on another branch')).toBe(
       'it may be defined in Java/Kotlin DSL, under src/test, or only on another branch',
     );
+    expect(a.text('Counted on main, but left out by the exclusion picked (file names starting with download)')).toBe(
+      'Counted on main, but left out by the exclusion picked (file names starting with download)',
+    );
     expect(a.text('Counted on main, but outside the folder/types picked: billing/ Kafka')).toMatch(/^Counted on main, but outside the folder\/types picked: [a-z]+\/ Kafka$/);
   });
 });

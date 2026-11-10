@@ -41,7 +41,8 @@ const KEEP = new Set(
   rounded save scheduled schemes scope search semibold sets share sharing show shown shrink side simple size
   skip soft space spreadsheet spring start startss sticky strong substr substring surface tab tablist tabular
   tap template times tolowercase top touppercase tracking translate transparent truncate unlinked unresolved
-  upload uppercase var visible warn whitespace wire wrap write yourself`.split(/\s+/).filter(Boolean),
+  upload uppercase var visible warn whitespace wire wrap write yourself
+  exclusion exclude excluded starting matching`.split(/\s+/).filter(Boolean),
 );
 
 /** File extensions kept on renamed paths (the type of a file is not a name). */
