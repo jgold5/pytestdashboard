@@ -13,6 +13,7 @@ import { ConfirmDialog } from '../components/ui/confirm';
 import { PrScanButton } from '../components/PrScan';
 import { SheetCompareButton } from '../components/SheetCompare';
 import { activePreset, kindsLabel, ScopeButton, type Scope } from '../components/ScopeButton';
+import { ActiveFilters } from '../components/ActiveFilters';
 import { EmptyState, ErrorState } from '../components/ui/empty-state';
 import { Dialog } from '../components/ui/dialog';
 import { Field, Input } from '../components/ui/input';
@@ -218,6 +219,34 @@ export default function TriggersPage() {
               </Button>
             </div>
           ) : null}
+          <ActiveFilters
+            className="mb-3"
+            scope={{ folder: module, kinds, exclude }}
+            onChange={changeScope}
+            onClearAll={() => {
+              setScopeFolder(null);
+              setScopeKinds(null);
+              setScopeExclude(null);
+              setSearch('');
+              set({ module: null, kind: null, kinds: null, exclude: null, status: null, q: null });
+            }}
+            extra={[
+              ...(status !== 'all' ? [{ key: 'status', label: 'Status', value: STATUS_FILTERS.find((f) => f.key === status)?.label ?? status, onRemove: () => set({ status: null }) }] : []),
+              ...(search.trim()
+                ? [
+                    {
+                      key: 'search',
+                      label: 'Search',
+                      value: `“${search.trim()}”`,
+                      onRemove: () => {
+                        setSearch('');
+                        set({ q: null });
+                      },
+                    },
+                  ]
+                : []),
+            ]}
+          />
           <Totals data={data} items={scoped} scope={[module ? `in ${folderLabel(module)}` : null, kinds ? `(${kindsLabel(kinds)})` : null, excludeLabel(exclude), search.trim() ? `matching “${search.trim()}”` : null].filter(Boolean).join(' · ')} />
           <div className="mt-4 mb-3 flex flex-wrap items-center gap-2">
             <div role="tablist" aria-label="Filter triggers" className="flex flex-wrap gap-1.5">
