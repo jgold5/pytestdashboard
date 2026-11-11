@@ -821,6 +821,12 @@ def convert(
 
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
+    # Windows: a console or file in cp1252 can't print every character a report holds; never fail on that
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors='replace')  # type: ignore[attr-defined]
+        except (AttributeError, ValueError):
+            pass
     ap = argparse.ArgumentParser(description='Allure report -> Excel/CSV results sheet (Test Name, Test File, Route Tested, Result, Failure, RCA, Fix Required, Bug id).')
     ap.add_argument('report', help='Allure report folder, .zip of it, single-file index.html, or allure-results folder/.zip')
     ap.add_argument('-o', '--out', help='output .xlsx (default: next to the report, <name>-results.xlsx) or .csv')
