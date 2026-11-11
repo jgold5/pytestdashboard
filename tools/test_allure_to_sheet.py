@@ -93,7 +93,7 @@ class AllureToSheet(unittest.TestCase):
         self.assertEqual(by['test_credit_fails'][1:5], ['tests/routes/test_credit.py', '', 'Failed', 'AssertionError: expected 3 rows, got 0\nassert 0 == 3'])
         self.assertEqual(by['test_purge[nightly]'][1:5], ['tests/jobs/test_purge.py', 'nightly-purge; purge-archive', 'Broken', 'TimeoutError: no file in /out after 60s'])
         self.assertEqual(by['test_skipped'][3:5], ['Skipped', 'Skipped: needs SFTP'])
-        self.assertEqual(by['test_invoice_loads'][1:5], ['tests/routes/test_invoice.py', 'invoice-load', 'Passed', ''])
+        self.assertEqual(by['test_invoice_loads'][1:5], ['tests/routes/test_invoice.py', 'invoice-load', 'Passed', 'N/A'])
         # RCA, Fix Required, Bug id: for people, N/A for a passed test
         self.assertEqual({r[0]: r[5:] for r in rows}, {
             'test_credit_fails': ['', '', ''],
@@ -108,6 +108,9 @@ class AllureToSheet(unittest.TestCase):
         self.assertEqual(details['Env: Python'], '3.12')
         self.assertEqual(details['Executor'], 'Jenkins · nightly #42 (https://ci/job/42)')
         self.assertEqual(details['Results'], '4 tests: 1 failed, 1 broken, 1 skipped, 1 passed')
+        # to fill in by hand: not in this report's environment
+        self.assertEqual(details['EAI build branch'], 'TO FILL IN')
+        self.assertEqual(details['DB schema'], 'TO FILL IN')
 
     def test_report_folder(self):
         root = os.path.join(self.tmp, 'allure-report')
@@ -179,6 +182,119 @@ class AllureToSheet(unittest.TestCase):
             rows = {r[0]: r for r in csv.reader(f) if r}
         self.assertEqual(rows['test_credit_fails'][2], 'credit-load')
 
+    def test_route_from_the_test_files_docstrings(self):
+        tests = os.path.join(self.tmp, 'test-repo', 'tests')
+        os.makedirs(os.path.join(tests, 'routes'))
+        os.makedirs(os.path.join(tests, 'jobs'))
+        with open(os.path.join(tests, 'routes', 'test_credit.py'), 'w') as f:
+            f.write('''"""
+Credit load route test.
+
+Route details
+-------------
+- Route id           : common-credit-load-route
+- Trigger            : CRN.TXT
+"""
+
+def test_credit_fails():
+    pass
+''')
+        with open(os.path.join(tests, 'jobs', 'test_purge.py'), 'w') as f:
+            f.write('''"""Purge test — route nightly-purge-route (archive)."""
+
+ROUTE_ID = "should-not-win"
+
+class TestPurge:
+    ROUTE_ID = "purge-from-class"
+
+    def test_skipped(self):
+        """Skips without SFTP."""
+''')
+        src = a2s.TestSources(os.path.join(self.tmp, 'test-repo'))  # the repo root: the report's paths start lower
+        t = lambda full, name: {'fullName': full, 'name': name, 'labels': []}  # noqa: E731
+        self.assertEqual(src.routes(t('tests.routes.test_credit#test_credit_fails', 'test_credit_fails')), ['common-credit-load-route'])
+        # no "Route id" line: the class's ROUTE_ID beats the module's and "route x" in a docstring's first line
+        self.assertEqual(src.routes(t('tests.jobs.test_purge.TestPurge#test_skipped', 'test_skipped')), ['purge-from-class'])
+        self.assertEqual(src.routes(t('tests.unknown#test_x', 'test_x')), [])
+        root = os.path.join(self.tmp, 'allure-report')
+        write_report(root)
+        out = os.path.join(self.tmp, 'r.csv')
+        a2s.convert(root, out, tests_dir=os.path.join(self.tmp, 'test-repo'))
+        with open(out, encoding='utf-8-sig') as f:
+            rows = {r[0]: r for r in csv.reader(f) if r}
+        self.assertEqual(rows['test_credit_fails'][2], 'common-credit-load-route')
+        self.assertEqual(rows['test_skipped'][2], 'purge-from-class')
+        self.assertEqual(rows['test_invoice_loads'][2], 'invoice-load')  # its label wins
+
+    def test_route_constant_when_no_docstring_says(self):
+        tests = os.path.join(self.tmp, 'repo')
+        os.makedirs(tests)
+        with open(os.path.join(tests, 'test_load.py'), 'w') as f:
+            f.write('ROUTE_ID = "load-route"\n\nclass TestLoad:\n    ROUTE_ID = "class-route"\n\n    def test_a(self):\n        pass\n')
+        src = a2s.TestSources(tests)
+        self.assertEqual(src.routes({'fullName': 'test_load.TestLoad#test_a', 'name': 'test_a', 'labels': []}), ['class-route'])
+
+    def test_route_from_a_class_it_inherits_from_another_file(self):
+        # no docstring names the route: a helper class in another file sets ROUTE_ID (via a constant)
+        repo = os.path.join(self.tmp, 'repo', 'src')
+        os.makedirs(os.path.join(repo, 'route_test', 'helpers'))
+        os.makedirs(os.path.join(repo, 'route_test', 'common'))
+        with open(os.path.join(repo, 'route_test', 'base.py'), 'w') as f:
+            f.write('class RouteTest:\n    ROUTE_ID = None\n')
+        with open(os.path.join(repo, 'route_test', 'helpers', 'credit.py'), 'w') as f:
+            f.write('from route_test.base import RouteTest\nROUTE_ID = "credit-load-route"\n\nclass _Credit(RouteTest):\n    ROUTE_ID = ROUTE_ID\n')
+        with open(os.path.join(repo, 'route_test', 'common', 'test_credit.py'), 'w') as f:
+            f.write('DQCredit tests.DQ\nfrom route_test.helpers.credit import _Credit as Base\n\nclass TestCredit(Base):\n    def test_a(self):\n        pass\n'.replace('DQ', '"' * 3))
+        src = a2s.TestSources(os.path.join(self.tmp, 'repo'))
+        self.assertEqual(src.routes({'fullName': 'route_test.common.test_credit.TestCredit#test_a', 'name': 'test_a', 'labels': []}), ['credit-load-route'])
+
+    def test_routes_from_your_sheet(self):
+        sheet = os.path.join(self.tmp, 'mine.csv')
+        with open(sheet, 'w', newline='') as f:
+            w = csv.writer(f)
+            w.writerow(['route_id', 'automated', 'test_files'])
+            w.writerow(['credit-load', 'YES', 'test_credit.py'])
+            w.writerow(['skip-route', 'YES', 'tests/jobs/test_purge.py; other.py'])
+        by = a2s.routes_by_file(sheet)
+        self.assertEqual(by['test_credit.py'], ['credit-load'])
+        self.assertEqual(by['test_purge'], ['skip-route'])
+        root = os.path.join(self.tmp, 'allure-report')
+        write_report(root)
+        out = os.path.join(self.tmp, 'r.csv')
+        self.assertEqual(a2s.convert(root, out, routes_sheet=sheet)['withRoute'], 4)
+        with open(out, encoding='utf-8-sig') as f:
+            rows = {r[0]: r for r in csv.reader(f) if r}
+        self.assertEqual(rows['test_credit_fails'][2], 'credit-load')
+        self.assertEqual(rows['test_purge[nightly]'][2], 'nightly-purge; purge-archive')  # its label first
+        self.assertEqual(rows['test_skipped'][2], 'skip-route')
+
+    def test_eai_branch_and_db_schema(self):
+        root = os.path.join(self.tmp, 'allure-report')
+        write_report(root)
+        with open(os.path.join(root, 'widgets', 'environment.json'), 'w') as f:
+            json.dump(ENV + [{'name': 'EAI_BRANCH', 'values': ['release/26.4']}], f)
+        out = os.path.join(self.tmp, 'r.csv')
+        res = a2s.convert(root, out, db_schema='PUG_T1154')
+        d = dict(res['details'])
+        self.assertEqual(d['EAI build branch'], 'release/26.4')  # from the environment
+        self.assertEqual(d['DB schema'], 'PUG_T1154')  # given
+        keys = [k for k, _ in res['details']]
+        self.assertLess(keys.index('DB schema'), keys.index('Env: ENV'))
+
+    def test_inspect(self):
+        root = os.path.join(self.tmp, 'allure-report')
+        write_report(root)
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.assertEqual(a2s.main([root, '--inspect']), 0)
+        text = buf.getvalue()
+        self.assertIn('4 tests', text)
+        self.assertIn('route ', text)
+        self.assertIn('package', text)
+        self.assertFalse(os.path.exists(root + '-results.xlsx'))  # nothing written
+
     def test_command_line(self):
         root = os.path.join(self.tmp, 'allure-report')
         write_report(root)
@@ -198,7 +314,8 @@ class AllureToSheet(unittest.TestCase):
             self.assertEqual(z.testzip(), None)
             sheet = z.read('xl/worksheets/sheet1.xml').decode()
         self.assertIn('Failure from script', sheet)
-        self.assertIn('<autoFilter ref="A10:H14"/>', sheet)  # 8 detail rows, a blank one, the header, 4 tests
+        self.assertIn('<autoFilter ref="A12:H16"/>', sheet)  # 10 detail rows, a blank one, the header, 4 tests
+        self.assertIn('s="8"><is><t xml:space="preserve">TO FILL IN</t>', sheet)  # highlighted
         self.assertIn('state="frozen"', sheet)
         self.assertIn('<formula1>"Yes,No,N/A"</formula1>', sheet)
 
