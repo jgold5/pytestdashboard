@@ -15,7 +15,7 @@ The sheet starts with the run's details (report name, date ran, duration, EAI bu
 schema - "TO FILL IN" unless given or in the environment - environment, executor, totals), then one
 row per test:
 
-  Test Name | Test File | Route Tested | Result | Failure from script | RCA (after manual analysis) | Test Script Fix Required | Bug id
+  Test File | Test Name | Route Tested | Result | Failure from script | RCA (after manual analysis) | Test Script Fix Required | Bug id
 
 The first five are filled in; the last three are for you. A passed test says N/A in Failure, RCA,
 Test Script Fix Required and Bug id. Failures come first.
@@ -49,7 +49,7 @@ from datetime import datetime
 from typing import Any, Iterable, Optional
 from xml.sax.saxutils import escape
 
-COLUMNS = ['Test Name', 'Test File', 'Route Tested', 'Result', 'Failure from script', 'RCA (after manual analysis)', 'Test Script Fix Required', 'Bug id']
+COLUMNS = ['Test File', 'Test Name', 'Route Tested', 'Result', 'Failure from script', 'RCA (after manual analysis)', 'Test Script Fix Required', 'Bug id']
 ROUTE_LABELS = {'route', 'route_id', 'routeid', 'route-id', 'camel_route', 'camel-route', 'camelroute'}
 STATUS_ORDER = {'failed': 0, 'broken': 1, 'unknown': 2, 'skipped': 3, 'passed': 4}
 MAX_FAILURE_CHARS = 2000  # the message, not the trace: enough to read, short enough for a cell
@@ -617,9 +617,11 @@ def routes_by_file(path: str) -> dict[str, list[str]]:
 # ---------------------------------------------------------------------------
 
 def _failure(test: dict) -> str:
+    """The failure message on one line (its lines joined with " | "): a line break would make the row tall
+    wherever the cell is pasted."""
     if test['status'] == 'passed':
         return 'N/A'
-    msg = re.sub(r'\r\n?', '\n', str(test['message'] or '')).strip()
+    msg = ' | '.join(x.strip() for x in str(test['message'] or '').splitlines() if x.strip())
     return msg if len(msg) <= MAX_FAILURE_CHARS else msg[: MAX_FAILURE_CHARS - 1] + '…'
 
 
@@ -646,7 +648,7 @@ def build_rows(
     ordered = sorted(tests, key=lambda t: (STATUS_ORDER.get(t['status'], 9), t['fullName'] or t['name'], t['name']))
     # a passed test needs no analysis: Failure, RCA, Test Script Fix Required and Bug id say N/A; the others are left for people
     return [
-        [t['name'], test_file(t), routes_of(t, route_labels, by_file, sources), t['status'].capitalize(), _failure(t)] + (['N/A'] * 3 if t['status'] == 'passed' else ['', '', ''])
+        [test_file(t), t['name'], routes_of(t, route_labels, by_file, sources), t['status'].capitalize(), _failure(t)] + (['N/A'] * 3 if t['status'] == 'passed' else ['', '', ''])
         for t in ordered
     ]
 
@@ -683,10 +685,16 @@ def _cell(ref: str, value: str, style: int = 0) -> str:
     return f'<c r="{ref}" t="inlineStr"{s}><is><t xml:space="preserve">{v}</t></is></c>' if value != '' else (f'<c r="{ref}"{s}/>' if style else '')
 
 
+def _empty_text(ref: str, style: int) -> str:
+    """A cell that shows nothing but isn't empty (=""), so the failure next to it can't spill into it."""
+    return f'<c r="{ref}" s="{style}" t="str"><f>""</f><v></v></c>'
+
+
 # styles: 0 default, 1 bold, 2 header (bold, grey fill, border), 3 a table cell, 4 failed, 5 broken, 6 passed,
-# 7 skipped, 8 to fill in. Table cells wrap but their rows have a fixed height (ROW_HEIGHT): a long failure stays
-# inside its own cell, cut at its edge (no spilling into RCA), and never makes its row taller; the whole text is
-# in the cell (the formula bar shows it).
+# 7 skipped, 8 to fill in. Nothing wraps and every value is one line, so a row is one line high here and wherever
+# it is pasted (Excel sizes pasted rows to wrapped text). A long failure is cut at its cell's edge rather than
+# spilling over: the blank RCA / Fix / Bug id cells next to it hold ="" (see _empty_text). The whole text is in
+# the cell (the formula bar shows it).
 _STYLES = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
 <fonts count="6"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font>
@@ -702,7 +710,7 @@ _STYLES = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
 <xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>
 <xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>
-<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment wrapText="1" vertical="top"/></xf>
+<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="center"/></xf>
 <xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="center"/></xf>
 <xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="center"/></xf>
 <xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="center"/></xf>
@@ -710,7 +718,7 @@ _STYLES = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <xf numFmtId="0" fontId="3" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
 </cellXfs></styleSheet>"""
 _RESULT_STYLE = {'Failed': 4, 'Broken': 5, 'Passed': 6, 'Skipped': 7}
-_WIDTHS = [44, 40, 32, 10, 70, 30, 25, 12]
+_WIDTHS = [40, 44, 32, 10, 70, 30, 25, 12]
 ROW_HEIGHT = 15  # points: one line of Calibri 11, so every row stays thin whatever its text
 
 
@@ -723,12 +731,13 @@ def write_xlsx(path: str, details: list[tuple[str, str]], rows: list[list[str]])
     r += 1  # blank row
     head = r + 1
     out.write(f'<row r="{head}" ht="{ROW_HEIGHT + 3}" customHeight="1">' + ''.join(_cell(f'{_col(i)}{head}', c, 2) for i, c in enumerate(COLUMNS)) + '</row>')
+    manual = {COLUMNS.index(c) for c in ('RCA (after manual analysis)', 'Test Script Fix Required', 'Bug id')}
     for i, row in enumerate(rows):
         n = head + 1 + i
         cells = []
         for j, v in enumerate(row):
             style = _RESULT_STYLE.get(v, 3) if j == COLUMNS.index('Result') else 3
-            cells.append(_cell(f'{_col(j)}{n}', v, style))
+            cells.append(_empty_text(f'{_col(j)}{n}', style) if j in manual and v == '' else _cell(f'{_col(j)}{n}', v, style))
         out.write(f'<row r="{n}" ht="{ROW_HEIGHT}" customHeight="1">' + ''.join(cells) + '</row>')
     last = head + max(len(rows), 1)
     cols = ''.join(f'<col min="{i + 1}" max="{i + 1}" width="{w}" customWidth="1"/>' for i, w in enumerate(_WIDTHS))
@@ -844,7 +853,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             stream.reconfigure(errors='replace')  # type: ignore[attr-defined]
         except (AttributeError, ValueError):
             pass
-    ap = argparse.ArgumentParser(description='Allure report -> Excel/CSV results sheet (Test Name, Test File, Route Tested, Result, Failure, RCA, Test Script Fix Required, Bug id).')
+    ap = argparse.ArgumentParser(description='Allure report -> Excel/CSV results sheet (Test File, Test Name, Route Tested, Result, Failure, RCA, Test Script Fix Required, Bug id).')
     ap.add_argument('report', help='Allure report folder, .zip of it, single-file index.html, or allure-results folder/.zip')
     ap.add_argument('-o', '--out', help='output .xlsx (default: next to the report, <name>-results.xlsx) or .csv')
     ap.add_argument('--csv', action='store_true', help='also write a .csv next to the .xlsx')
