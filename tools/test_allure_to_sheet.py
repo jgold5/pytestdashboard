@@ -235,6 +235,18 @@ class TestPurge:
         res = a2s.convert(root, out, tests_dir=other)
         self.assertEqual(res['diagnose']['misses'], {'not found': ['tests/jobs/test_purge.py', 'tests/routes/test_credit.py']})
 
+    def test_no_warnings_from_the_test_files(self):
+        import warnings
+        repo = os.path.join(self.tmp, 'repo')
+        os.makedirs(repo)
+        with open(os.path.join(repo, 'test_win.py'), 'w') as f:
+            f.write('ROUTE_ID = "win-route"\nPATH = "C:\\config\\in"\n\ndef test_a():\n    pass\n')  # "\c": an invalid escape
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            got = a2s.TestSources(repo).routes({'fullName': 'test_win#test_a', 'name': 'test_a', 'labels': []})
+        self.assertEqual(got, ['win-route'])
+        self.assertEqual([str(w.message) for w in caught], [])
+
     def test_route_constant_when_no_docstring_says(self):
         tests = os.path.join(self.tmp, 'repo')
         os.makedirs(tests)

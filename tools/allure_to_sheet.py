@@ -382,8 +382,13 @@ class TestSources:
         if full not in self.cache:
             import ast
             try:
+                import warnings
                 with open(full, encoding='utf-8-sig', errors='replace') as f:  # -sig: a BOM isn't Python
-                    self.cache[full] = ast.parse(f.read())
+                    source = f.read()
+                # the test repo's own warnings ("\\c" in a Windows path string) aren't this script's to report
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore')
+                    self.cache[full] = ast.parse(source, filename=full)
             except (SyntaxError, ValueError, OSError):
                 self.cache[full] = None
         return self.cache[full]
