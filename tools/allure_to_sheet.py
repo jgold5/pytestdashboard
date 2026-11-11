@@ -690,18 +690,21 @@ def _empty_text(ref: str, style: int) -> str:
     return f'<c r="{ref}" s="{style}" t="str"><f>""</f><v></v></c>'
 
 
-# styles: 0 default, 1 bold, 2 header (bold, grey fill, border), 3 a table cell, 4 failed, 5 broken, 6 passed,
+# styles: 0 default, 1 bold, 2 header (bold white on HEADER_FILL, border), 3 a table cell, 4 failed, 5 broken, 6 passed,
 # 7 skipped, 8 to fill in. Nothing wraps and every value is one line, so a row is one line high here and wherever
 # it is pasted (Excel sizes pasted rows to wrapped text). A long failure is cut at its cell's edge rather than
 # spilling over: the blank RCA / Fix / Bug id cells next to it hold ="" (see _empty_text). The whole text is in
 # the cell (the formula bar shows it).
+HEADER_FILL = '1F4E79'  # the table header: dark blue (RGB hex)
+HEADER_TEXT = 'FFFFFF'  # with white text
 _STYLES = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-<fonts count="6"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font>
+<fonts count="7"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font>
 <font><b/><color rgb="FFB42318"/><sz val="11"/><name val="Calibri"/></font><font><b/><color rgb="FFB54708"/><sz val="11"/><name val="Calibri"/></font>
-<font><color rgb="FF067647"/><sz val="11"/><name val="Calibri"/></font><font><color rgb="FF667085"/><sz val="11"/><name val="Calibri"/></font></fonts>
+<font><color rgb="FF067647"/><sz val="11"/><name val="Calibri"/></font><font><color rgb="FF667085"/><sz val="11"/><name val="Calibri"/></font>
+<font><b/><color rgb="FF{HEADER_TEXT}"/><sz val="11"/><name val="Calibri"/></font></fonts>
 <fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>
-<fill><patternFill patternType="solid"><fgColor rgb="FFE4E7EC"/><bgColor indexed="64"/></patternFill></fill>
+<fill><patternFill patternType="solid"><fgColor rgb="FF{HEADER_FILL}"/><bgColor indexed="64"/></patternFill></fill>
 <fill><patternFill patternType="solid"><fgColor rgb="FFFEF0C7"/><bgColor indexed="64"/></patternFill></fill></fills>
 <borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border>
 <border><left/><right/><top/><bottom style="thin"><color rgb="FF98A2B3"/></bottom><diagonal/></border></borders>
@@ -709,14 +712,14 @@ _STYLES = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <cellXfs count="9">
 <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
 <xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>
-<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>
+<xf numFmtId="0" fontId="6" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>
 <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="center"/></xf>
 <xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="center"/></xf>
 <xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="center"/></xf>
 <xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="center"/></xf>
 <xf numFmtId="0" fontId="5" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="center"/></xf>
 <xf numFmtId="0" fontId="3" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
-</cellXfs></styleSheet>"""
+</cellXfs></styleSheet>""".replace('{HEADER_FILL}', HEADER_FILL).replace('{HEADER_TEXT}', HEADER_TEXT)
 _RESULT_STYLE = {'Failed': 4, 'Broken': 5, 'Passed': 6, 'Skipped': 7}
 _WIDTHS = [40, 44, 32, 10, 70, 30, 25, 12]
 ROW_HEIGHT = 15  # points: one line of Calibri 11, so every row stays thin whatever its text
