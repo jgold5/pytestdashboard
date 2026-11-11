@@ -349,6 +349,7 @@ class TestPurge:
         self.assertEqual({h for r, h in heights if int(r) > 13}, {str(a2s.ROW_HEIGHT)})
         # ... and stays so when pasted elsewhere: nothing wraps, and the blank cells beside a failure hold ="" so it can't spill
         self.assertNotIn('wrapText', styles)
+        self.assertIn(f'<fgColor rgb="FF{a2s.HEADER_FILL}"/>', styles)  # the header's colour
         self.assertIn('<c r="F14" s="3" t="str"><f>""</f><v></v></c>', sheet)  # RCA of the first failure
         self.assertIn('<c r="H17" t="inlineStr" s="3"><is><t xml:space="preserve">N/A</t>', sheet)  # a passed test's Bug id
         self.assertIn('state="frozen"', sheet)
