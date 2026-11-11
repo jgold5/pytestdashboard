@@ -445,19 +445,25 @@ curl --fail-with-body -sS -X POST "$DASHBOARD_URL/api/triggers/scan" \
   disagreement as a small renamed repro, safe to send (the renaming map stays with you). See
   [`tools/verify_counts`](tools/verify_counts/README.md).
 - **`pnpm allure-to-sheet <report>`** (or `python3 tools/allure_to_sheet.py <report>`, Python 3.9+,
-  no packages, nothing but the report read) turns an Allure report into an Excel sheet for
-  failure analysis: the report folder, a `.zip` of it, a single-file `index.html`
+  no packages; it reads only the report and the files you name) turns an Allure report into an
+  Excel sheet for failure analysis: the report folder, a `.zip` of it, a single-file `index.html`
   (`allure generate --single-file`) or an `allure-results` folder. The sheet starts with the
-  report's name, the date it ran, its duration, environment, executor and totals, then one row
-  per test, failures first:
+  report's name, the date it ran, its duration, the **EAI build branch** and **DB schema**
+  (highlighted "TO FILL IN" unless the environment has them or you pass `--eai-branch` /
+  `--db-schema`), the environment, executor and totals, then one row per test, failures first:
 
   | Test Name | Test File | Route Tested | Result | Failure from script | RCA (after manual analysis) | Fix Required | Bug id |
   |---|---|---|---|---|---|---|---|
 
-  The first five are filled in; the rest are yours, already N/A for passed tests (Fix Required
-  has a Yes/No/N/A list, the header has filters). Test File is the test's module; Route Tested is a `route`/`route_id` label or
-  parameter on the test, else a "Route id: …" line in its description (`--route-label NAME` for
-  another label). It writes `<report>-results.xlsx` next to the report; `-o out.xlsx|out.csv`
+  The first five are filled in; the rest are yours (N/A for a passed test, as is its Failure).
+  Fix Required has a Yes/No/N/A list, the header has filters. Test File is the test's module.
+  Route Tested is the first of: a `route`/`route_id` label or parameter (`--route-label NAME` for
+  another); a "Route id: …" line in the test's description or a step; with **`--tests <test repo>`**,
+  the test's own file: a "Route id: …" line in its, its class's or its module's docstring, else
+  `ROUTE_ID` set by its class or one it inherits from (other files too) or its module, else
+  "route <id>" in a docstring's first line; with `--routes-sheet <your sheet>`, the routes it lists
+  for the test's file. `--inspect` prints what a report holds per test (labels, parameters,
+  descriptions, steps). It writes `<report>-results.xlsx` next to the report; `-o out.xlsx|out.csv`
   to choose, `--csv` for a CSV too. Retried tests count once (their last attempt).
 
 

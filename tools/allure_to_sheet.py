@@ -2,7 +2,8 @@
 """
 Allure report -> Excel (.xlsx) / CSV results sheet, for failure analysis.
 
-    python3 tools/allure_to_sheet.py REPORT [-o OUT.xlsx] [--csv] [--route-label NAME]
+    python3 tools/allure_to_sheet.py REPORT [-o OUT.xlsx] [--csv] [--tests DIR] [--routes-sheet SHEET] [--route-label NAME]
+                                            [--eai-branch B] [--db-schema S] [--inspect]
 
 REPORT is any of:
   - a generated Allure report folder (the one with index.html and data/test-cases/),
@@ -10,20 +11,28 @@ REPORT is any of:
   - a single-file report (allure generate --single-file): its index.html,
   - an allure-results folder (or .zip) of *-result.json files.
 
-The sheet starts with the run's details (report name, date ran, environment, executor, totals),
-then one row per test:
+The sheet starts with the run's details (report name, date ran, duration, EAI build branch and DB
+schema - "TO FILL IN" unless given or in the environment - environment, executor, totals), then one
+row per test:
 
   Test Name | Test File | Route Tested | Result | Failure from script | RCA (after manual analysis) | Fix Required | Bug id
 
-The first five are filled in from the report alone; the last three are for you (N/A for passed
-tests). Failures come first.
+The first five are filled in; the last three are for you. A passed test says N/A in Failure, RCA,
+Fix Required and Bug id. Failures come first.
   - Test File: the test's module (allure-pytest's `package` label, else its fullName:
     tests.routes.test_x.TestY#test_z -> tests/routes/test_x.py).
-  - Route Tested: a `route` / `route_id` label on the test (allure.dynamic.label("route", ...),
-    @allure.label("route", ...)), else a test parameter of that name, else a "Route id: ..." line in
-    the test's description (its docstring). --route-label adds another label name to look for.
+  - Route Tested, the first of:
+      a `route` / `route_id` label on the test (allure.dynamic.label("route", ...)), or a test
+      parameter of that name (--route-label adds another name);
+      a "Route id: ..." line in the test's description or a step's name;
+      with --tests DIR (your test repo): the test's own .py file - a "Route id: ..." line in the
+      test's, its class's or its module's docstring, else ROUTE_ID = "..." set by its class or a class
+      it inherits from (in another file too) or its module, else "route <id>" in a docstring's first
+      line (a module docstring isn't in the report, so this needs the file);
+      with --routes-sheet SHEET: the routes your sheet lists for the test's file.
+  - --inspect prints what a report holds per test (label and parameter names, descriptions, steps).
 
-Fully standalone: only the Python standard library, and it reads nothing but the report.
+Fully standalone: only the Python standard library; it reads the report and the files you name.
 """
 from __future__ import annotations
 
@@ -133,6 +142,19 @@ def _text(v: Any) -> str:
     return t.replace('&lt;', '<').replace('&gt;', '>').replace('&quot;', '"').replace('&#39;', "'").replace('&amp;', '&')
 
 
+def _step_names(steps: Any, depth: int = 0) -> list[str]:
+    """The names of a test's steps, nested ones too (allure.step(...))."""
+    out: list[str] = []
+    if not isinstance(steps, list) or depth > 20:
+        return out
+    for st in steps:
+        if isinstance(st, dict):
+            if st.get('name'):
+                out.append(str(st['name']))
+            out.extend(_step_names(st.get('steps'), depth + 1))
+    return out[:500]
+
+
 def load_tests(files: dict[str, bytes]) -> list[dict]:
     """One dict per test: name, fullName, status, message, labels, start."""
     tests: list[dict] = []
@@ -155,6 +177,7 @@ def load_tests(files: dict[str, bytes]) -> list[dict]:
                 'labels': _labels(c.get('labels')),
                 'parameters': _labels(c.get('parameters')),
                 'description': _text(c.get('description') or c.get('descriptionHtml')),
+                'steps': _step_names((c.get('testStage') or {}).get('steps')),
                 'start': ((c.get('time') or {}).get('start')),
             })
         return tests
@@ -175,6 +198,7 @@ def load_tests(files: dict[str, bytes]) -> list[dict]:
             'labels': _labels(r.get('labels')),
             'parameters': _labels(r.get('parameters')),
             'description': _text(r.get('description') or r.get('descriptionHtml')),
+            'steps': _step_names(r.get('steps')),
             'start': r.get('start'),
         }
         old = latest.get(key)
@@ -195,7 +219,12 @@ def _properties(text: str) -> list[tuple[str, str]]:
     return out
 
 
-def load_details(files: dict[str, bytes], tests: list[dict], report_path: str) -> list[tuple[str, str]]:
+PLACEHOLDER = 'TO FILL IN'
+# rows of the top section to fill in by hand when the report doesn't say: (label, environment key that gives it)
+MANUAL_DETAILS = [('EAI build branch', re.compile(r'(eai.*branch|branch.*eai|build[_ .-]?branch)', re.I)), ('DB schema', re.compile(r'(db|database).*schema|^schema$', re.I))]
+
+
+def load_details(files: dict[str, bytes], tests: list[dict], report_path: str, manual: Optional[dict[str, str]] = None) -> list[tuple[str, str]]:
     """The run's details, as label/value rows for the top of the sheet."""
     def find(suffix: str) -> Optional[bytes]:
         for p, d in files.items():
@@ -224,16 +253,22 @@ def load_details(files: dict[str, bytes], tests: list[dict], report_path: str) -
             hours, mins = divmod(mins, 60)
             rows.append(('Duration', f'{hours}h {mins:02d}m {secs:02d}s' if hours else f'{mins}m {secs:02d}s'))
 
+    env_rows: list[tuple[str, str]] = []
     env = _json(find('widgets/environment.json') or b'null')
     if isinstance(env, list) and env:
         for e in env:
             if isinstance(e, dict) and e.get('name'):
                 vals = e.get('values') or []
-                rows.append((f"Env: {e['name']}", ', '.join(str(v) for v in vals) if isinstance(vals, list) else str(vals)))
+                env_rows.append((str(e['name']), ', '.join(str(v) for v in vals) if isinstance(vals, list) else str(vals)))
     else:
         props = find('environment.properties')
-        for k, v in _properties(props.decode('utf-8', 'replace')) if props else []:
-            rows.append((f'Env: {k}', v))
+        env_rows.extend(_properties(props.decode('utf-8', 'replace')) if props else [])
+    # the EAI build branch and DB schema: given on the command line, else from the environment, else to fill in
+    for label, key in MANUAL_DETAILS:
+        given = (manual or {}).get(label)
+        from_env = next((v for k, v in env_rows if key.search(k) and v.strip()), None)
+        rows.append((label, given or from_env or PLACEHOLDER))
+    rows.extend((f'Env: {k}', v) for k, v in env_rows)
 
     execs = _json(find('widgets/executors.json') or b'null')
     if not isinstance(execs, list):
@@ -264,8 +299,17 @@ def _plain_full_name(full: str) -> str:
 ROUTE_IN_TEXT = re.compile(r'^[\s*\-•|]*route[\s_-]*id\s*[:=]\s*`{0,2}([A-Za-z0-9][\w.\-/]*)', re.I | re.M)
 
 
-def routes_of(test: dict, route_labels: set[str] = ROUTE_LABELS) -> str:
-    """The route(s) the test names: its route labels, else a route parameter, else a "Route id: x" line in its description."""
+def routes_of(
+    test: dict,
+    route_labels: set[str] = ROUTE_LABELS,
+    by_file: Optional[dict[str, list[str]]] = None,
+    sources: Optional['TestSources'] = None,
+) -> str:
+    """
+    The route(s) the test names: its route labels, else a route parameter, else a "Route id: x" line in
+    its description or a step's name, else its source file's docstrings or ROUTE_ID (--tests), else the
+    routes your sheet (--routes-sheet) lists for its file.
+    """
     found: list[str] = []
 
     def add(value: str) -> None:
@@ -282,9 +326,275 @@ def routes_of(test: dict, route_labels: set[str] = ROUTE_LABELS) -> str:
             if n.strip().lower() in route_labels:
                 add(v)
     if not found:
-        for m in ROUTE_IN_TEXT.finditer(test.get('description') or ''):
-            add(m.group(1))
+        for text in [test.get('description') or ''] + list(test.get('steps') or []):
+            for m in ROUTE_IN_TEXT.finditer(text):
+                add(m.group(1))
+    if not found and sources is not None:
+        for r in sources.routes(test):
+            add(r)
+    if not found and by_file:
+        f = test_file(test)
+        for key in (os.path.basename(f).lower(), re.sub(r'\.py$', '', os.path.basename(f).lower())):
+            for r in by_file.get(key, []):
+                add(r)
     return '; '.join(found)
+
+
+ROUTE_IN_FIRST_LINE = re.compile(r'\broute\s+`{0,2}([A-Za-z0-9][\w.]*-[\w.\-]*[A-Za-z0-9])', re.I)
+ROUTE_CONST = re.compile(r'^(route_?id|route)$', re.I)
+
+
+class TestSources:
+    """
+    The test repo (--tests): a test's route from its own .py file, which the report doesn't carry:
+    a "Route id: x" line in the test's, its class's or its module's docstring, else ROUTE_ID = "x"
+    set by its class or a class it inherits from (in another file too), else by its module, else
+    "route x" in a docstring's first line.
+    """
+
+    def __init__(self, root: str):
+        import ast  # noqa: F401  (stdlib; imported here so the rest runs without it being used)
+        self.root = root
+        self.by_rel: dict[str, str] = {}
+        self.by_base: dict[str, list[str]] = {}
+        for dp, dns, fns in os.walk(root):
+            dns[:] = [d for d in dns if not d.startswith('.') and d not in ('node_modules', '__pycache__', 'venv', '.venv')]
+            for f in fns:
+                if f.endswith('.py'):
+                    full = os.path.join(dp, f)
+                    rel = os.path.relpath(full, root).replace(os.sep, '/')
+                    self.by_rel[rel] = full
+                    self.by_base.setdefault(f.lower(), []).append(full)
+        self.cache: dict[str, Any] = {}
+
+    def _file(self, test_path: str) -> Optional[str]:
+        if not test_path:
+            return None
+        # the report's module path may start lower or higher than the folder given: match on the longest tail
+        for rel, full in self.by_rel.items():
+            if rel == test_path or rel.endswith('/' + test_path) or test_path.endswith('/' + rel):
+                return full
+        same = self.by_base.get(os.path.basename(test_path).lower(), [])
+        return same[0] if len(same) == 1 else None
+
+    def _tree(self, full: str) -> Any:
+        if full not in self.cache:
+            import ast
+            try:
+                with open(full, encoding='utf-8-sig', errors='replace') as f:  # -sig: a BOM isn't Python
+                    self.cache[full] = ast.parse(f.read())
+            except (SyntaxError, ValueError, OSError):
+                self.cache[full] = None
+        return self.cache[full]
+
+    def _module_file(self, module: str, near: str) -> Optional[str]:
+        """The .py file of an imported module (`from x.y import C`): matched on its path tail, else next to `near`."""
+        tail = module.lstrip('.').replace('.', '/')
+        if not tail:
+            return None
+        hits = [full for rel, full in self.by_rel.items() if rel == f'{tail}.py' or rel.endswith(f'/{tail}.py') or rel.endswith(f'/{tail}/__init__.py')]
+        if len(hits) == 1:
+            return hits[0]
+        local = os.path.join(os.path.dirname(near), tail.split('/')[-1] + '.py')
+        return local if os.path.exists(local) else (hits[0] if hits else None)
+
+    def _imports(self, tree: Any, full: str) -> dict[str, tuple[str, str]]:
+        """name -> (file, name there) for `from x import Name [as Alias]`."""
+        import ast
+        out: dict[str, tuple[str, str]] = {}
+        for node in tree.body:
+            if isinstance(node, ast.ImportFrom) and node.module:
+                f = self._module_file(node.module, full)
+                if f:
+                    for al in node.names:
+                        out[al.asname or al.name] = (f, al.name)
+        return out
+
+    def _value(self, value: Any, tree: Any, full: str, depth: int = 0) -> Optional[str]:
+        """A string constant, or a name standing for one (ROUTE_ID = ROUTE_ID, an imported constant)."""
+        import ast
+        if isinstance(value, ast.Constant) and isinstance(value.value, str) and value.value.strip():
+            return value.value.strip()
+        if isinstance(value, ast.Name) and depth < 4:
+            for node in tree.body:
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
+                if any(isinstance(t, ast.Name) and t.id == value.id for t in targets):
+                    return self._value(getattr(node, 'value', None), tree, full, depth + 1)
+            imp = self._imports(tree, full).get(value.id)
+            if imp:
+                other = self._tree(imp[0])
+                if other is not None:
+                    return self._value(ast.Name(id=imp[1]), other, imp[0], depth + 1)
+        return None
+
+    def _const(self, body: list, tree: Any, full: str) -> list[str]:
+        """ROUTE_ID / ROUTE = "x" (or = a constant naming it) in a class or module body."""
+        import ast
+        out = []
+        for node in body:
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
+            for t in targets:
+                if isinstance(t, ast.Name) and ROUTE_CONST.match(t.id):
+                    v = self._value(getattr(node, 'value', None), tree, full)
+                    if v:
+                        out.append(v)
+        return out
+
+    def _class_chain(self, cls: Any, tree: Any, full: str, depth: int = 0) -> list[tuple[Any, Any, str]]:
+        """The class and its bases, in the same file or imported from another (`from x import Base`), nearest first."""
+        import ast
+        chain = [(cls, tree, full)]
+        if depth >= 6:
+            return chain
+        imports = self._imports(tree, full)
+        for b in cls.bases:
+            name = b.id if isinstance(b, ast.Name) else b.attr if isinstance(b, ast.Attribute) else None
+            if not name:
+                continue
+            here = next((n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == name and n is not cls), None)
+            if here is not None:
+                chain += self._class_chain(here, tree, full, depth + 1)
+            elif name in imports:
+                f, orig = imports[name]
+                other = self._tree(f)
+                there = next((n for n in other.body if isinstance(n, ast.ClassDef) and n.name == orig), None) if other is not None else None
+                if there is not None:
+                    chain += self._class_chain(there, other, f, depth + 1)
+        return chain
+
+    def routes(self, test: dict) -> list[str]:
+        import ast
+        full = self._file(test_file(test))
+        tree = self._tree(full) if full else None
+        if tree is None:
+            return []
+        mod, _, func = _plain_full_name(test['fullName']).partition('#')
+        func = func or re.sub(r'\[.*\]$', '', test['name'])
+        classes = [p for p in mod.split('.') if p[:1].isupper()]
+        # the test's own nodes: its class(es), then the function
+        scopes: list[Any] = []
+        body = tree.body
+        for cname in classes:
+            node = next((n for n in body if isinstance(n, ast.ClassDef) and n.name == cname), None)
+            if node is None:
+                break
+            scopes.append(node)
+            body = node.body
+        fn = next((n for n in body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == func), None)
+        docs = [ast.get_docstring(n) or '' for n in ([fn] if fn else []) + scopes[::-1] + [tree]]
+        # 1. a "Route id: x" line in the test's, its class's or its module's docstring
+        for d in docs:
+            hits = [m.group(1) for m in ROUTE_IN_TEXT.finditer(d)]
+            if hits:
+                return hits
+        # 2. ROUTE_ID set by the test's class or one it inherits from (other files too), else by the module
+        for cls in scopes[::-1]:
+            for c, t, f in self._class_chain(cls, tree, full):
+                hits = self._const(c.body, t, f)
+                if hits:
+                    return hits
+        hits = self._const(tree.body, tree, full)
+        if hits:
+            return hits
+        # 3. "route x" in a docstring's first line
+        for d in docs:
+            first = d.strip().splitlines()[0] if d.strip() else ''
+            m = ROUTE_IN_FIRST_LINE.search(first)
+            if m:
+                return [m.group(1)]
+        return []
+
+
+def read_sheet(path: str) -> list[list[str]]:
+    """Rows of a .csv/.tsv, or of the first sheet of an .xlsx with a route id column (stdlib only)."""
+    if not path.lower().endswith(('.xlsx', '.xlsm')):
+        with open(path, newline='', encoding='utf-8-sig', errors='replace') as f:
+            sample = f.read(4096)
+            f.seek(0)
+            try:
+                dialect = csv.Sniffer().sniff(sample, delimiters=',;\t') if sample else csv.excel
+            except csv.Error:
+                dialect = csv.excel
+            return [row for row in csv.reader(f, dialect)]
+    import xml.etree.ElementTree as ET
+    ns = {'m': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main', 'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'}
+    with zipfile.ZipFile(path) as z:
+        names = set(z.namelist())
+        shared: list[str] = []
+        if 'xl/sharedStrings.xml' in names:
+            for si in ET.fromstring(z.read('xl/sharedStrings.xml')).findall('m:si', ns):
+                shared.append(''.join(t.text or '' for t in si.iter('{%s}t' % ns['m'])))
+        wb = ET.fromstring(z.read('xl/workbook.xml'))
+        rels = ET.fromstring(z.read('xl/_rels/workbook.xml.rels'))
+        target = {r.get('Id'): r.get('Target') or '' for r in rels}
+        sheets = []
+        for sh in wb.find('m:sheets', ns) or []:
+            t = target.get(sh.get('{%s}id' % ns['r']), '')
+            sheets.append(t.lstrip('/') if t.lstrip('/').startswith('xl/') else 'xl/' + t)
+
+        def rows_of(sheet_path: str) -> list[list[str]]:
+            out: list[list[str]] = []
+            for row in ET.fromstring(z.read(sheet_path)).iter('{%s}row' % ns['m']):
+                cells: dict[int, str] = {}
+                for c in row.findall('m:c', ns):
+                    ref = re.match(r'([A-Z]+)', c.get('r', 'A'))
+                    col = 0
+                    for ch in ref.group(1) if ref else 'A':
+                        col = col * 26 + ord(ch) - 64
+                    v = c.find('m:v', ns)
+                    t = c.get('t')
+                    if t == 's' and v is not None and v.text:
+                        text = shared[int(v.text)]
+                    elif t == 'inlineStr':
+                        text = ''.join(x.text or '' for x in c.iter('{%s}t' % ns['m']))
+                    else:
+                        text = v.text if v is not None and v.text else ''
+                    cells[col - 1] = text
+                if cells:
+                    out.append([cells.get(i, '') for i in range(max(cells) + 1)])
+            return out
+
+        for sp in sheets:
+            if sp in names:
+                rows = rows_of(sp)
+                if rows and any(re.sub(r'[^a-z]', '', h.lower()) in ('routeid', 'route') for h in rows[0]):
+                    return rows
+        return rows_of(sheets[0]) if sheets and sheets[0] in names else []
+
+
+def routes_by_file(path: str) -> dict[str, list[str]]:
+    """Your sheet of routes (a route id column and a test files column) as test file -> route ids."""
+    rows = read_sheet(path)
+    head = 0
+    # the header row: the first with a route id column (a title row may come first)
+    for i, r in enumerate(rows[:10]):
+        if any(re.sub(r'[^a-z]', '', h.lower()) in ('routeid', 'route') for h in r):
+            head = i
+            break
+    canon = [re.sub(r'[^a-z]', '', h.lower()) for h in (rows[head] if rows else [])]
+
+    def col(*names: str) -> int:
+        for n in names:
+            if n in canon:
+                return canon.index(n)
+        return -1
+
+    c_id, c_files = col('routeid', 'route'), col('testfiles', 'testfile', 'tests', 'testname', 'testnames')
+    if c_id < 0 or c_files < 0:
+        raise SystemExit(f'{path}: needs a route id column and a test files column (found: {", ".join(rows[head]) if rows else "nothing"})')
+    out: dict[str, list[str]] = {}
+    for r in rows[head + 1:]:
+        cell = lambda i: (r[i] if 0 <= i < len(r) else '').strip()  # noqa: E731
+        rid = cell(c_id)
+        if not rid:
+            continue
+        for f in re.split(r'[;,\s]+', cell(c_files)):
+            base = os.path.basename(f.replace('\\', '/')).lower()
+            if base:
+                for key in (base, re.sub(r'\.py$', '', base)):
+                    if rid not in out.setdefault(key, []):
+                        out[key].append(rid)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -293,7 +603,7 @@ def routes_of(test: dict, route_labels: set[str] = ROUTE_LABELS) -> str:
 
 def _failure(test: dict) -> str:
     if test['status'] == 'passed':
-        return ''
+        return 'N/A'
     msg = re.sub(r'\r\n?', '\n', str(test['message'] or '')).strip()
     return msg if len(msg) <= MAX_FAILURE_CHARS else msg[: MAX_FAILURE_CHARS - 1] + '…'
 
@@ -312,11 +622,16 @@ def test_file(test: dict) -> str:
     return f"{pkg.replace('.', '/')}.py" if pkg else ''
 
 
-def build_rows(tests: list[dict], route_labels: set[str] = ROUTE_LABELS) -> list[list[str]]:
+def build_rows(
+    tests: list[dict],
+    route_labels: set[str] = ROUTE_LABELS,
+    by_file: Optional[dict[str, list[str]]] = None,
+    sources: Optional[TestSources] = None,
+) -> list[list[str]]:
     ordered = sorted(tests, key=lambda t: (STATUS_ORDER.get(t['status'], 9), t['fullName'] or t['name'], t['name']))
-    # a passed test needs no analysis: RCA, Fix Required and Bug id say N/A; the others are left for people
+    # a passed test needs no analysis: Failure, RCA, Fix Required and Bug id say N/A; the others are left for people
     return [
-        [t['name'], test_file(t), routes_of(t, route_labels), t['status'].capitalize(), _failure(t)] + (['N/A'] * 3 if t['status'] == 'passed' else ['', '', ''])
+        [t['name'], test_file(t), routes_of(t, route_labels, by_file, sources), t['status'].capitalize(), _failure(t)] + (['N/A'] * 3 if t['status'] == 'passed' else ['', '', ''])
         for t in ordered
     ]
 
@@ -359,12 +674,13 @@ _STYLES = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <fonts count="6"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font>
 <font><b/><color rgb="FFB42318"/><sz val="11"/><name val="Calibri"/></font><font><b/><color rgb="FFB54708"/><sz val="11"/><name val="Calibri"/></font>
 <font><color rgb="FF067647"/><sz val="11"/><name val="Calibri"/></font><font><color rgb="FF667085"/><sz val="11"/><name val="Calibri"/></font></fonts>
-<fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>
-<fill><patternFill patternType="solid"><fgColor rgb="FFE4E7EC"/><bgColor indexed="64"/></patternFill></fill></fills>
+<fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>
+<fill><patternFill patternType="solid"><fgColor rgb="FFE4E7EC"/><bgColor indexed="64"/></patternFill></fill>
+<fill><patternFill patternType="solid"><fgColor rgb="FFFEF0C7"/><bgColor indexed="64"/></patternFill></fill></fills>
 <borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border>
 <border><left/><right/><top/><bottom style="thin"><color rgb="FF98A2B3"/></bottom><diagonal/></border></borders>
 <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-<cellXfs count="8">
+<cellXfs count="9">
 <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
 <xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>
 <xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment wrapText="1" vertical="center"/></xf>
@@ -373,6 +689,7 @@ _STYLES = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="top"/></xf>
 <xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="top"/></xf>
 <xf numFmtId="0" fontId="5" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="top"/></xf>
+<xf numFmtId="0" fontId="3" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
 </cellXfs></styleSheet>"""
 _RESULT_STYLE = {'Failed': 4, 'Broken': 5, 'Passed': 6, 'Skipped': 7}
 _WIDTHS = [44, 40, 32, 10, 70, 40, 14, 14]
@@ -383,7 +700,7 @@ def write_xlsx(path: str, details: list[tuple[str, str]], rows: list[list[str]])
     r = 0
     for k, v in details:
         r += 1
-        out.write(f'<row r="{r}">{_cell(f"A{r}", k, 1)}{_cell(f"B{r}", v)}</row>')
+        out.write(f'<row r="{r}">{_cell(f"A{r}", k, 1)}{_cell(f"B{r}", v, 8 if v == PLACEHOLDER else 0)}</row>')
     r += 1  # blank row
     head = r + 1
     out.write(f'<row r="{head}" ht="30" customHeight="1">' + ''.join(_cell(f'{_col(i)}{head}', c, 2) for i, c in enumerate(COLUMNS)) + '</row>')
@@ -451,13 +768,26 @@ def write_xlsx(path: str, details: list[tuple[str, str]], rows: list[list[str]])
 
 # ---------------------------------------------------------------------------
 
-def convert(report: str, out: Optional[str] = None, want_csv: bool = False, route_labels: Iterable[str] = ()) -> dict:
+def convert(
+    report: str,
+    out: Optional[str] = None,
+    want_csv: bool = False,
+    route_labels: Iterable[str] = (),
+    routes_sheet: Optional[str] = None,
+    eai_branch: Optional[str] = None,
+    db_schema: Optional[str] = None,
+    tests_dir: Optional[str] = None,
+) -> dict:
     files = _strip_root(read_files(report))
     tests = load_tests(files)
     if not tests:
         raise SystemExit(f'{report}: no tests found (expected data/test-cases/*.json, a single-file index.html, or *-result.json)')
-    details = load_details(files, tests, report)
-    rows = build_rows(tests, ROUTE_LABELS | {x.strip().lower() for x in route_labels if x.strip()})
+    details = load_details(files, tests, report, {k: v for k, v in (('EAI build branch', eai_branch), ('DB schema', db_schema)) if v})
+    by_file = routes_by_file(routes_sheet) if routes_sheet else None
+    if tests_dir and not os.path.isdir(tests_dir):
+        raise SystemExit(f'{tests_dir}: not a folder')
+    sources = TestSources(tests_dir) if tests_dir else None
+    rows = build_rows(tests, ROUTE_LABELS | {x.strip().lower() for x in route_labels if x.strip()}, by_file, sources)
     if out is None:
         stem = re.sub(r'\.(zip|html?)$', '', os.path.normpath(report), flags=re.I)
         if os.path.basename(stem).lower() == 'index':
@@ -483,11 +813,54 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     ap.add_argument('report', help='Allure report folder, .zip of it, single-file index.html, or allure-results folder/.zip')
     ap.add_argument('-o', '--out', help='output .xlsx (default: next to the report, <name>-results.xlsx) or .csv')
     ap.add_argument('--csv', action='store_true', help='also write a .csv next to the .xlsx')
+    ap.add_argument('--tests', metavar='DIR', help="your test repo (or its tests folder): Route Tested from each test's own docstrings or ROUTE_ID")
+    ap.add_argument('--routes-sheet', metavar='SHEET', help='your sheet of routes (.xlsx/.csv with a route id and a test files column): Route Tested by test file')
     ap.add_argument('--route-label', action='append', default=[], metavar='NAME', help='another label (or parameter) name that holds the route id; repeatable')
+    ap.add_argument('--eai-branch', metavar='BRANCH', help=f'the EAI build branch for the top section (default: from the environment, else "{PLACEHOLDER}")')
+    ap.add_argument('--db-schema', metavar='SCHEMA', help=f'the DB schema for the top section (default: from the environment, else "{PLACEHOLDER}")')
+    ap.add_argument('--inspect', action='store_true', help='print what the report holds per test (label and parameter names, descriptions, steps) instead of writing a sheet')
     a = ap.parse_args(list(argv) if argv is not None else None)
-    res = convert(a.report, a.out, a.csv, a.route_label)
+    if a.inspect:
+        inspect(a.report)
+        return 0
+    res = convert(a.report, a.out, a.csv, a.route_label, a.routes_sheet, a.eai_branch, a.db_schema, a.tests)
     print(f"{res['tests']} tests, {res['withRoute']} with a route -> " + ', '.join(res['files']))
+    todo = [k for k, v in res['details'] if v == PLACEHOLDER]
+    if todo:
+        print(f"fill in: {', '.join(todo)} (or pass {' / '.join('--eai-branch' if k == 'EAI build branch' else '--db-schema' for k in todo)})")
     return 0
+
+
+def inspect(report: str) -> None:
+    """Where a report keeps things: the label and parameter names, how many tests have a description and steps, with examples."""
+    tests = load_tests(_strip_root(read_files(report)))
+    n = len(tests)
+    print(f'{n} tests\n')
+    for what, key in (('labels', 'labels'), ('parameters', 'parameters')):
+        seen: dict[str, list[str]] = {}
+        for t in tests:
+            for k, v in t[key]:
+                ex = seen.setdefault(k, [])
+                if v not in ex and len(ex) < 3:
+                    ex.append(v[:60])
+        counts = {k: sum(1 for t in tests if any(x == k for x, _ in t[key])) for k in seen}
+        print(f'{what}:' if seen else f'{what}: none')
+        for k in sorted(seen, key=lambda k: -counts[k]):
+            print(f'  {k:<24} on {counts[k]}/{n} tests   e.g. {" | ".join(seen[k])}')
+        print()
+    with_desc = [t for t in tests if t.get('description')]
+    print(f'description: on {len(with_desc)}/{n} tests')
+    for t in with_desc[:2]:
+        print('  ' + t['description'].strip()[:300].replace('\n', '\n  '))
+    with_steps = [t for t in tests if t.get('steps')]
+    print(f'\nsteps: on {len(with_steps)}/{n} tests')
+    for t in with_steps[:2]:
+        print(f"  {t['name']}:")
+        for st in t['steps'][:8]:
+            print(f'    - {st[:120]}')
+    print('\nTest File as worked out for the first tests:')
+    for t in tests[:5]:
+        print(f"  {t['fullName'] or t['name']}  ->  {test_file(t) or '?'}")
 
 
 if __name__ == '__main__':
