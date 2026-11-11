@@ -15,6 +15,7 @@
     "reset-data": "pnpm --filter @ptd/server reset-data",
     "verify-counts": "python3 tools/verify_counts/compare.py",
     "share-examples": "python3 tools/verify_counts/share.py --examples",
+    "allure-to-sheet": "python3 tools/allure_to_sheet.py",
     "typecheck": "pnpm -r typecheck && tsc -p e2e",
     "lint": "eslint .",
     "format": "prettier --write .",

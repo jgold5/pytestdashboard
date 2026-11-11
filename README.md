@@ -444,6 +444,21 @@ curl --fail-with-body -sS -X POST "$DASHBOARD_URL/api/triggers/scan" \
   dashboard disagree on. Add `--share` for `verify-counts-share.zip`: the result with every
   disagreement as a small renamed repro, safe to send (the renaming map stays with you). See
   [`tools/verify_counts`](tools/verify_counts/README.md).
+- **`pnpm allure-to-sheet <report>`** (or `python3 tools/allure_to_sheet.py <report>`, Python 3.9+,
+  no packages, nothing but the report read) turns an Allure report into an Excel sheet for
+  failure analysis: the report folder, a `.zip` of it, a single-file `index.html`
+  (`allure generate --single-file`) or an `allure-results` folder. The sheet starts with the
+  report's name, the date it ran, its duration, environment, executor and totals, then one row
+  per test, failures first:
+
+  | Test Name | Test File | Route Tested | Result | Failure from script | RCA (after manual analysis) | Fix Required | Bug id |
+  |---|---|---|---|---|---|---|---|
+
+  The first five are filled in; the rest are yours (Fix Required has a Yes/No list, the header
+  has filters). Test File is the test's module; Route Tested is a `route`/`route_id` label or
+  parameter on the test, else a "Route id: …" line in its description (`--route-label NAME` for
+  another label). It writes `<report>-results.xlsx` next to the report; `-o out.xlsx|out.csv`
+  to choose, `--csv` for a CSV too. Retried tests count once (their last attempt).
 
 
 [`tools/distill_camel_repo.py`](tools/distill_camel_repo.py) (Python 3.9+, no
