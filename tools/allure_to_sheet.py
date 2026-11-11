@@ -366,6 +366,7 @@ class TestSources:
                     self.by_rel[rel] = full
                     self.by_base.setdefault(f.lower(), []).append(full)
         self.cache: dict[str, Any] = {}
+        self.misses: dict[str, list[str]] = {}
 
     def _file(self, test_path: str) -> Optional[str]:
         if not test_path:
@@ -464,9 +465,12 @@ class TestSources:
 
     def routes(self, test: dict) -> list[str]:
         import ast
-        full = self._file(test_file(test))
+        path = test_file(test)
+        full = self._file(path)
         tree = self._tree(full) if full else None
         if tree is None:
+            # for the summary: which tests' files weren't in --tests, or didn't parse
+            self.misses.setdefault('not found' if not full else 'not readable as Python', []).append(path or test['fullName'] or test['name'])
             return []
         mod, _, func = _plain_full_name(test['fullName']).partition('#')
         func = func or re.sub(r'\[.*\]$', '', test['name'])
@@ -788,6 +792,15 @@ def convert(
         raise SystemExit(f'{tests_dir}: not a folder')
     sources = TestSources(tests_dir) if tests_dir else None
     rows = build_rows(tests, ROUTE_LABELS | {x.strip().lower() for x in route_labels if x.strip()}, by_file, sources)
+    route_col = COLUMNS.index('Route Tested')
+    file_col = COLUMNS.index('Test File')
+    # why a route is missing, for the summary
+    diagnose: dict[str, Any] = {}
+    if sources is not None:
+        diagnose['py files in --tests'] = len(sources.by_rel)
+        diagnose['misses'] = {k: sorted(set(v)) for k, v in sources.misses.items()}
+        found = {r[file_col] for r in rows if r[file_col] and sources._file(r[file_col])}
+        diagnose['found, no route in it'] = sorted({r[file_col] for r in rows if not r[route_col] and r[file_col] in found})
     if out is None:
         stem = re.sub(r'\.(zip|html?)$', '', os.path.normpath(report), flags=re.I)
         if os.path.basename(stem).lower() == 'index':
@@ -804,8 +817,7 @@ def convert(
             c = re.sub(r'\.xlsx$', '', out, flags=re.I) + '.csv'
             write_csv(c, details, rows)
             written.append(c)
-    route_col = COLUMNS.index('Route Tested')
-    return {'files': written, 'tests': len(rows), 'details': details, 'withRoute': sum(1 for r in rows if r[route_col])}
+    return {'files': written, 'tests': len(rows), 'details': details, 'withRoute': sum(1 for r in rows if r[route_col]), 'diagnose': diagnose}
 
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
@@ -825,6 +837,16 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         return 0
     res = convert(a.report, a.out, a.csv, a.route_label, a.routes_sheet, a.eai_branch, a.db_schema, a.tests)
     print(f"{res['tests']} tests, {res['withRoute']} with a route -> " + ', '.join(res['files']))
+    d = res.get('diagnose') or {}
+    if d:
+        print(f"--tests: {d['py files in --tests']} .py files read under {a.tests}")
+        for why, files in (d.get('misses') or {}).items():
+            print(f"  {len(files)} test file(s) {why} there, e.g. " + ', '.join(files[:3]))
+        if d.get('found, no route in it'):
+            nf = d['found, no route in it']
+            print(f"  {len(nf)} test file(s) found but naming no route (no 'Route id: ...' docstring line, ROUTE_ID or 'route <id>'), e.g. " + ', '.join(nf[:3]))
+    elif res['withRoute'] < res['tests'] and not a.routes_sheet:
+        print(f"{res['tests'] - res['withRoute']} test(s) without a route: the report doesn't name it; add --tests <your test repo> to read it from the test files")
     todo = [k for k, v in res['details'] if v == PLACEHOLDER]
     if todo:
         print(f"fill in: {', '.join(todo)} (or pass {' / '.join('--eai-branch' if k == 'EAI build branch' else '--db-schema' for k in todo)})")

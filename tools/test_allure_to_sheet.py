@@ -225,6 +225,15 @@ class TestPurge:
         self.assertEqual(rows['test_credit_fails'][2], 'common-credit-load-route')
         self.assertEqual(rows['test_skipped'][2], 'purge-from-class')
         self.assertEqual(rows['test_invoice_loads'][2], 'invoice-load')  # its label wins
+        # the summary says which files weren't found under --tests
+        res = a2s.convert(root, out, tests_dir=os.path.join(self.tmp, 'test-repo'))
+        self.assertEqual(res['diagnose']['py files in --tests'], 2)
+        self.assertEqual(res['diagnose']['misses'], {})  # test_invoice's label names its route: its file isn't looked for
+        # a folder without the tests: every file the report names is missing, and the summary says so
+        other = os.path.join(self.tmp, 'elsewhere')
+        os.makedirs(other)
+        res = a2s.convert(root, out, tests_dir=other)
+        self.assertEqual(res['diagnose']['misses'], {'not found': ['tests/jobs/test_purge.py', 'tests/routes/test_credit.py']})
 
     def test_route_constant_when_no_docstring_says(self):
         tests = os.path.join(self.tmp, 'repo')
