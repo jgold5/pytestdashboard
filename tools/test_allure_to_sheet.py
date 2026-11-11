@@ -340,6 +340,10 @@ class TestPurge:
         self.assertIn('Failure from script', sheet)
         self.assertIn('<autoFilter ref="A13:H17"/>', sheet)  # 11 detail rows, a blank one, the header, 4 tests
         self.assertIn('s="8"><is><t xml:space="preserve">TO FILL IN</t>', sheet)  # highlighted
+        # every table row one line high, however long its failure
+        import re as _re
+        heights = _re.findall(r'<row r="(\d+)" ht="([\d.]+)" customHeight="1">', sheet)
+        self.assertEqual({h for r, h in heights if int(r) > 13}, {str(a2s.ROW_HEIGHT)})
         self.assertIn('state="frozen"', sheet)
         self.assertIn('<formula1>"Yes,No,N/A"</formula1>', sheet)
 

@@ -683,7 +683,10 @@ def _cell(ref: str, value: str, style: int = 0) -> str:
     return f'<c r="{ref}" t="inlineStr"{s}><is><t xml:space="preserve">{v}</t></is></c>' if value != '' else (f'<c r="{ref}"{s}/>' if style else '')
 
 
-# styles: 0 default, 1 bold, 2 header (bold, grey fill, border, wrap), 3 wrap (top-aligned), 4 failed, 5 broken, 6 passed, 7 skipped
+# styles: 0 default, 1 bold, 2 header (bold, grey fill, border), 3 a table cell, 4 failed, 5 broken, 6 passed,
+# 7 skipped, 8 to fill in. Table cells wrap but their rows have a fixed height (ROW_HEIGHT): a long failure stays
+# inside its own cell, cut at its edge (no spilling into RCA), and never makes its row taller; the whole text is
+# in the cell (the formula bar shows it).
 _STYLES = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
 <fonts count="6"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font>
@@ -698,16 +701,17 @@ _STYLES = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <cellXfs count="9">
 <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
 <xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>
-<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment wrapText="1" vertical="center"/></xf>
+<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>
 <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment wrapText="1" vertical="top"/></xf>
-<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="top"/></xf>
-<xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="top"/></xf>
-<xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="top"/></xf>
-<xf numFmtId="0" fontId="5" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="top"/></xf>
+<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="center"/></xf>
+<xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="center"/></xf>
+<xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="center"/></xf>
+<xf numFmtId="0" fontId="5" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="center"/></xf>
 <xf numFmtId="0" fontId="3" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
 </cellXfs></styleSheet>"""
 _RESULT_STYLE = {'Failed': 4, 'Broken': 5, 'Passed': 6, 'Skipped': 7}
-_WIDTHS = [44, 40, 32, 10, 70, 40, 18, 14]
+_WIDTHS = [44, 40, 32, 10, 70, 30, 25, 12]
+ROW_HEIGHT = 15  # points: one line of Calibri 11, so every row stays thin whatever its text
 
 
 def write_xlsx(path: str, details: list[tuple[str, str]], rows: list[list[str]]) -> None:
@@ -718,14 +722,14 @@ def write_xlsx(path: str, details: list[tuple[str, str]], rows: list[list[str]])
         out.write(f'<row r="{r}">{_cell(f"A{r}", k, 1)}{_cell(f"B{r}", v, 8 if v == PLACEHOLDER else 0)}</row>')
     r += 1  # blank row
     head = r + 1
-    out.write(f'<row r="{head}" ht="30" customHeight="1">' + ''.join(_cell(f'{_col(i)}{head}', c, 2) for i, c in enumerate(COLUMNS)) + '</row>')
+    out.write(f'<row r="{head}" ht="{ROW_HEIGHT + 3}" customHeight="1">' + ''.join(_cell(f'{_col(i)}{head}', c, 2) for i, c in enumerate(COLUMNS)) + '</row>')
     for i, row in enumerate(rows):
         n = head + 1 + i
         cells = []
         for j, v in enumerate(row):
             style = _RESULT_STYLE.get(v, 3) if j == COLUMNS.index('Result') else 3
             cells.append(_cell(f'{_col(j)}{n}', v, style))
-        out.write(f'<row r="{n}">' + ''.join(cells) + '</row>')
+        out.write(f'<row r="{n}" ht="{ROW_HEIGHT}" customHeight="1">' + ''.join(cells) + '</row>')
     last = head + max(len(rows), 1)
     cols = ''.join(f'<col min="{i + 1}" max="{i + 1}" width="{w}" customWidth="1"/>' for i, w in enumerate(_WIDTHS))
     fix_col = _col(COLUMNS.index('Test Script Fix Required'))
@@ -734,6 +738,7 @@ def write_xlsx(path: str, details: list[tuple[str, str]], rows: list[list[str]])
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
         'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
         f'<sheetViews><sheetView workbookViewId="0"><pane ySplit="{head}" topLeftCell="A{head + 1}" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>'
+        f'<sheetFormatPr defaultRowHeight="{ROW_HEIGHT}" customHeight="1"/>'
         f'<cols>{cols}</cols><sheetData>{out.getvalue()}</sheetData>'
         f'<autoFilter ref="A{head}:{_col(len(COLUMNS) - 1)}{last}"/>'
         '<dataValidations count="1">'

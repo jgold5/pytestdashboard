@@ -456,7 +456,8 @@ curl --fail-with-body -sS -X POST "$DASHBOARD_URL/api/triggers/scan" \
   |---|---|---|---|---|---|---|---|
 
   The first five are filled in; the rest are yours (N/A for a passed test, as is its Failure).
-  Test Script Fix Required has a Yes/No/N/A list, the header has filters. Test File is the test's module.
+  Test Script Fix Required has a Yes/No/N/A list, the header has filters, and every row is one line high (a long
+  failure stays in its cell; click it to read it all). Test File is the test's module.
   Route Tested is the first of: a `route`/`route_id` label or parameter (`--route-label NAME` for
   another); a "Route id: …" line in the test's description or a step; with **`--tests <test repo>`**,
   the test's own file: a "Route id: …" line in its, its class's or its module's docstring, else
