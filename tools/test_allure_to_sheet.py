@@ -94,7 +94,7 @@ class AllureToSheet(unittest.TestCase):
         self.assertEqual(by['test_purge[nightly]'][1:5], ['tests/jobs/test_purge.py', 'nightly-purge; purge-archive', 'Broken', 'TimeoutError: no file in /out after 60s'])
         self.assertEqual(by['test_skipped'][3:5], ['Skipped', 'Skipped: needs SFTP'])
         self.assertEqual(by['test_invoice_loads'][1:5], ['tests/routes/test_invoice.py', 'invoice-load', 'Passed', 'N/A'])
-        # RCA, Fix Required, Bug id: for people, N/A for a passed test
+        # RCA, Test Script Fix Required, Bug id: for people, N/A for a passed test
         self.assertEqual({r[0]: r[5:] for r in rows}, {
             'test_credit_fails': ['', '', ''],
             'test_purge[nightly]': ['', '', ''],

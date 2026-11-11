@@ -15,10 +15,10 @@ The sheet starts with the run's details (report name, date ran, duration, EAI bu
 schema - "TO FILL IN" unless given or in the environment - environment, executor, totals), then one
 row per test:
 
-  Test Name | Test File | Route Tested | Result | Failure from script | RCA (after manual analysis) | Fix Required | Bug id
+  Test Name | Test File | Route Tested | Result | Failure from script | RCA (after manual analysis) | Test Script Fix Required | Bug id
 
 The first five are filled in; the last three are for you. A passed test says N/A in Failure, RCA,
-Fix Required and Bug id. Failures come first.
+Test Script Fix Required and Bug id. Failures come first.
   - Test File: the test's module (allure-pytest's `package` label, else its fullName:
     tests.routes.test_x.TestY#test_z -> tests/routes/test_x.py).
   - Route Tested, the first of:
@@ -49,7 +49,7 @@ from datetime import datetime
 from typing import Any, Iterable, Optional
 from xml.sax.saxutils import escape
 
-COLUMNS = ['Test Name', 'Test File', 'Route Tested', 'Result', 'Failure from script', 'RCA (after manual analysis)', 'Fix Required', 'Bug id']
+COLUMNS = ['Test Name', 'Test File', 'Route Tested', 'Result', 'Failure from script', 'RCA (after manual analysis)', 'Test Script Fix Required', 'Bug id']
 ROUTE_LABELS = {'route', 'route_id', 'routeid', 'route-id', 'camel_route', 'camel-route', 'camelroute'}
 STATUS_ORDER = {'failed': 0, 'broken': 1, 'unknown': 2, 'skipped': 3, 'passed': 4}
 MAX_FAILURE_CHARS = 2000  # the message, not the trace: enough to read, short enough for a cell
@@ -638,7 +638,7 @@ def build_rows(
     sources: Optional[TestSources] = None,
 ) -> list[list[str]]:
     ordered = sorted(tests, key=lambda t: (STATUS_ORDER.get(t['status'], 9), t['fullName'] or t['name'], t['name']))
-    # a passed test needs no analysis: Failure, RCA, Fix Required and Bug id say N/A; the others are left for people
+    # a passed test needs no analysis: Failure, RCA, Test Script Fix Required and Bug id say N/A; the others are left for people
     return [
         [t['name'], test_file(t), routes_of(t, route_labels, by_file, sources), t['status'].capitalize(), _failure(t)] + (['N/A'] * 3 if t['status'] == 'passed' else ['', '', ''])
         for t in ordered
@@ -701,7 +701,7 @@ _STYLES = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <xf numFmtId="0" fontId="3" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
 </cellXfs></styleSheet>"""
 _RESULT_STYLE = {'Failed': 4, 'Broken': 5, 'Passed': 6, 'Skipped': 7}
-_WIDTHS = [44, 40, 32, 10, 70, 40, 14, 14]
+_WIDTHS = [44, 40, 32, 10, 70, 40, 18, 14]
 
 
 def write_xlsx(path: str, details: list[tuple[str, str]], rows: list[list[str]]) -> None:
@@ -722,7 +722,7 @@ def write_xlsx(path: str, details: list[tuple[str, str]], rows: list[list[str]])
         out.write(f'<row r="{n}">' + ''.join(cells) + '</row>')
     last = head + max(len(rows), 1)
     cols = ''.join(f'<col min="{i + 1}" max="{i + 1}" width="{w}" customWidth="1"/>' for i, w in enumerate(_WIDTHS))
-    fix_col = _col(COLUMNS.index('Fix Required'))
+    fix_col = _col(COLUMNS.index('Test Script Fix Required'))
     sheet = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
@@ -832,7 +832,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             stream.reconfigure(errors='replace')  # type: ignore[attr-defined]
         except (AttributeError, ValueError):
             pass
-    ap = argparse.ArgumentParser(description='Allure report -> Excel/CSV results sheet (Test Name, Test File, Route Tested, Result, Failure, RCA, Fix Required, Bug id).')
+    ap = argparse.ArgumentParser(description='Allure report -> Excel/CSV results sheet (Test Name, Test File, Route Tested, Result, Failure, RCA, Test Script Fix Required, Bug id).')
     ap.add_argument('report', help='Allure report folder, .zip of it, single-file index.html, or allure-results folder/.zip')
     ap.add_argument('-o', '--out', help='output .xlsx (default: next to the report, <name>-results.xlsx) or .csv')
     ap.add_argument('--csv', action='store_true', help='also write a .csv next to the .xlsx')
