@@ -339,6 +339,7 @@ class TestPurge:
             self.assertEqual(z.testzip(), None)
             sheet = z.read('xl/worksheets/sheet1.xml').decode()
             styles = z.read('xl/styles.xml').decode()
+            book = z.read('xl/workbook.xml').decode()
         self.assertIn('Failure from script', sheet)
         self.assertIn('<autoFilter ref="A13:H17"/>', sheet)  # 11 detail rows, a blank one, the header, 4 tests
         self.assertIn('s="8"><is><t xml:space="preserve">TO FILL IN</t>', sheet)  # highlighted
@@ -352,12 +353,51 @@ class TestPurge:
         self.assertIn('<c r="H17" t="inlineStr" s="3"><is><t xml:space="preserve">N/A</t>', sheet)  # a passed test's Bug id
         self.assertIn('state="frozen"', sheet)
         self.assertIn('<formula1>"Yes,No,N/A"</formula1>', sheet)
+        # the tab is named after the report
+        self.assertIn('<sheet name="Nightly regression" sheetId="1"', book)
+        self.assertIn("'Nightly regression'!$A$13:$H$17", book)
+
+    def test_names_safe_for_windows_and_excel(self):
+        self.assertEqual(a2s.file_name('Nightly: EAI/T1000 run?'), 'Nightly- EAI-T1000 run-')
+        self.assertEqual(a2s.file_name(' ... '), 'allure')
+        self.assertEqual(a2s.sheet_name('[Nightly] regression: EAI build 1234 / T1000'), '-Nightly- regression- EAI build')
+        self.assertEqual(a2s.sheet_name(''), 'Results')
+        # the file and its tab follow the report's name, made safe
+        root = os.path.join(self.tmp, 'r')
+        write_report(root)
+        with open(os.path.join(root, 'widgets', 'summary.json')) as f:
+            summary = json.load(f)
+        summary['reportName'] = "Bob's run: 1/2"
+        with open(os.path.join(root, 'widgets', 'summary.json'), 'w') as f:
+            json.dump(summary, f)
+        out = a2s.convert(root)['files'][0]
+        self.assertEqual(out, os.path.join(self.tmp, "Bob's run- 1-2.xlsx"))
+        with zipfile.ZipFile(out) as z:
+            book = z.read('xl/workbook.xml').decode()
+        self.assertIn('<sheet name="Bob\'s run- 1-2" sheetId="1"', book)
+        self.assertIn("'Bob''s run- 1-2'!$A$", book)
 
     def test_default_output_name(self):
         root = os.path.join(self.tmp, 'nightly-report')
         write_report(root)
         res = a2s.convert(root)
-        self.assertEqual(res['files'], [os.path.join(self.tmp, 'nightly-report-results.xlsx')])
+        self.assertEqual(res['files'], [os.path.join(self.tmp, 'Nightly regression.xlsx')])
+
+    def test_never_overwrites(self):
+        root = os.path.join(self.tmp, 'nightly-report')
+        write_report(root)
+        first = a2s.convert(root)['files']
+        self.assertEqual(first, [os.path.join(self.tmp, 'Nightly regression.xlsx')])
+        self.assertEqual(a2s.convert(root)['files'], [os.path.join(self.tmp, 'Nightly regression (2).xlsx')])
+        # with --csv the pair shares a number, one free for both
+        self.assertEqual(a2s.convert(root, want_csv=True)['files'], [os.path.join(self.tmp, f'Nightly regression (3).{x}') for x in ('xlsx', 'csv')])
+        # -o too: an existing file is kept
+        out = os.path.join(self.tmp, 'mine.csv')
+        with open(out, 'w') as f:
+            f.write('keep me')
+        self.assertEqual(a2s.convert(root, out)['files'], [os.path.join(self.tmp, 'mine (2).csv')])
+        with open(out) as f:
+            self.assertEqual(f.read(), 'keep me')
 
     def test_no_tests(self):
         empty = os.path.join(self.tmp, 'empty')
