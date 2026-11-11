@@ -722,7 +722,24 @@ _WIDTHS = [40, 44, 32, 10, 70, 30, 25, 12]
 ROW_HEIGHT = 15  # points: one line of Calibri 11, so every row stays thin whatever its text
 
 
-def write_xlsx(path: str, details: list[tuple[str, str]], rows: list[list[str]]) -> None:
+def _quoted(tab: str) -> str:
+    return "'" + tab.replace("'", "''") + "'"
+
+
+def file_name(name: str) -> str:
+    """The report's name as a file name that works on Windows too."""
+    n = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '-', name).strip().rstrip('. ')
+    return n or 'allure'
+
+
+def sheet_name(name: str) -> str:
+    """The report's name as an Excel sheet (tab) name: at most 31 characters, none of []:*?/\\."""
+    n = re.sub(r'[\[\]:*?/\\\x00-\x1f]', '-', name).strip().strip("'")[:31].strip()
+    return n or 'Results'
+
+
+def write_xlsx(path: str, details: list[tuple[str, str]], rows: list[list[str]], title: str = 'Results') -> None:
+    tab = sheet_name(title)
     out = io.StringIO()
     r = 0
     for k, v in details:
@@ -776,8 +793,8 @@ def write_xlsx(path: str, details: list[tuple[str, str]], rows: list[list[str]])
             '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
             '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
             'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
-            '<sheets><sheet name="Results" sheetId="1" r:id="rId1"/></sheets>'
-            f'<definedNames><definedName name="_xlnm._FilterDatabase" localSheetId="0" hidden="1">Results!$A${head}:${_col(len(COLUMNS) - 1)}${last}</definedName></definedNames>'
+            f'<sheets><sheet name="{escape(tab, {chr(34): "&quot;"})}" sheetId="1" r:id="rId1"/></sheets>'
+            f'<definedNames><definedName name="_xlnm._FilterDatabase" localSheetId="0" hidden="1">{escape(_quoted(tab))}!$A${head}:${_col(len(COLUMNS) - 1)}${last}</definedName></definedNames>'
             '</workbook>'
         ),
         'xl/_rels/workbook.xml.rels': (
@@ -827,17 +844,19 @@ def convert(
         diagnose['misses'] = {k: sorted(set(v)) for k, v in sources.misses.items()}
         found = {r[file_col] for r in rows if r[file_col] and sources._file(r[file_col])}
         diagnose['found, no route in it'] = sorted({r[file_col] for r in rows if not r[route_col] and r[file_col] in found})
+    title = details[0][1]  # the report's name (its folder or file name when it has none)
     if out is None:
-        stem = re.sub(r'\.(zip|html?)$', '', os.path.normpath(report), flags=re.I)
-        if os.path.basename(stem).lower() == 'index':
-            stem = os.path.join(os.path.dirname(stem), os.path.basename(os.path.dirname(os.path.abspath(stem))) or 'allure')
-        out = stem.rstrip('/\\') + '-results.xlsx'
+        # named after the report, next to it (an index.html's: in its folder)
+        out = os.path.join(os.path.dirname(os.path.normpath(report)), file_name(title) + '.xlsx')
     is_csv = out.lower().endswith('.csv')
     stem = re.sub(r'\.(xlsx|csv)$', '', out, flags=re.I)
     exts = ['.csv'] if is_csv else ['.xlsx', '.csv'] if want_csv else ['.xlsx']
     paths = unused_paths(stem, exts)
     for path in paths:
-        (write_csv if path.endswith('.csv') else write_xlsx)(path, details, rows)
+        if path.endswith('.csv'):
+            write_csv(path, details, rows)
+        else:
+            write_xlsx(path, details, rows, title)
     written = paths
     return {'files': written, 'tests': len(rows), 'details': details, 'withRoute': sum(1 for r in rows if r[route_col]), 'diagnose': diagnose}
 
@@ -861,7 +880,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             pass
     ap = argparse.ArgumentParser(description='Allure report -> Excel/CSV results sheet (Test File, Test Name, Route Tested, Result, Failure, RCA, Test Script Fix Required, Bug id).')
     ap.add_argument('report', help='Allure report folder, .zip of it, single-file index.html, or allure-results folder/.zip')
-    ap.add_argument('-o', '--out', help='output .xlsx (default: next to the report, <name>-results.xlsx) or .csv; never overwritten: if it is there, <name> (2).xlsx and so on')
+    ap.add_argument('-o', '--out', help='output .xlsx (default: next to the report, named after it: <report name>.xlsx) or .csv; never overwritten: if it is there, <name> (2).xlsx and so on')
     ap.add_argument('--csv', action='store_true', help='also write a .csv next to the .xlsx')
     ap.add_argument('--tests', metavar='DIR', help="your test repo (or its tests folder): Route Tested from each test's own docstrings or ROUTE_ID")
     ap.add_argument('--routes-sheet', metavar='SHEET', help='your sheet of routes (.xlsx/.csv with a route id and a test files column): Route Tested by test file')
