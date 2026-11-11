@@ -51,16 +51,12 @@ jobs:
         run: pnpm audit --prod --audit-level high
 
       - name: Install Playwright browser
-        # The browser comes from Playwright's CDN. Its system packages come from the Ubuntu mirror,
-        # and the runner image already has the libraries (what's left is mostly fonts, which the e2e
-        # tests don't need: no screenshot comparisons). When the mirror is unreachable, apt hangs for
-        # 10+ minutes and fails the run, so cap it and carry on with a warning; a library that is
-        # really missing still fails the E2E step itself, with the browser's own error.
-        run: |
-          pnpm exec playwright install chromium
-          if ! timeout 180 pnpm exec playwright install-deps chromium; then
-            echo "::warning title=Playwright system packages::Not installed (Ubuntu package mirror unreachable or too slow); running the e2e tests without them."
-          fi
+        # Only the browser, from Playwright's CDN (~10 s). Not its system packages (`--with-deps` /
+        # `install-deps`): those come from the Ubuntu mirror, which can be unreachable and then hangs
+        # the run for 10+ minutes, and the runner image already has the libraries (what --with-deps
+        # adds is fonts, which the e2e tests don't need: no screenshot comparisons). If a library ever
+        # goes missing from the image, the E2E step fails at once with Playwright's own message.
+        run: pnpm exec playwright install chromium
 
       - name: E2E
         run: pnpm e2e
