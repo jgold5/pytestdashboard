@@ -86,16 +86,17 @@ class AllureToSheet(unittest.TestCase):
 
     def check(self, details, header, rows):
         self.assertEqual(header, a2s.COLUMNS)
-        self.assertEqual(header[:5], ['Test Name', 'Test File', 'Route Tested', 'Result', 'Failure from script'])
+        self.assertEqual(header[:5], ['Test File', 'Test Name', 'Route Tested', 'Result', 'Failure from script'])
         # failures first; the hidden retry isn't a row
-        self.assertEqual([r[0] for r in rows], ['test_credit_fails', 'test_purge[nightly]', 'test_skipped', 'test_invoice_loads'])
-        by = {r[0]: r for r in rows}
-        self.assertEqual(by['test_credit_fails'][1:5], ['tests/routes/test_credit.py', '', 'Failed', 'AssertionError: expected 3 rows, got 0\nassert 0 == 3'])
-        self.assertEqual(by['test_purge[nightly]'][1:5], ['tests/jobs/test_purge.py', 'nightly-purge; purge-archive', 'Broken', 'TimeoutError: no file in /out after 60s'])
+        self.assertEqual([r[1] for r in rows], ['test_credit_fails', 'test_purge[nightly]', 'test_skipped', 'test_invoice_loads'])
+        by = {r[1]: r for r in rows}
+        # a multi-line failure is put on one line
+        self.assertEqual(by['test_credit_fails'][:5], ['tests/routes/test_credit.py', 'test_credit_fails', '', 'Failed', 'AssertionError: expected 3 rows, got 0 | assert 0 == 3'])
+        self.assertEqual(by['test_purge[nightly]'][:5], ['tests/jobs/test_purge.py', 'test_purge[nightly]', 'nightly-purge; purge-archive', 'Broken', 'TimeoutError: no file in /out after 60s'])
         self.assertEqual(by['test_skipped'][3:5], ['Skipped', 'Skipped: needs SFTP'])
-        self.assertEqual(by['test_invoice_loads'][1:5], ['tests/routes/test_invoice.py', 'invoice-load', 'Passed', 'N/A'])
+        self.assertEqual(by['test_invoice_loads'][:5], ['tests/routes/test_invoice.py', 'test_invoice_loads', 'invoice-load', 'Passed', 'N/A'])
         # RCA, Test Script Fix Required, Bug id: for people, N/A for a passed test
-        self.assertEqual({r[0]: r[5:] for r in rows}, {
+        self.assertEqual({r[1]: r[5:] for r in rows}, {
             'test_credit_fails': ['', '', ''],
             'test_purge[nightly]': ['', '', ''],
             'test_skipped': ['', '', ''],
@@ -148,7 +149,7 @@ class AllureToSheet(unittest.TestCase):
             f.write('ENV=fuludababa5\nPython=3.12\n')
         details, header, rows = self.sheet(root)
         self.assertEqual(len(rows), 4)  # the earlier attempt of test_credit_fails gives way to the latest
-        self.assertEqual({r[0]: r[3] for r in rows}['test_credit_fails'], 'Failed')
+        self.assertEqual({r[1]: r[3] for r in rows}['test_credit_fails'], 'Failed')
         self.assertEqual(details['Allure report'], 'allure-results')  # no report name: the folder's
         self.assertEqual(details['Env: ENV'], 'fuludababa5')
 
@@ -180,7 +181,7 @@ class AllureToSheet(unittest.TestCase):
         out = os.path.join(self.tmp, 'r.csv')
         self.assertEqual(a2s.convert(root, out)['withRoute'], 3)
         with open(out, encoding='utf-8-sig') as f:
-            rows = {r[0]: r for r in csv.reader(f) if r}
+            rows = {r[1]: r for r in csv.reader(f) if len(r) > 1}
         self.assertEqual(rows['test_credit_fails'][2], 'credit-load')
 
     def test_route_from_the_test_files_docstrings(self):
@@ -222,7 +223,7 @@ class TestPurge:
         out = os.path.join(self.tmp, 'r.csv')
         a2s.convert(root, out, tests_dir=os.path.join(self.tmp, 'test-repo'))
         with open(out, encoding='utf-8-sig') as f:
-            rows = {r[0]: r for r in csv.reader(f) if r}
+            rows = {r[1]: r for r in csv.reader(f) if len(r) > 1}
         self.assertEqual(rows['test_credit_fails'][2], 'common-credit-load-route')
         self.assertEqual(rows['test_skipped'][2], 'purge-from-class')
         self.assertEqual(rows['test_invoice_loads'][2], 'invoice-load')  # its label wins
@@ -285,7 +286,7 @@ class TestPurge:
         out = os.path.join(self.tmp, 'r.csv')
         self.assertEqual(a2s.convert(root, out, routes_sheet=sheet)['withRoute'], 4)
         with open(out, encoding='utf-8-sig') as f:
-            rows = {r[0]: r for r in csv.reader(f) if r}
+            rows = {r[1]: r for r in csv.reader(f) if len(r) > 1}
         self.assertEqual(rows['test_credit_fails'][2], 'credit-load')
         self.assertEqual(rows['test_purge[nightly]'][2], 'nightly-purge; purge-archive')  # its label first
         self.assertEqual(rows['test_skipped'][2], 'skip-route')
@@ -337,6 +338,7 @@ class TestPurge:
         with zipfile.ZipFile(out) as z:
             self.assertEqual(z.testzip(), None)
             sheet = z.read('xl/worksheets/sheet1.xml').decode()
+            styles = z.read('xl/styles.xml').decode()
         self.assertIn('Failure from script', sheet)
         self.assertIn('<autoFilter ref="A13:H17"/>', sheet)  # 11 detail rows, a blank one, the header, 4 tests
         self.assertIn('s="8"><is><t xml:space="preserve">TO FILL IN</t>', sheet)  # highlighted
@@ -344,6 +346,10 @@ class TestPurge:
         import re as _re
         heights = _re.findall(r'<row r="(\d+)" ht="([\d.]+)" customHeight="1">', sheet)
         self.assertEqual({h for r, h in heights if int(r) > 13}, {str(a2s.ROW_HEIGHT)})
+        # ... and stays so when pasted elsewhere: nothing wraps, and the blank cells beside a failure hold ="" so it can't spill
+        self.assertNotIn('wrapText', styles)
+        self.assertIn('<c r="F14" s="3" t="str"><f>""</f><v></v></c>', sheet)  # RCA of the first failure
+        self.assertIn('<c r="H17" t="inlineStr" s="3"><is><t xml:space="preserve">N/A</t>', sheet)  # a passed test's Bug id
         self.assertIn('state="frozen"', sheet)
         self.assertIn('<formula1>"Yes,No,N/A"</formula1>', sheet)
 
