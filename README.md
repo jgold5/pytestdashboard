@@ -448,9 +448,9 @@ curl --fail-with-body -sS -X POST "$DASHBOARD_URL/api/triggers/scan" \
   no packages; it reads only the report and the files you name) turns an Allure report into an
   Excel sheet for failure analysis: the report folder, a `.zip` of it, a single-file `index.html`
   (`allure generate --single-file`) or an `allure-results` folder. The sheet starts with the
-  report's name, the date it ran, its duration, the **EAI build branch** and **DB schema**
+  report's name, the date it ran, its duration, the **EAI build branch**, **T1000 branch** and **DB schema**
   (highlighted "TO FILL IN" unless the environment has them or you pass `--eai-branch` /
-  `--db-schema`), the environment, executor and totals, then one row per test, failures first:
+  `--t1000-branch` / `--db-schema`), the environment, executor and totals, then one row per test, failures first:
 
   | Test Name | Test File | Route Tested | Result | Failure from script | RCA (after manual analysis) | Test Script Fix Required | Bug id |
   |---|---|---|---|---|---|---|---|

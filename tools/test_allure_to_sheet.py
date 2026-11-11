@@ -110,6 +110,7 @@ class AllureToSheet(unittest.TestCase):
         self.assertEqual(details['Results'], '4 tests: 1 failed, 1 broken, 1 skipped, 1 passed')
         # to fill in by hand: not in this report's environment
         self.assertEqual(details['EAI build branch'], 'TO FILL IN')
+        self.assertEqual(details['T1000 branch'], 'TO FILL IN')
         self.assertEqual(details['DB schema'], 'TO FILL IN')
 
     def test_report_folder(self):
@@ -295,11 +296,13 @@ class TestPurge:
         with open(os.path.join(root, 'widgets', 'environment.json'), 'w') as f:
             json.dump(ENV + [{'name': 'EAI_BRANCH', 'values': ['release/26.4']}], f)
         out = os.path.join(self.tmp, 'r.csv')
-        res = a2s.convert(root, out, db_schema='PUG_T1154')
+        res = a2s.convert(root, out, db_schema='PUG_T1154', t1000_branch='feature/x')
         d = dict(res['details'])
         self.assertEqual(d['EAI build branch'], 'release/26.4')  # from the environment
+        self.assertEqual(d['T1000 branch'], 'feature/x')  # given
         self.assertEqual(d['DB schema'], 'PUG_T1154')  # given
         keys = [k for k, _ in res['details']]
+        self.assertEqual(keys.index('T1000 branch'), keys.index('EAI build branch') + 1)  # right under it
         self.assertLess(keys.index('DB schema'), keys.index('Env: ENV'))
 
     def test_inspect(self):
@@ -335,7 +338,7 @@ class TestPurge:
             self.assertEqual(z.testzip(), None)
             sheet = z.read('xl/worksheets/sheet1.xml').decode()
         self.assertIn('Failure from script', sheet)
-        self.assertIn('<autoFilter ref="A12:H16"/>', sheet)  # 10 detail rows, a blank one, the header, 4 tests
+        self.assertIn('<autoFilter ref="A13:H17"/>', sheet)  # 11 detail rows, a blank one, the header, 4 tests
         self.assertIn('s="8"><is><t xml:space="preserve">TO FILL IN</t>', sheet)  # highlighted
         self.assertIn('state="frozen"', sheet)
         self.assertIn('<formula1>"Yes,No,N/A"</formula1>', sheet)
