@@ -3,7 +3,7 @@
 Allure report -> Excel (.xlsx) / CSV results sheet, for failure analysis.
 
     python3 tools/allure_to_sheet.py REPORT [-o OUT.xlsx] [--csv] [--tests DIR] [--routes-sheet SHEET] [--route-label NAME]
-                                            [--eai-branch B] [--db-schema S] [--inspect]
+                                            [--eai-branch B] [--t1000-branch B] [--db-schema S] [--inspect]
 
 REPORT is any of:
   - a generated Allure report folder (the one with index.html and data/test-cases/),
@@ -11,14 +11,14 @@ REPORT is any of:
   - a single-file report (allure generate --single-file): its index.html,
   - an allure-results folder (or .zip) of *-result.json files.
 
-The sheet starts with the run's details (report name, date ran, duration, EAI build branch and DB
+The sheet starts with the run's details (report name, date ran, duration, EAI build branch, T1000 branch and DB
 schema - "TO FILL IN" unless given or in the environment - environment, executor, totals), then one
 row per test:
 
-  Test Name | Test File | Route Tested | Result | Failure from script | RCA (after manual analysis) | Fix Required | Bug id
+  Test Name | Test File | Route Tested | Result | Failure from script | RCA (after manual analysis) | Test Script Fix Required | Bug id
 
 The first five are filled in; the last three are for you. A passed test says N/A in Failure, RCA,
-Fix Required and Bug id. Failures come first.
+Test Script Fix Required and Bug id. Failures come first.
   - Test File: the test's module (allure-pytest's `package` label, else its fullName:
     tests.routes.test_x.TestY#test_z -> tests/routes/test_x.py).
   - Route Tested, the first of:
@@ -49,7 +49,7 @@ from datetime import datetime
 from typing import Any, Iterable, Optional
 from xml.sax.saxutils import escape
 
-COLUMNS = ['Test Name', 'Test File', 'Route Tested', 'Result', 'Failure from script', 'RCA (after manual analysis)', 'Fix Required', 'Bug id']
+COLUMNS = ['Test Name', 'Test File', 'Route Tested', 'Result', 'Failure from script', 'RCA (after manual analysis)', 'Test Script Fix Required', 'Bug id']
 ROUTE_LABELS = {'route', 'route_id', 'routeid', 'route-id', 'camel_route', 'camel-route', 'camelroute'}
 STATUS_ORDER = {'failed': 0, 'broken': 1, 'unknown': 2, 'skipped': 3, 'passed': 4}
 MAX_FAILURE_CHARS = 2000  # the message, not the trace: enough to read, short enough for a cell
@@ -221,7 +221,13 @@ def _properties(text: str) -> list[tuple[str, str]]:
 
 PLACEHOLDER = 'TO FILL IN'
 # rows of the top section to fill in by hand when the report doesn't say: (label, environment key that gives it)
-MANUAL_DETAILS = [('EAI build branch', re.compile(r'(eai.*branch|branch.*eai|build[_ .-]?branch)', re.I)), ('DB schema', re.compile(r'(db|database).*schema|^schema$', re.I))]
+MANUAL_DETAILS = [
+    ('EAI build branch', re.compile(r'(eai.*branch|branch.*eai|build[_ .-]?branch)', re.I)),
+    ('T1000 branch', re.compile(r't1000.*branch|branch.*t1000', re.I)),
+    ('DB schema', re.compile(r'(db|database).*schema|^schema$', re.I)),
+]
+# the command-line option for each, for the "fill in" reminder
+MANUAL_OPTION = {'EAI build branch': '--eai-branch', 'T1000 branch': '--t1000-branch', 'DB schema': '--db-schema'}
 
 
 def load_details(files: dict[str, bytes], tests: list[dict], report_path: str, manual: Optional[dict[str, str]] = None) -> list[tuple[str, str]]:
@@ -263,7 +269,7 @@ def load_details(files: dict[str, bytes], tests: list[dict], report_path: str, m
     else:
         props = find('environment.properties')
         env_rows.extend(_properties(props.decode('utf-8', 'replace')) if props else [])
-    # the EAI build branch and DB schema: given on the command line, else from the environment, else to fill in
+    # the EAI build branch, T1000 branch and DB schema: given on the command line, else from the environment, else to fill in
     for label, key in MANUAL_DETAILS:
         given = (manual or {}).get(label)
         from_env = next((v for k, v in env_rows if key.search(k) and v.strip()), None)
@@ -638,7 +644,7 @@ def build_rows(
     sources: Optional[TestSources] = None,
 ) -> list[list[str]]:
     ordered = sorted(tests, key=lambda t: (STATUS_ORDER.get(t['status'], 9), t['fullName'] or t['name'], t['name']))
-    # a passed test needs no analysis: Failure, RCA, Fix Required and Bug id say N/A; the others are left for people
+    # a passed test needs no analysis: Failure, RCA, Test Script Fix Required and Bug id say N/A; the others are left for people
     return [
         [t['name'], test_file(t), routes_of(t, route_labels, by_file, sources), t['status'].capitalize(), _failure(t)] + (['N/A'] * 3 if t['status'] == 'passed' else ['', '', ''])
         for t in ordered
@@ -701,7 +707,7 @@ _STYLES = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <xf numFmtId="0" fontId="3" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
 </cellXfs></styleSheet>"""
 _RESULT_STYLE = {'Failed': 4, 'Broken': 5, 'Passed': 6, 'Skipped': 7}
-_WIDTHS = [44, 40, 32, 10, 70, 40, 14, 14]
+_WIDTHS = [44, 40, 32, 10, 70, 40, 18, 14]
 
 
 def write_xlsx(path: str, details: list[tuple[str, str]], rows: list[list[str]]) -> None:
@@ -722,7 +728,7 @@ def write_xlsx(path: str, details: list[tuple[str, str]], rows: list[list[str]])
         out.write(f'<row r="{n}">' + ''.join(cells) + '</row>')
     last = head + max(len(rows), 1)
     cols = ''.join(f'<col min="{i + 1}" max="{i + 1}" width="{w}" customWidth="1"/>' for i, w in enumerate(_WIDTHS))
-    fix_col = _col(COLUMNS.index('Fix Required'))
+    fix_col = _col(COLUMNS.index('Test Script Fix Required'))
     sheet = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
@@ -786,12 +792,13 @@ def convert(
     eai_branch: Optional[str] = None,
     db_schema: Optional[str] = None,
     tests_dir: Optional[str] = None,
+    t1000_branch: Optional[str] = None,
 ) -> dict:
     files = _strip_root(read_files(report))
     tests = load_tests(files)
     if not tests:
         raise SystemExit(f'{report}: no tests found (expected data/test-cases/*.json, a single-file index.html, or *-result.json)')
-    details = load_details(files, tests, report, {k: v for k, v in (('EAI build branch', eai_branch), ('DB schema', db_schema)) if v})
+    details = load_details(files, tests, report, {k: v for k, v in (('EAI build branch', eai_branch), ('T1000 branch', t1000_branch), ('DB schema', db_schema)) if v})
     by_file = routes_by_file(routes_sheet) if routes_sheet else None
     if tests_dir and not os.path.isdir(tests_dir):
         raise SystemExit(f'{tests_dir}: not a folder')
@@ -832,7 +839,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             stream.reconfigure(errors='replace')  # type: ignore[attr-defined]
         except (AttributeError, ValueError):
             pass
-    ap = argparse.ArgumentParser(description='Allure report -> Excel/CSV results sheet (Test Name, Test File, Route Tested, Result, Failure, RCA, Fix Required, Bug id).')
+    ap = argparse.ArgumentParser(description='Allure report -> Excel/CSV results sheet (Test Name, Test File, Route Tested, Result, Failure, RCA, Test Script Fix Required, Bug id).')
     ap.add_argument('report', help='Allure report folder, .zip of it, single-file index.html, or allure-results folder/.zip')
     ap.add_argument('-o', '--out', help='output .xlsx (default: next to the report, <name>-results.xlsx) or .csv')
     ap.add_argument('--csv', action='store_true', help='also write a .csv next to the .xlsx')
@@ -840,13 +847,17 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     ap.add_argument('--routes-sheet', metavar='SHEET', help='your sheet of routes (.xlsx/.csv with a route id and a test files column): Route Tested by test file')
     ap.add_argument('--route-label', action='append', default=[], metavar='NAME', help='another label (or parameter) name that holds the route id; repeatable')
     ap.add_argument('--eai-branch', metavar='BRANCH', help=f'the EAI build branch for the top section (default: from the environment, else "{PLACEHOLDER}")')
+    ap.add_argument('--t1000-branch', metavar='BRANCH', help=f'the T1000 branch for the top section (default: from the environment, else "{PLACEHOLDER}")')
     ap.add_argument('--db-schema', metavar='SCHEMA', help=f'the DB schema for the top section (default: from the environment, else "{PLACEHOLDER}")')
     ap.add_argument('--inspect', action='store_true', help='print what the report holds per test (label and parameter names, descriptions, steps) instead of writing a sheet')
     a = ap.parse_args(list(argv) if argv is not None else None)
     if a.inspect:
         inspect(a.report)
         return 0
-    res = convert(a.report, a.out, a.csv, a.route_label, a.routes_sheet, a.eai_branch, a.db_schema, a.tests)
+    res = convert(
+        a.report, a.out, a.csv, a.route_label,
+        routes_sheet=a.routes_sheet, eai_branch=a.eai_branch, db_schema=a.db_schema, tests_dir=a.tests, t1000_branch=a.t1000_branch,
+    )
     print(f"{res['tests']} tests, {res['withRoute']} with a route -> " + ', '.join(res['files']))
     d = res.get('diagnose') or {}
     if d:
@@ -860,7 +871,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         print(f"{res['tests'] - res['withRoute']} test(s) without a route: the report doesn't name it; add --tests <your test repo> to read it from the test files")
     todo = [k for k, v in res['details'] if v == PLACEHOLDER]
     if todo:
-        print(f"fill in: {', '.join(todo)} (or pass {' / '.join('--eai-branch' if k == 'EAI build branch' else '--db-schema' for k in todo)})")
+        print(f"fill in: {', '.join(todo)} (or pass {' / '.join(MANUAL_OPTION[k] for k in todo)})")
     return 0
 
 

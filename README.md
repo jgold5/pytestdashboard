@@ -448,15 +448,15 @@ curl --fail-with-body -sS -X POST "$DASHBOARD_URL/api/triggers/scan" \
   no packages; it reads only the report and the files you name) turns an Allure report into an
   Excel sheet for failure analysis: the report folder, a `.zip` of it, a single-file `index.html`
   (`allure generate --single-file`) or an `allure-results` folder. The sheet starts with the
-  report's name, the date it ran, its duration, the **EAI build branch** and **DB schema**
+  report's name, the date it ran, its duration, the **EAI build branch**, **T1000 branch** and **DB schema**
   (highlighted "TO FILL IN" unless the environment has them or you pass `--eai-branch` /
-  `--db-schema`), the environment, executor and totals, then one row per test, failures first:
+  `--t1000-branch` / `--db-schema`), the environment, executor and totals, then one row per test, failures first:
 
-  | Test Name | Test File | Route Tested | Result | Failure from script | RCA (after manual analysis) | Fix Required | Bug id |
+  | Test Name | Test File | Route Tested | Result | Failure from script | RCA (after manual analysis) | Test Script Fix Required | Bug id |
   |---|---|---|---|---|---|---|---|
 
   The first five are filled in; the rest are yours (N/A for a passed test, as is its Failure).
-  Fix Required has a Yes/No/N/A list, the header has filters. Test File is the test's module.
+  Test Script Fix Required has a Yes/No/N/A list, the header has filters. Test File is the test's module.
   Route Tested is the first of: a `route`/`route_id` label or parameter (`--route-label NAME` for
   another); a "Route id: …" line in the test's description or a step; with **`--tests <test repo>`**,
   the test's own file: a "Route id: …" line in its, its class's or its module's docstring, else
