@@ -832,18 +832,24 @@ def convert(
         if os.path.basename(stem).lower() == 'index':
             stem = os.path.join(os.path.dirname(stem), os.path.basename(os.path.dirname(os.path.abspath(stem))) or 'allure')
         out = stem.rstrip('/\\') + '-results.xlsx'
-    written = []
-    if out.lower().endswith('.csv'):
-        write_csv(out, details, rows)
-        written.append(out)
-    else:
-        write_xlsx(out, details, rows)
-        written.append(out)
-        if want_csv:
-            c = re.sub(r'\.xlsx$', '', out, flags=re.I) + '.csv'
-            write_csv(c, details, rows)
-            written.append(c)
+    is_csv = out.lower().endswith('.csv')
+    stem = re.sub(r'\.(xlsx|csv)$', '', out, flags=re.I)
+    exts = ['.csv'] if is_csv else ['.xlsx', '.csv'] if want_csv else ['.xlsx']
+    paths = unused_paths(stem, exts)
+    for path in paths:
+        (write_csv if path.endswith('.csv') else write_xlsx)(path, details, rows)
+    written = paths
     return {'files': written, 'tests': len(rows), 'details': details, 'withRoute': sum(1 for r in rows if r[route_col]), 'diagnose': diagnose}
+
+
+def unused_paths(stem: str, exts: list[str]) -> list[str]:
+    """stem + each ext, or, when any of those is already there, stem (2), stem (3), ...: never overwrite a sheet."""
+    n = 1
+    while True:
+        paths = [f'{stem}{"" if n == 1 else f" ({n})"}{ext}' for ext in exts]
+        if not any(os.path.exists(x) for x in paths):
+            return paths
+        n += 1
 
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
@@ -855,7 +861,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             pass
     ap = argparse.ArgumentParser(description='Allure report -> Excel/CSV results sheet (Test File, Test Name, Route Tested, Result, Failure, RCA, Test Script Fix Required, Bug id).')
     ap.add_argument('report', help='Allure report folder, .zip of it, single-file index.html, or allure-results folder/.zip')
-    ap.add_argument('-o', '--out', help='output .xlsx (default: next to the report, <name>-results.xlsx) or .csv')
+    ap.add_argument('-o', '--out', help='output .xlsx (default: next to the report, <name>-results.xlsx) or .csv; never overwritten: if it is there, <name> (2).xlsx and so on')
     ap.add_argument('--csv', action='store_true', help='also write a .csv next to the .xlsx')
     ap.add_argument('--tests', metavar='DIR', help="your test repo (or its tests folder): Route Tested from each test's own docstrings or ROUTE_ID")
     ap.add_argument('--routes-sheet', metavar='SHEET', help='your sheet of routes (.xlsx/.csv with a route id and a test files column): Route Tested by test file')

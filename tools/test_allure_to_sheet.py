@@ -359,6 +359,22 @@ class TestPurge:
         res = a2s.convert(root)
         self.assertEqual(res['files'], [os.path.join(self.tmp, 'nightly-report-results.xlsx')])
 
+    def test_never_overwrites(self):
+        root = os.path.join(self.tmp, 'nightly-report')
+        write_report(root)
+        first = a2s.convert(root)['files']
+        self.assertEqual(first, [os.path.join(self.tmp, 'nightly-report-results.xlsx')])
+        self.assertEqual(a2s.convert(root)['files'], [os.path.join(self.tmp, 'nightly-report-results (2).xlsx')])
+        # with --csv the pair shares a number, one free for both
+        self.assertEqual(a2s.convert(root, want_csv=True)['files'], [os.path.join(self.tmp, f'nightly-report-results (3).{x}') for x in ('xlsx', 'csv')])
+        # -o too: an existing file is kept
+        out = os.path.join(self.tmp, 'mine.csv')
+        with open(out, 'w') as f:
+            f.write('keep me')
+        self.assertEqual(a2s.convert(root, out)['files'], [os.path.join(self.tmp, 'mine (2).csv')])
+        with open(out) as f:
+            self.assertEqual(f.read(), 'keep me')
+
     def test_no_tests(self):
         empty = os.path.join(self.tmp, 'empty')
         os.makedirs(empty)

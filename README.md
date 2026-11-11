@@ -466,7 +466,8 @@ curl --fail-with-body -sS -X POST "$DASHBOARD_URL/api/triggers/scan" \
   "route <id>" in a docstring's first line; with `--routes-sheet <your sheet>`, the routes it lists
   for the test's file. `--inspect` prints what a report holds per test (labels, parameters,
   descriptions, steps). It writes `<report>-results.xlsx` next to the report; `-o out.xlsx|out.csv`
-  to choose, `--csv` for a CSV too. Retried tests count once (their last attempt).
+  to choose, `--csv` for a CSV too. It never overwrites a sheet: run it again and you get
+  `<report>-results (2).xlsx`, then `(3)`, and so on. Retried tests count once (their last attempt).
 
 
 [`tools/distill_camel_repo.py`](tools/distill_camel_repo.py) (Python 3.9+, no
