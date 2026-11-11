@@ -94,7 +94,13 @@ class AllureToSheet(unittest.TestCase):
         self.assertEqual(by['test_purge[nightly]'][1:5], ['tests/jobs/test_purge.py', 'nightly-purge; purge-archive', 'Broken', 'TimeoutError: no file in /out after 60s'])
         self.assertEqual(by['test_skipped'][3:5], ['Skipped', 'Skipped: needs SFTP'])
         self.assertEqual(by['test_invoice_loads'][1:5], ['tests/routes/test_invoice.py', 'invoice-load', 'Passed', ''])
-        self.assertTrue(all(r[5:] == ['', '', ''] for r in rows))  # RCA, Fix Required, Bug id: for people
+        # RCA, Fix Required, Bug id: for people, N/A for a passed test
+        self.assertEqual({r[0]: r[5:] for r in rows}, {
+            'test_credit_fails': ['', '', ''],
+            'test_purge[nightly]': ['', '', ''],
+            'test_skipped': ['', '', ''],
+            'test_invoice_loads': ['N/A', 'N/A', 'N/A'],
+        })
         self.assertEqual(details['Allure report'], 'Nightly regression')
         self.assertRegex(details['Date ran'], r'^2026-01-0[12] \d\d:\d\d$')  # local time
         self.assertEqual(details['Duration'], '1h 02m 03s')
@@ -194,7 +200,7 @@ class AllureToSheet(unittest.TestCase):
         self.assertIn('Failure from script', sheet)
         self.assertIn('<autoFilter ref="A10:H14"/>', sheet)  # 8 detail rows, a blank one, the header, 4 tests
         self.assertIn('state="frozen"', sheet)
-        self.assertIn('<formula1>"Yes,No"</formula1>', sheet)
+        self.assertIn('<formula1>"Yes,No,N/A"</formula1>', sheet)
 
     def test_default_output_name(self):
         root = os.path.join(self.tmp, 'nightly-report')

@@ -454,8 +454,8 @@ curl --fail-with-body -sS -X POST "$DASHBOARD_URL/api/triggers/scan" \
   | Test Name | Test File | Route Tested | Result | Failure from script | RCA (after manual analysis) | Fix Required | Bug id |
   |---|---|---|---|---|---|---|---|
 
-  The first five are filled in; the rest are yours (Fix Required has a Yes/No list, the header
-  has filters). Test File is the test's module; Route Tested is a `route`/`route_id` label or
+  The first five are filled in; the rest are yours, already N/A for passed tests (Fix Required
+  has a Yes/No/N/A list, the header has filters). Test File is the test's module; Route Tested is a `route`/`route_id` label or
   parameter on the test, else a "Route id: …" line in its description (`--route-label NAME` for
   another label). It writes `<report>-results.xlsx` next to the report; `-o out.xlsx|out.csv`
   to choose, `--csv` for a CSV too. Retried tests count once (their last attempt).

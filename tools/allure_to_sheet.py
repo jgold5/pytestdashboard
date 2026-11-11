@@ -15,7 +15,8 @@ then one row per test:
 
   Test Name | Test File | Route Tested | Result | Failure from script | RCA (after manual analysis) | Fix Required | Bug id
 
-The first five are filled in from the report alone; the last three are for you. Failures come first.
+The first five are filled in from the report alone; the last three are for you (N/A for passed
+tests). Failures come first.
   - Test File: the test's module (allure-pytest's `package` label, else its fullName:
     tests.routes.test_x.TestY#test_z -> tests/routes/test_x.py).
   - Route Tested: a `route` / `route_id` label on the test (allure.dynamic.label("route", ...),
@@ -313,7 +314,11 @@ def test_file(test: dict) -> str:
 
 def build_rows(tests: list[dict], route_labels: set[str] = ROUTE_LABELS) -> list[list[str]]:
     ordered = sorted(tests, key=lambda t: (STATUS_ORDER.get(t['status'], 9), t['fullName'] or t['name'], t['name']))
-    return [[t['name'], test_file(t), routes_of(t, route_labels), t['status'].capitalize(), _failure(t), '', '', ''] for t in ordered]
+    # a passed test needs no analysis: RCA, Fix Required and Bug id say N/A; the others are left for people
+    return [
+        [t['name'], test_file(t), routes_of(t, route_labels), t['status'].capitalize(), _failure(t)] + (['N/A'] * 3 if t['status'] == 'passed' else ['', '', ''])
+        for t in ordered
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -401,7 +406,7 @@ def write_xlsx(path: str, details: list[tuple[str, str]], rows: list[list[str]])
         f'<autoFilter ref="A{head}:{_col(len(COLUMNS) - 1)}{last}"/>'
         '<dataValidations count="1">'
         f'<dataValidation type="list" allowBlank="1" showErrorMessage="0" sqref="{fix_col}{head + 1}:{fix_col}{max(last, head + 1000)}">'
-        '<formula1>"Yes,No"</formula1></dataValidation></dataValidations>'
+        '<formula1>"Yes,No,N/A"</formula1></dataValidation></dataValidations>'
         '</worksheet>'
     )
     parts = {
